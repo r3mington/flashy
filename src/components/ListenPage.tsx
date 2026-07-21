@@ -1,0 +1,468 @@
+import { useEffect, useRef, useState } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
+import { db } from '../db'
+import {
+  langCodeFor,
+  loadVoices,
+  onVoicesChanged,
+  preferredVoice,
+  savePreferredVoice,
+  speak,
+  speechSupported,
+  stopSpeaking,
+  voicesFor,
+} from '../speech'
+
+interface Props {
+  deckId: number
+  onExit: () => void
+}
+
+type Scope = 'all' | 'learning'
+
+interface ListenOptions {
+  rate: number
+  /** 0 means the word itself is not spoken. */
+  reps: number
+  /** 0 means infinite. */
+  cycles: number
+  scope: Scope
+  /** Speak the English meaning before the word. */
+  speakMeaning: boolean
+  /** Speak the card's example sentence after the word repetitions. */
+  speakExample: boolean
+}
+
+const DEFAULT_OPTIONS: ListenOptions = {
+  rate: 0.9,
+  reps: 3,
+  cycles: 0,
+  scope: 'all',
+  speakMeaning: true,
+  speakExample: true,
+}
+
+const optionsKey = (deckId: number) => `flashy-listen-${deckId}`
+
+function loadOptions(deckId: number): ListenOptions {
+  try {
+    return { ...DEFAULT_OPTIONS, ...JSON.parse(localStorage.getItem(optionsKey(deckId)) ?? '{}') }
+  } catch {
+    return DEFAULT_OPTIONS
+  }
+}
+
+const delay = (ms: number) => new Promise((res) => setTimeout(res, ms))
+
+const WAVE_BARS = 28
+
+function Waveform({ playing }: { playing: boolean }) {
+  return (
+    <div className={`waveform${playing ? ' playing' : ''}`} aria-hidden="true">
+      {Array.from({ length: WAVE_BARS }, (_, i) => (
+        <span
+          key={i}
+          style={{
+            // Deterministic pseudo-random rhythm per bar
+            animationDuration: `${0.9 + ((i * 37) % 40) / 60}s`,
+            animationDelay: `${-((i * 53) % 90) / 100}s`,
+          }}
+        />
+      ))}
+    </div>
+  )
+}
+
+export function ListenPage({ deckId, onExit }: Props) {
+  const deck = useLiveQuery(() => db.decks.get(deckId), [deckId])
+  const cards = useLiveQuery(() => db.cards.where('deckId').equals(deckId).toArray(), [deckId])
+
+  const [options, setOptions] = useState<ListenOptions>(() => loadOptions(deckId))
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([])
+  const [playing, setPlaying] = useState(false)
+  const [pos, setPos] = useState({ cycle: 0, idx: 0 })
+
+  // The playback loop reads live values through refs so option changes apply
+  // mid-session, and an incremented run id cancels a superseded loop.
+  const runRef = useRef(0)
+  const optionsRef = useRef(options)
+  optionsRef.current = options
+  const voicesRef = useRef(voices)
+  voicesRef.current = voices
+
+  const langCode = deck ? langCodeFor(deck.language) : null
+
+  useEffect(() => {
+    loadVoices().then(setVoices)
+    // Voice lists can change well after load (e.g. Android finishing a
+    // language download) — pick that up without a reload.
+    return onVoicesChanged(() => setVoices(speechSynthesis.getVoices()))
+  }, [])
+
+  function refreshVoices() {
+    // A speak() call is what nudges some Android engines into (down)loading a
+    // language; a brief utterance also repopulates the voice list.
+    speak(' ', { lang: langCode ?? 'en' })
+    loadVoices().then(setVoices)
+  }
+
+  // Stop the audio when leaving the page.
+  useEffect(
+    () => () => {
+      runRef.current++
+      stopSpeaking()
+    },
+    [],
+  )
+
+  function saveOptions(patch: Partial<ListenOptions>) {
+    setOptions((prev) => {
+      const next = { ...prev, ...patch }
+      localStorage.setItem(optionsKey(deckId), JSON.stringify(next))
+      return next
+    })
+  }
+
+  const scoped = (cards ?? []).filter((c) => (options.scope === 'all' ? true : !c.known))
+
+  if (!deck || !cards) return null
+
+  const targetVoices = voicesFor(voices, langCode)
+  const englishVoices = voicesFor(voices, 'en')
+  const targetVoice = preferredVoice(voices, langCode)
+  const englishVoice = preferredVoice(voices, 'en')
+
+  async function playFrom(startCycle: number, startIdx: number) {
+    const my = ++runRef.current
+    stopSpeaking()
+    setPlaying(true)
+    const list = scoped
+    for (let c = startCycle; optionsRef.current.cycles === 0 || c < optionsRef.current.cycles; c++) {
+      for (let i = c === startCycle ? startIdx : 0; i < list.length; i++) {
+        if (runRef.current !== my) return
+        setPos({ cycle: c, idx: i })
+        const card = list[i]
+        const opts = optionsRef.current
+        const v = voicesRef.current
+        if (opts.speakMeaning) {
+          await speak(card.meaning, {
+            voice: preferredVoice(v, 'en'),
+            lang: 'en',
+            rate: opts.rate,
+          })
+        }
+        for (let r = 0; r < opts.reps; r++) {
+          if (runRef.current !== my) return
+          await delay(300)
+          await speak(card.word, {
+            voice: preferredVoice(v, langCode),
+            lang: langCode ?? undefined,
+            rate: opts.rate,
+          })
+        }
+        if (opts.speakExample && card.example.trim()) {
+          if (runRef.current !== my) return
+          await delay(400)
+          await speak(card.example, {
+            voice: preferredVoice(v, langCode),
+            lang: langCode ?? undefined,
+            rate: opts.rate,
+          })
+        }
+        if (runRef.current !== my) return
+        await delay(600)
+      }
+      startIdx = 0
+    }
+    if (runRef.current === my) {
+      setPlaying(false)
+      setPos({ cycle: 0, idx: 0 })
+    }
+  }
+
+  function pause() {
+    runRef.current++
+    stopSpeaking()
+    setPlaying(false)
+  }
+
+  function stop() {
+    runRef.current++
+    stopSpeaking()
+    setPlaying(false)
+    setPos({ cycle: 0, idx: 0 })
+  }
+
+  function skip(delta: number) {
+    const next = pos.idx + delta
+    let { cycle, idx } = pos
+    if (next < 0) {
+      idx = 0
+    } else if (next >= scoped.length) {
+      cycle += 1
+      idx = 0
+      if (options.cycles !== 0 && cycle >= options.cycles) {
+        stop()
+        return
+      }
+    } else {
+      idx = next
+    }
+    if (playing) {
+      playFrom(cycle, idx)
+    } else {
+      setPos({ cycle, idx })
+    }
+  }
+
+  const current = scoped[pos.idx]
+
+  if (!speechSupported) {
+    return (
+      <div className="study-done">
+        <div className="big">🔇</div>
+        <h2>No speech support</h2>
+        <p>This browser doesn't support the Web Speech API, so audio mode isn't available.</p>
+        <button className="btn primary" onClick={onExit}>
+          Back to deck
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div className="page-head">
+        <h1>Listen</h1>
+        <span className="sub">
+          {deck.name} · {scoped.length} {scoped.length === 1 ? 'word' : 'words'} in rotation
+        </span>
+      </div>
+
+      <div className="listen-page">
+        <div className="listen-stage">
+          {current ? (
+            <>
+              {current.emoji && <div className="listen-emoji">{current.emoji}</div>}
+              <div className="listen-word">{current.word}</div>
+              <div className="listen-meaning">{current.meaning}</div>
+              {current.example.trim() && <div className="listen-example">{current.example}</div>}
+              <Waveform playing={playing} />
+              <div className="listen-pos">
+                word {pos.idx + 1}/{scoped.length} · cycle {pos.cycle + 1}
+                {options.cycles === 0 ? ' of ∞' : ` of ${options.cycles}`}
+              </div>
+            </>
+          ) : (
+            <div className="listen-meaning">No words in scope.</div>
+          )}
+        </div>
+
+        <div className="listen-controls">
+          <button
+            className="btn ghost"
+            onClick={() => skip(-1)}
+            disabled={!current}
+            title="Previous word"
+          >
+            ⏮
+          </button>
+          {playing ? (
+            <button className="btn accent listen-main" onClick={pause}>
+              ⏸ Pause
+            </button>
+          ) : (
+            <button
+              className="btn accent listen-main"
+              onClick={() => playFrom(pos.cycle, pos.idx)}
+              disabled={!current}
+            >
+              ▶ {pos.idx > 0 || pos.cycle > 0 ? 'Resume' : 'Play'}
+            </button>
+          )}
+          <button
+            className="btn ghost"
+            onClick={() => skip(1)}
+            disabled={!current}
+            title="Next word"
+          >
+            ⏭
+          </button>
+          {(playing || pos.idx > 0 || pos.cycle > 0) && (
+            <button className="btn ghost small" onClick={stop} title="Stop and restart from the top">
+              ⏹
+            </button>
+          )}
+        </div>
+
+        <div className="listen-options">
+          <div className="field">
+            <label htmlFor="listen-rate">Speech speed · {options.rate.toFixed(1)}×</label>
+            <input
+              id="listen-rate"
+              type="range"
+              min={0.5}
+              max={1.5}
+              step={0.1}
+              value={options.rate}
+              onChange={(e) => saveOptions({ rate: Number(e.target.value) })}
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="listen-reps">
+              Repetitions per word · {options.reps === 0 ? 'off (word not spoken)' : `${options.reps}×`}
+            </label>
+            <input
+              id="listen-reps"
+              type="range"
+              min={0}
+              max={6}
+              step={1}
+              value={options.reps}
+              onChange={(e) => saveOptions({ reps: Number(e.target.value) })}
+            />
+          </div>
+
+          <div className="field listen-toggle-row">
+            <label htmlFor="listen-meaning-toggle">Speak English meaning</label>
+            <button
+              id="listen-meaning-toggle"
+              className={`toggle${options.speakMeaning ? ' on' : ''}`}
+              role="switch"
+              aria-checked={options.speakMeaning}
+              onClick={() => saveOptions({ speakMeaning: !options.speakMeaning })}
+            >
+              <span className="knob" />
+            </button>
+          </div>
+
+          <div className="field listen-toggle-row">
+            <label htmlFor="listen-example-toggle">Speak example sentence</label>
+            <button
+              id="listen-example-toggle"
+              className={`toggle${options.speakExample ? ' on' : ''}`}
+              role="switch"
+              aria-checked={options.speakExample}
+              onClick={() => saveOptions({ speakExample: !options.speakExample })}
+            >
+              <span className="knob" />
+            </button>
+          </div>
+
+          <div className="field">
+            <label htmlFor="listen-cycles">Cycles</label>
+            <select
+              id="listen-cycles"
+              value={options.cycles}
+              onChange={(e) => saveOptions({ cycles: Number(e.target.value) })}
+            >
+              <option value={0}>∞ (until stopped)</option>
+              <option value={1}>1</option>
+              <option value={2}>2</option>
+              <option value={3}>3</option>
+              <option value={5}>5</option>
+              <option value={10}>10</option>
+            </select>
+          </div>
+
+          <div className="field">
+            <label htmlFor="listen-scope">Words in scope</label>
+            <select
+              id="listen-scope"
+              value={options.scope}
+              onChange={(e) => {
+                stop()
+                saveOptions({ scope: e.target.value as Scope })
+              }}
+            >
+              <option value="all">All words</option>
+              <option value="learning">Learning only (skip known)</option>
+            </select>
+          </div>
+
+          <div className="field">
+            <label htmlFor="listen-voice-target">{deck.language} voice</label>
+            {targetVoices.length > 0 ? (
+              <select
+                id="listen-voice-target"
+                value={targetVoice?.name ?? ''}
+                onChange={(e) => {
+                  if (langCode) savePreferredVoice(langCode, e.target.value)
+                  setVoices([...voices]) // re-render with the new preference
+                }}
+              >
+                {targetVoices.map((v) => (
+                  <option key={v.name} value={v.name}>
+                    {v.name} ({v.lang})
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <>
+                <p className="note">
+                  No {deck.language} voice detected — playback will still request {deck.language} by
+                  language code, so the system default may handle it. Installing a {deck.language}{' '}
+                  system voice (on Android: the Google Text-to-speech engine) works best.
+                </p>
+                <button className="btn ghost small" onClick={refreshVoices}>
+                  ↻ Retry voice detection
+                </button>
+              </>
+            )}
+          </div>
+
+          <details className="listen-voice-debug">
+            <summary>
+              {voices.length} system {voices.length === 1 ? 'voice' : 'voices'} detected
+            </summary>
+            {voices.length === 0 ? (
+              <p className="note">
+                The browser reports no speech voices at all. On Android, install/enable the Google
+                Text-to-speech engine and reload.
+              </p>
+            ) : (
+              <ul className="voice-debug-list">
+                {[...voices]
+                  .sort((a, b) => a.lang.localeCompare(b.lang))
+                  .map((v, i) => (
+                    <li key={`${v.name}-${v.lang}-${i}`}>
+                      <code>{v.lang}</code> {v.name}
+                      {v.localService ? '' : ' (network)'}
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </details>
+
+          <div className="field">
+            <label htmlFor="listen-voice-en">English voice</label>
+            {englishVoices.length > 0 ? (
+              <select
+                id="listen-voice-en"
+                value={englishVoice?.name ?? ''}
+                onChange={(e) => {
+                  savePreferredVoice('en', e.target.value)
+                  setVoices([...voices])
+                }}
+              >
+                {englishVoices.map((v) => (
+                  <option key={v.name} value={v.name}>
+                    {v.name} ({v.lang})
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <>
+                <p className="note">No English voice detected — the browser default will be used.</p>
+                <button className="btn ghost small" onClick={refreshVoices}>
+                  ↻ Retry voice detection
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
