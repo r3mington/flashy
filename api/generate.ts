@@ -33,7 +33,25 @@ class UpstreamError extends Error {
   }
 }
 
-async function callModel(apiKey: string, model: string, prompt: string, schema: object) {
+/** Gemini models "think" before answering by default, which multiplies latency.
+ *  How thinking is controlled differs by model generation: Gemini 3-era models
+ *  take thinkingLevel (and reject thinkingBudget), 2.5-era models take
+ *  thinkingBudget (and reject thinkingLevel). Each mode lists configs to try in
+ *  order; on a 400 the handler advances down the chain and remembers what stuck
+ *  for the rest of the warm instance. */
+const THINKING_CONFIGS: Record<'fast' | 'quality', (object | null)[]> = {
+  fast: [{ thinkingLevel: 'MINIMAL' }, { thinkingBudget: 0 }, null],
+  quality: [{ thinkingLevel: 'HIGH' }, null],
+}
+const workingConfig: Record<'fast' | 'quality', number> = { fast: 0, quality: 0 }
+
+async function callModel(
+  apiKey: string,
+  model: string,
+  prompt: string,
+  schema: object,
+  thinkingConfig: object | null,
+) {
   const res = await fetch(`${BASE}/models/${model}:generateContent`, {
     method: 'POST',
     headers: {
@@ -45,6 +63,7 @@ async function callModel(apiKey: string, model: string, prompt: string, schema: 
       generationConfig: {
         responseMimeType: 'application/json',
         responseSchema: schema,
+        ...(thinkingConfig ? { thinkingConfig } : {}),
       },
     }),
   })
@@ -68,22 +87,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) return res.status(500).json({ error: 'Server is missing GEMINI_API_KEY.' })
 
-  const { prompt, schema } = req.body ?? {}
+  const { prompt, schema, thinking } = req.body ?? {}
   if (typeof prompt !== 'string' || !prompt || typeof schema !== 'object' || !schema) {
     return res.status(400).json({ error: 'Expected { prompt, schema }.' })
   }
+  // Default fast: only "think" when the client explicitly opts in.
+  const mode: 'fast' | 'quality' = thinking === true ? 'quality' : 'fast'
+  const configs = THINKING_CONFIGS[mode]
 
   try {
     let data
-    try {
-      data = await callModel(apiKey, resolvedModel ?? PREFERRED_MODEL, prompt, schema)
-    } catch (e) {
-      // Model not available for this account? Discover one that is and retry once.
-      const modelProblem =
-        e instanceof UpstreamError && (e.status === 404 || /model/i.test(e.message))
-      if (!modelProblem) throw e
-      resolvedModel = await pickAvailableModel(apiKey)
-      data = await callModel(apiKey, resolvedModel, prompt, schema)
+    // Walk the thinking-config chain: a 400 usually means this model generation
+    // doesn't accept that config shape, so advance to the next and remember it.
+    for (let attempt = 0; ; attempt++) {
+      const i = Math.min(workingConfig[mode], configs.length - 1)
+      try {
+        data = await callModel(apiKey, resolvedModel ?? PREFERRED_MODEL, prompt, schema, configs[i])
+        break
+      } catch (e) {
+        const badArgument = e instanceof UpstreamError && e.status === 400 && i < configs.length - 1
+        const modelProblem =
+          e instanceof UpstreamError && (e.status === 404 || /model/i.test(e.message))
+        if (badArgument && attempt < configs.length) {
+          workingConfig[mode] = i + 1
+        } else if (modelProblem && attempt < configs.length + 1) {
+          // Model not available for this account? Discover one that is and retry.
+          resolvedModel = await pickAvailableModel(apiKey)
+        } else {
+          throw e
+        }
+      }
     }
     const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text
     if (!text) return res.status(502).json({ error: 'The model returned no usable output.' })
