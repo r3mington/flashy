@@ -197,6 +197,32 @@ export async function generateStory(opts: {
   return callGeminiJson<Story>(prompt, STORY_SCHEMA)
 }
 
+const DEFINE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    meaning: { type: 'STRING' },
+    lemma: { type: 'STRING' },
+  },
+  required: ['meaning'],
+}
+
+/** Define a single word as it's used in a sentence — for tap-to-define on story
+ *  words that aren't in the glossary (function words, missed tokens, etc.). */
+export async function defineWord(opts: {
+  language: string
+  word: string
+  context: string
+}): Promise<{ meaning: string; lemma?: string }> {
+  const { language, word, context } = opts
+  const prompt = [
+    `In this ${language} text, define the word "${word}" exactly as it is used here.`,
+    `Give a concise English meaning (a few words). If the word is an inflected or conjugated form, also give its dictionary form (lemma) in ${language}; otherwise repeat the word as the lemma.`,
+    `Text: ${context}`,
+  ].join('\n')
+
+  return callGeminiJson<{ meaning: string; lemma?: string }>(prompt, DEFINE_SCHEMA)
+}
+
 export class ApiError extends Error {
   status: number
 

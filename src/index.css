@@ -817,6 +817,8 @@ button { font-family: inherit; }
   transition: background 0.15s ease, color 0.15s ease;
 }
 .seg-control button.on { background: var(--ink); color: var(--bg); }
+/* In a full-width form field, keep the control sized to its buttons. */
+.field .seg-control { width: fit-content; }
 
 .toggle {
   position: relative;
@@ -1234,6 +1236,12 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .story-word:hover, .story-word:focus-visible {
   background: var(--accent-soft);
   text-decoration-color: var(--accent);
+}
+/* Words not in the glossary/deck: tappable, but no standing underline so the
+   glossary words still stand out. Underline appears on hover/focus. */
+.story-word.plain { text-decoration-color: transparent; }
+.story-word.plain:hover, .story-word.plain:focus-visible {
+  text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 /* ---- Word definition sheet ---- */

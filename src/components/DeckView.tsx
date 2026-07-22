@@ -1,10 +1,18 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, type Card } from '../db'
 import { CardEditor } from './CardEditor'
 import { ImportCsv } from './ImportCsv'
 import { GenerateCards } from './GenerateCards'
 import { generateEmojis } from '../ai'
+import {
+  langCodeFor,
+  loadVoices,
+  preferredVoice,
+  speak,
+  speechSupported,
+  stopSpeaking,
+} from '../speech'
 
 interface Props {
   deckId: number
@@ -40,7 +48,22 @@ export function DeckView({ deckId, onStudySrs, onStudyFlip, onStory, onListen, o
   const deck = useLiveQuery(() => db.decks.get(deckId), [deckId])
   const cards = useLiveQuery(() => db.cards.where('deckId').equals(deckId).toArray(), [deckId])
 
+  // Stop any pronunciation when leaving the deck view.
+  useEffect(() => () => stopSpeaking(), [])
+
   if (!deck || !cards) return null
+
+  const langCode = langCodeFor(deck.language)
+  const canSpeak = speechSupported && !!langCode
+
+  async function speakWord(word: string) {
+    stopSpeaking()
+    const voices = await loadVoices()
+    await speak(word, {
+      voice: preferredVoice(voices, langCode),
+      lang: langCode ?? undefined,
+    })
+  }
 
   const now = Date.now()
   const due = cards.filter((c) => c.due <= now && !c.known).length
@@ -310,6 +333,16 @@ export function DeckView({ deckId, onStudySrs, onStudyFlip, onStory, onListen, o
                 <div className="word">
                   {card.emoji && <span className="row-emoji">{card.emoji}</span>}
                   {card.word}
+                  {canSpeak && (
+                    <button
+                      className="speak-btn"
+                      title="Pronounce"
+                      aria-label={`Pronounce ${card.word}`}
+                      onClick={() => speakWord(card.word)}
+                    >
+                      🔊
+                    </button>
+                  )}
                   {card.known ? (
                     <span className="state-pill known">known</span>
                   ) : (

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, newCardDefaults, type SavedStory } from '../db'
-import { generateStory, ApiError } from '../ai'
+import { generateStory, defineWord, ApiError } from '../ai'
 
 interface Props {
   deckId: number
@@ -12,6 +12,10 @@ interface Definition {
   word: string
   meaning: string
   isNew: boolean
+  /** Word being defined on the fly — meaning not yet loaded. */
+  loading?: boolean
+  /** Set when the on-demand lookup failed. */
+  error?: boolean
 }
 
 /** Lowercase and strip surrounding punctuation so tokens match glossary entries. */
@@ -25,11 +29,16 @@ export function StoryPage({ deckId, onExit }: Props) {
   const [topic, setTopic] = useState('')
   const [length, setLength] = useState(150)
   const [newPercent, setNewPercent] = useState(10)
+  // 'all' — draw on every word in the deck; 'learning' — only words not yet
+  // marked known (the ones you haven't learnt yet).
+  const [scope, setScope] = useState<'all' | 'learning'>('all')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [story, setStory] = useState<SavedStory | null>(null)
   const [showTranslation, setShowTranslation] = useState(false)
   const [selected, setSelected] = useState<Definition | null>(null)
+  // Definitions fetched on the fly for words outside the glossary/deck.
+  const [fetchedDefs, setFetchedDefs] = useState<Map<string, Definition>>(new Map())
   // Deck words at the moment the story was opened — keeps the "new words" chip
   // list stable while words are added (added ones show a ✓ instead of vanishing).
   const [baselineKeys, setBaselineKeys] = useState<Set<string>>(new Set())
@@ -58,10 +67,14 @@ export function StoryPage({ deckId, onExit }: Props) {
       const key = defKey(g.word)
       map.set(key, { word: g.word, meaning: g.meaning, isNew: !deckKeys.has(key) })
     }
+    for (const [key, d] of fetchedDefs) map.set(key, d)
     return map
-  }, [cards, story, deckKeys])
+  }, [cards, story, deckKeys, fetchedDefs])
 
   if (!deck || !cards) return null
+
+  // "Only unlearned" needs at least one card that isn't marked known.
+  const scopeEmpty = scope === 'learning' && cards.every((c) => c.known)
 
   async function run() {
     setLoading(true)
@@ -69,7 +82,9 @@ export function StoryPage({ deckId, onExit }: Props) {
     try {
       const result = await generateStory({
         deck: deck!,
-        knownWords: cards!.filter((c) => c.known).map((c) => c.word),
+        // In 'learning' mode, don't seed the story with already-known words —
+        // build it only from the ones still being learned.
+        knownWords: scope === 'all' ? cards!.filter((c) => c.known).map((c) => c.word) : [],
         learningWords: cards!.filter((c) => !c.known).map((c) => c.word),
         newWordPercent: newPercent,
         topic: topic || undefined,
@@ -108,6 +123,36 @@ export function StoryPage({ deckId, onExit }: Props) {
 
   async function deleteStory(id: number) {
     await db.stories.delete(id)
+  }
+
+  // Tap any word: show its definition, fetching one on demand if the glossary
+  // and deck don't already cover it (function words, missed tokens, …).
+  async function lookup(token: string) {
+    const key = defKey(token)
+    if (!key) return
+    const existing = defs.get(key)
+    if (existing) {
+      setSelected(existing)
+      return
+    }
+    const display = token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+    setSelected({ word: display, meaning: '', isNew: !deckKeys.has(key), loading: true })
+    // Replace the open sheet only if it's still the placeholder for this word.
+    const settle = (d: Definition) =>
+      setSelected((cur) => (cur?.loading && defKey(cur.word) === key ? d : cur))
+    try {
+      const { meaning, lemma } = await defineWord({
+        language: deck!.language,
+        word: display,
+        context: story!.story,
+      })
+      const word = lemma?.trim() || display
+      const def: Definition = { word, meaning, isNew: !deckKeys.has(defKey(word)) }
+      setFetchedDefs((prev) => new Map(prev).set(key, def))
+      settle(def)
+    } catch {
+      settle({ word: display, meaning: '', isNew: !deckKeys.has(key), error: true })
+    }
   }
 
   async function addWord(word: string, meaning: string) {
@@ -152,6 +197,25 @@ export function StoryPage({ deckId, onExit }: Props) {
               />
             </div>
             <div className="field">
+              <label>Build from</label>
+              <div className="seg-control">
+                <button
+                  type="button"
+                  className={scope === 'all' ? 'on' : ''}
+                  onClick={() => setScope('all')}
+                >
+                  All my words
+                </button>
+                <button
+                  type="button"
+                  className={scope === 'learning' ? 'on' : ''}
+                  onClick={() => setScope('learning')}
+                >
+                  Only unlearned
+                </button>
+              </div>
+            </div>
+            <div className="field">
               <label htmlFor="story-length">Length · about {length} words</label>
               <input
                 id="story-length"
@@ -178,15 +242,27 @@ export function StoryPage({ deckId, onExit }: Props) {
               />
             </div>
             <p className="note">
-              Writes a casual, everyday {deck.language} story leaning on the words you know and
-              weaving in the ones you're learning. Tap any word in the result for its meaning.
+              {scope === 'all'
+                ? `Writes a casual, everyday ${deck.language} story leaning on the words you know and weaving in the ones you're learning.`
+                : `Writes a casual, everyday ${deck.language} story built only from the words you haven't learnt yet.`}{' '}
+              Tap any word in the result for its meaning.
             </p>
+            {scopeEmpty && (
+              <p className="note error-note">
+                No unlearned words in this deck — every card is marked known. Switch to “All my
+                words”, or unmark some cards.
+              </p>
+            )}
             {error && <p className="note error-note">{error}</p>}
             <div className="story-form-actions">
               <button className="btn ghost" onClick={onExit}>
                 Cancel
               </button>
-              <button className="btn accent" onClick={run} disabled={loading || cards.length === 0}>
+              <button
+                className="btn accent"
+                onClick={run}
+                disabled={loading || cards.length === 0 || scopeEmpty}
+              >
                 {loading ? 'Writing…' : 'Generate story'}
               </button>
             </div>
@@ -220,7 +296,7 @@ export function StoryPage({ deckId, onExit }: Props) {
         <div className="story-page">
           <h2 className="story-title">{story.title}</h2>
           <div className="story-body">
-            <TappableText text={story.story} defs={defs} onTap={setSelected} />
+            <TappableText text={story.story} defs={defs} onTap={lookup} />
           </div>
           {showTranslation && <div className="story-translation">{story.translation}</div>}
           <div className="story-toolbar">
@@ -264,15 +340,24 @@ export function StoryPage({ deckId, onExit }: Props) {
           <div className="word-sheet" onClick={(e) => e.stopPropagation()}>
             <div className="word-sheet-word">
               {selected.word}
-              {!selectedInDeck && <span className="state-pill new">new</span>}
+              {!selectedInDeck && !selected.loading && !selected.error && (
+                <span className="state-pill new">new</span>
+              )}
             </div>
-            <div className="word-sheet-meaning">{selected.meaning}</div>
+            <div className="word-sheet-meaning">
+              {selected.loading
+                ? 'Looking up…'
+                : selected.error
+                  ? "Couldn't look that word up — tap it again to retry."
+                  : selected.meaning}
+            </div>
             <div className="word-sheet-actions">
               {selectedInDeck ? (
                 <span className="s-tag added">In deck ✓</span>
               ) : (
                 <button
                   className="btn small primary"
+                  disabled={selected.loading || selected.error || !selected.meaning}
                   onClick={() => addWord(selected.word, selected.meaning)}
                 >
                   Add to deck
@@ -296,17 +381,23 @@ function TappableText({
 }: {
   text: string
   defs: Map<string, Definition>
-  onTap: (d: Definition) => void
+  onTap: (token: string) => void
 }) {
   // Split into word / non-word chunks; keep whitespace and punctuation as-is.
   const tokens = text.split(/(\s+)/)
   return (
     <>
       {tokens.map((token, i) => {
-        const def = defs.get(defKey(token))
-        if (!def) return <span key={i}>{token}</span>
+        // Every token containing a letter/number is tappable; a definition is
+        // fetched on demand when the glossary doesn't already have one.
+        if (!defKey(token)) return <span key={i}>{token}</span>
+        const known = defs.has(defKey(token))
         return (
-          <button key={i} className="story-word" onClick={() => onTap(def)}>
+          <button
+            key={i}
+            className={`story-word${known ? '' : ' plain'}`}
+            onClick={() => onTap(token)}
+          >
             {token}
           </button>
         )
