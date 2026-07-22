@@ -52,6 +52,10 @@ export interface SavedStory {
   translation: string
   glossary: { word: string; meaning: string; isNew: boolean }[]
   topic?: string
+  /** Root story this one continues (always the first part's id) — parts are
+   *  grouped under that root in the saved-stories list. Unset for standalone
+   *  stories and roots. Plain property, not indexed. */
+  parentId?: number
   createdAt: number
 }
 
@@ -76,6 +80,9 @@ export interface AppSettings {
   autoSpeak: boolean
   /** Show the card's emoji mnemonic alongside the word during study. */
   showEmoji: boolean
+  /** Let the model "think" before answering AI requests — higher quality,
+   *  noticeably slower. Off by default (favours speed). */
+  aiThinking: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -88,6 +95,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   dailyGoal: 30,
   autoSpeak: true,
   showEmoji: true,
+  aiThinking: false,
 }
 
 export const db = new Dexie('flashy') as Dexie & {

@@ -33,7 +33,16 @@ class UpstreamError extends Error {
   }
 }
 
-async function callModel(apiKey: string, model: string, prompt: string, schema: object) {
+async function callModel(
+  apiKey: string,
+  model: string,
+  prompt: string,
+  schema: object,
+  // 2.5-era flash models "think" before answering by default, which multiplies
+  // latency; skip it for these structured generation tasks. Models that reject
+  // the field get one retry without it (see handler).
+  disableThinking = true,
+) {
   const res = await fetch(`${BASE}/models/${model}:generateContent`, {
     method: 'POST',
     headers: {
@@ -45,6 +54,7 @@ async function callModel(apiKey: string, model: string, prompt: string, schema: 
       generationConfig: {
         responseMimeType: 'application/json',
         responseSchema: schema,
+        ...(disableThinking ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
       },
     }),
   })
@@ -68,22 +78,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) return res.status(500).json({ error: 'Server is missing GEMINI_API_KEY.' })
 
-  const { prompt, schema } = req.body ?? {}
+  const { prompt, schema, thinking } = req.body ?? {}
   if (typeof prompt !== 'string' || !prompt || typeof schema !== 'object' || !schema) {
     return res.status(400).json({ error: 'Expected { prompt, schema }.' })
   }
+  // Default fast: only "think" when the client explicitly opts in.
+  const disableThinking = thinking !== true
 
   try {
     let data
     try {
-      data = await callModel(apiKey, resolvedModel ?? PREFERRED_MODEL, prompt, schema)
+      data = await callModel(apiKey, resolvedModel ?? PREFERRED_MODEL, prompt, schema, disableThinking)
     } catch (e) {
-      // Model not available for this account? Discover one that is and retry once.
+      const thinkingProblem =
+        e instanceof UpstreamError && e.status === 400 && /think/i.test(e.message)
       const modelProblem =
         e instanceof UpstreamError && (e.status === 404 || /model/i.test(e.message))
-      if (!modelProblem) throw e
-      resolvedModel = await pickAvailableModel(apiKey)
-      data = await callModel(apiKey, resolvedModel, prompt, schema)
+      if (thinkingProblem) {
+        // This model doesn't accept thinkingConfig — retry without it.
+        data = await callModel(apiKey, resolvedModel ?? PREFERRED_MODEL, prompt, schema, true)
+      } else if (modelProblem) {
+        // Model not available for this account? Discover one that is and retry once.
+        resolvedModel = await pickAvailableModel(apiKey)
+        data = await callModel(apiKey, resolvedModel, prompt, schema, disableThinking)
+      } else {
+        throw e
+      }
     }
     const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text
     if (!text) return res.status(502).json({ error: 'The model returned no usable output.' })

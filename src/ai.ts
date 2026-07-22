@@ -1,4 +1,4 @@
-import type { Deck } from './db'
+import { db, type Deck } from './db'
 
 export interface Suggestion {
   word: string
@@ -8,14 +8,26 @@ export interface Suggestion {
   emoji?: string
 }
 
+/** Whether the user has opted into slower, higher-quality "thinking" for AI
+ *  calls. Read straight from the settings store so callers don't have to thread
+ *  it through. Defaults to off (fast) if unset or unreadable. */
+async function thinkingEnabled(): Promise<boolean> {
+  try {
+    return !!(await db.settings.get('app'))?.aiThinking
+  } catch {
+    return false
+  }
+}
+
 /** All AI calls go through our /api/generate proxy — the Gemini key lives server-side. */
 async function callGeminiJson<T>(prompt: string, schema: object): Promise<T> {
+  const thinking = await thinkingEnabled()
   let res: Response
   try {
     res = await fetch('/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, schema }),
+      body: JSON.stringify({ prompt, schema, thinking }),
     })
   } catch {
     throw new Error(
@@ -173,12 +185,28 @@ export async function generateStory(opts: {
   newWordPercent: number
   topic?: string
   lengthWords: number
+  /** Titles/topics of the learner's previous stories — steer clear of their themes. */
+  avoidThemes?: string[]
+  /** Continue this existing story instead of starting a fresh one. */
+  continueFrom?: { title: string; story: string }
 }): Promise<Story> {
   const { deck, knownWords, learningWords, newWordPercent, topic, lengthWords } = opts
+  const { avoidThemes = [], continueFrom } = opts
 
   const prompt = [
-    `Write a story in ${deck.language} for a language learner, roughly ${lengthWords} words long.`,
-    topic?.trim() ? `Topic: "${topic.trim()}".` : `Pick any engaging everyday topic.`,
+    continueFrom
+      ? `Below is a story in ${deck.language} that a language learner has been reading. Write the NEXT PART of it: continue seamlessly from where it ends, keeping the same characters, setting, tone and register. Advance the plot — don't recap or repeat what already happened.`
+      : `Write a story in ${deck.language} for a language learner.`,
+    continueFrom ? `Previous part, titled "${continueFrom.title}":\n${continueFrom.story}` : '',
+    continueFrom
+      ? ''
+      : topic?.trim()
+        ? `Topic: "${topic.trim()}".`
+        : `Invent a FRESH premise. Before writing, pick an unexpected combination of setting, characters and situation — vary widely across genres (a mystery, a trip gone wrong, an animal's point of view, a storm, a market, a game, a misunderstanding, a small adventure…). Do NOT default to everyday hangout scenes.`,
+    !continueFrom && avoidThemes.length > 0
+      ? `The learner's previous stories were about the following — choose a clearly DIFFERENT theme, setting and cast: ${avoidThemes.join('; ')}`
+      : '',
+    `LENGTH — important: the story must be AT LEAST ${lengthWords} words long (aim for ${lengthWords}–${Math.round(lengthWords * 1.15)} words). Count words before answering; if the draft is short, extend the plot until it reaches the target.`,
     `IMPORTANT — register: use casual, everyday conversational ${deck.language}, the way people actually talk in daily life. Prefer informal forms over formal ones (for example, in Indonesian say "aku", not "saya"). No formal, literary, or textbook language.`,
     `The learner's word bank is below. Build the story primarily from these words (plus basic function words like articles, pronouns and common connectives, which are always allowed).`,
     knownWords.length > 0
@@ -188,39 +216,13 @@ export async function generateStory(opts: {
       ? `Words being learned — weave in as many of these as possible for practice: ${learningWords.join(', ')}`
       : '',
     `At most ${newWordPercent}% of the content words (nouns, verbs, adjectives, adverbs) may be NEW words outside the word bank. ${newWordPercent === 0 ? 'Use no new content words at all.' : 'Prefer common, useful new words at the learner’s level.'}`,
-    `Return: a short title in ${deck.language}, the story, a full English translation, and a glossary.`,
-    `The glossary must list EVERY distinct content word (noun, verb, adjective, adverb) that appears in the story — in the exact surface form used in the story — with a concise English meaning matching how it is used there, and isNew=true only for words outside the word bank. Include inflected/conjugated forms as they appear.`,
+    `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story, a full English translation, and a glossary.`,
+    `The glossary must list EVERY distinct word that appears in the story — content words AND function words (pronouns, prepositions, particles, connectives, numbers, everything). List each word in the exact surface form used in the story (including inflected/conjugated forms), with a concise English meaning matching how it is used there. A reader must be able to look up any single word of the story in this glossary. Set isNew=true only for content words outside the word bank.`,
   ]
     .filter(Boolean)
     .join('\n')
 
   return callGeminiJson<Story>(prompt, STORY_SCHEMA)
-}
-
-const DEFINE_SCHEMA = {
-  type: 'OBJECT',
-  properties: {
-    meaning: { type: 'STRING' },
-    lemma: { type: 'STRING' },
-  },
-  required: ['meaning'],
-}
-
-/** Define a single word as it's used in a sentence — for tap-to-define on story
- *  words that aren't in the glossary (function words, missed tokens, etc.). */
-export async function defineWord(opts: {
-  language: string
-  word: string
-  context: string
-}): Promise<{ meaning: string; lemma?: string }> {
-  const { language, word, context } = opts
-  const prompt = [
-    `In this ${language} text, define the word "${word}" exactly as it is used here.`,
-    `Give a concise English meaning (a few words). If the word is an inflected or conjugated form, also give its dictionary form (lemma) in ${language}; otherwise repeat the word as the lemma.`,
-    `Text: ${context}`,
-  ].join('\n')
-
-  return callGeminiJson<{ meaning: string; lemma?: string }>(prompt, DEFINE_SCHEMA)
 }
 
 export class ApiError extends Error {

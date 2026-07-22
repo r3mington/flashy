@@ -172,6 +172,28 @@ export function Options() {
       </section>
 
       <section className="dash-section">
+        <div className="eyebrow">AI</div>
+
+        <div className="option-row">
+          <div>
+            <div className="option-name">Extended thinking</div>
+            <div className="option-desc">
+              Lets the model reason before answering when suggesting cards, writing stories, and
+              picking emoji. Higher quality, but noticeably slower. Off favours speed.
+            </div>
+          </div>
+          <button
+            className={`toggle${settings.aiThinking ? ' on' : ''}`}
+            role="switch"
+            aria-checked={settings.aiThinking}
+            onClick={() => saveSettings({ aiThinking: !settings.aiThinking })}
+          >
+            <span className="knob" />
+          </button>
+        </div>
+      </section>
+
+      <section className="dash-section">
         <div className="eyebrow">Data</div>
         <div className="option-row">
           <div>
