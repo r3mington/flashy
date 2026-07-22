@@ -33,15 +33,24 @@ class UpstreamError extends Error {
   }
 }
 
+/** Gemini models "think" before answering by default, which multiplies latency.
+ *  How thinking is controlled differs by model generation: Gemini 3-era models
+ *  take thinkingLevel (and reject thinkingBudget), 2.5-era models take
+ *  thinkingBudget (and reject thinkingLevel). Each mode lists configs to try in
+ *  order; on a 400 the handler advances down the chain and remembers what stuck
+ *  for the rest of the warm instance. */
+const THINKING_CONFIGS: Record<'fast' | 'quality', (object | null)[]> = {
+  fast: [{ thinkingLevel: 'MINIMAL' }, { thinkingBudget: 0 }, null],
+  quality: [{ thinkingLevel: 'HIGH' }, null],
+}
+const workingConfig: Record<'fast' | 'quality', number> = { fast: 0, quality: 0 }
+
 async function callModel(
   apiKey: string,
   model: string,
   prompt: string,
   schema: object,
-  // 2.5-era flash models "think" before answering by default, which multiplies
-  // latency; skip it for these structured generation tasks. Models that reject
-  // the field get one retry without it (see handler).
-  disableThinking = true,
+  thinkingConfig: object | null,
 ) {
   const res = await fetch(`${BASE}/models/${model}:generateContent`, {
     method: 'POST',
@@ -54,7 +63,7 @@ async function callModel(
       generationConfig: {
         responseMimeType: 'application/json',
         responseSchema: schema,
-        ...(disableThinking ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+        ...(thinkingConfig ? { thinkingConfig } : {}),
       },
     }),
   })
@@ -83,26 +92,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Expected { prompt, schema }.' })
   }
   // Default fast: only "think" when the client explicitly opts in.
-  const disableThinking = thinking !== true
+  const mode: 'fast' | 'quality' = thinking === true ? 'quality' : 'fast'
+  const configs = THINKING_CONFIGS[mode]
 
   try {
     let data
-    try {
-      data = await callModel(apiKey, resolvedModel ?? PREFERRED_MODEL, prompt, schema, disableThinking)
-    } catch (e) {
-      const thinkingProblem =
-        e instanceof UpstreamError && e.status === 400 && /think/i.test(e.message)
-      const modelProblem =
-        e instanceof UpstreamError && (e.status === 404 || /model/i.test(e.message))
-      if (thinkingProblem) {
-        // This model doesn't accept thinkingConfig — retry without it.
-        data = await callModel(apiKey, resolvedModel ?? PREFERRED_MODEL, prompt, schema, true)
-      } else if (modelProblem) {
-        // Model not available for this account? Discover one that is and retry once.
-        resolvedModel = await pickAvailableModel(apiKey)
-        data = await callModel(apiKey, resolvedModel, prompt, schema, disableThinking)
-      } else {
-        throw e
+    // Walk the thinking-config chain: a 400 usually means this model generation
+    // doesn't accept that config shape, so advance to the next and remember it.
+    for (let attempt = 0; ; attempt++) {
+      const i = Math.min(workingConfig[mode], configs.length - 1)
+      try {
+        data = await callModel(apiKey, resolvedModel ?? PREFERRED_MODEL, prompt, schema, configs[i])
+        break
+      } catch (e) {
+        const badArgument = e instanceof UpstreamError && e.status === 400 && i < configs.length - 1
+        const modelProblem =
+          e instanceof UpstreamError && (e.status === 404 || /model/i.test(e.message))
+        if (badArgument && attempt < configs.length) {
+          workingConfig[mode] = i + 1
+        } else if (modelProblem && attempt < configs.length + 1) {
+          // Model not available for this account? Discover one that is and retry.
+          resolvedModel = await pickAvailableModel(apiKey)
+        } else {
+          throw e
+        }
       }
     }
     const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text
