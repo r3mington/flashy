@@ -1282,6 +1282,34 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   text-decoration-color: var(--amber);
 }
 
+/* Read-aloud bar + active-sentence highlight. */
+.story-read-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.story-rate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.story-rate span { min-width: 42px; }
+.story-rate input { width: 110px; }
+.story-sentence {
+  border-radius: 5px;
+  transition: background 0.2s ease;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.story-sentence.active {
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 /* Header stats under a story title. */
 .story-stats {
   display: flex;

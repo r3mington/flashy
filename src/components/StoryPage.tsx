@@ -1,7 +1,14 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, newCardDefaults, type SavedStory } from '../db'
 import { generateStory, ApiError } from '../ai'
+import { langCodeFor, loadVoices, preferredVoice, speak, speechSupported, stopSpeaking } from '../speech'
+
+/** Split text into sentences, keeping terminators and trailing space so the
+ *  pieces re-join into the original. Works for . ! ? … across scripts. */
+function splitSentences(text: string): string[] {
+  return text.match(/[^.!?…]+[.!?…]*\s*/gu) ?? (text.trim() ? [text] : [])
+}
 
 interface Props {
   deckId: number
@@ -37,6 +44,15 @@ export function StoryPage({ deckId, onExit }: Props) {
   const [selected, setSelected] = useState<Definition | null>(null)
   // Story being continued — the generate form runs in "next part" mode.
   const [continuing, setContinuing] = useState<SavedStory | null>(null)
+  // Read-aloud state. The play loop reads live rate/voice through refs and an
+  // incremented run id cancels a superseded loop.
+  const [reading, setReading] = useState(false)
+  const [activeSentence, setActiveSentence] = useState<number | null>(null)
+  const [rate, setRate] = useState(0.9)
+  const runRef = useRef(0)
+  const rateRef = useRef(rate)
+  rateRef.current = rate
+  const sentenceRefs = useRef<(HTMLSpanElement | null)[]>([])
   // Deck words at the moment the story was opened — keeps the "new words" chip
   // list stable while words are added (added ones show a ✓ instead of vanishing).
   const [baselineKeys, setBaselineKeys] = useState<Set<string>>(new Set())
@@ -70,6 +86,31 @@ export function StoryPage({ deckId, onExit }: Props) {
     }
     return map
   }, [cards, story, deckKeys])
+
+  // Sentences of the open story — the read-aloud unit and highlight granularity.
+  const sentences = useMemo(() => (story ? splitSentences(story.story) : []), [story])
+  const langCode = deck ? langCodeFor(deck.language) : null
+  const canRead = speechSupported && !!story
+
+  // Stop audio when leaving the page or switching stories.
+  useEffect(
+    () => () => {
+      runRef.current++
+      stopSpeaking()
+    },
+    [],
+  )
+  useEffect(() => {
+    // A new story (or list view) cancels any in-progress reading.
+    runRef.current++
+    stopSpeaking()
+    setReading(false)
+    setActiveSentence(null)
+  }, [story])
+  useEffect(() => {
+    if (activeSentence == null) return
+    sentenceRefs.current[activeSentence]?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }, [activeSentence])
 
   // Saved stories grouped into threads: each root (or orphan) followed by its
   // continuation parts in reading order. Threads sorted by newest activity.
@@ -158,6 +199,40 @@ export function StoryPage({ deckId, onExit }: Props) {
     setContinuing(parts.length > 0 ? parts[parts.length - 1] : root)
     setStory(null)
     setError('')
+  }
+
+  // Read the story aloud, sentence by sentence, highlighting the current one.
+  // Uses the deck-language system voice — same voices as study/listen, offline.
+  async function readAloud(startIdx: number) {
+    const my = ++runRef.current
+    stopSpeaking()
+    setReading(true)
+    const voices = await loadVoices()
+    const voice = preferredVoice(voices, langCode)
+    for (let i = startIdx; i < sentences.length; i++) {
+      if (runRef.current !== my) return
+      setActiveSentence(i)
+      const text = sentences[i].trim()
+      if (text) {
+        await speak(text, { voice, lang: langCode ?? undefined, rate: rateRef.current })
+      }
+      if (runRef.current !== my) return
+    }
+    if (runRef.current === my) {
+      setReading(false)
+      setActiveSentence(null)
+    }
+  }
+
+  function pauseReading() {
+    runRef.current++
+    stopSpeaking()
+    setReading(false) // keep activeSentence so play resumes from here
+  }
+
+  function toggleReading() {
+    if (reading) pauseReading()
+    else readAloud(activeSentence ?? 0)
   }
 
   // Tap any word: definition comes from the story's glossary (or the deck) —
@@ -385,8 +460,53 @@ export function StoryPage({ deckId, onExit }: Props) {
             )}
             <span title="Estimated time to read">~{stats.readMin} min read</span>
           </div>
+          {canRead && (
+            <div className="story-read-bar">
+              <button
+                className={`btn small${reading ? ' accent' : ' primary'}`}
+                onClick={toggleReading}
+                title={reading ? 'Pause reading' : 'Read the story aloud'}
+              >
+                {reading ? '⏸ Pause' : activeSentence != null ? '▶ Resume' : '🔊 Read aloud'}
+              </button>
+              {activeSentence != null && !reading && (
+                <button
+                  className="btn small ghost"
+                  onClick={() => {
+                    runRef.current++
+                    stopSpeaking()
+                    setActiveSentence(null)
+                  }}
+                  title="Stop and reset to the start"
+                >
+                  ⏹
+                </button>
+              )}
+              <label className="story-rate" title="Reading speed">
+                <span>{rate.toFixed(2)}×</span>
+                <input
+                  type="range"
+                  min={0.5}
+                  max={1.25}
+                  step={0.05}
+                  value={rate}
+                  onChange={(e) => setRate(Number(e.target.value))}
+                />
+              </label>
+            </div>
+          )}
           <div className="story-body">
-            <TappableText text={story.story} defs={defs} onTap={lookup} />
+            {sentences.map((s, i) => (
+              <span
+                key={i}
+                ref={(el) => {
+                  sentenceRefs.current[i] = el
+                }}
+                className={`story-sentence${i === activeSentence ? ' active' : ''}`}
+              >
+                <TappableText text={s} defs={defs} onTap={lookup} />
+              </span>
+            ))}
           </div>
           {showTranslation && <div className="story-translation">{story.translation}</div>}
           <div className="story-toolbar">
