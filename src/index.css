@@ -150,6 +150,17 @@ button { font-family: inherit; }
   gap: 8px;
 }
 
+.page-head .read-timer {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 4px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 .eyebrow {
   font-size: 12px;
   font-weight: 600;
@@ -756,6 +767,35 @@ button { font-family: inherit; }
 .bar-chart .bar.accent { fill: var(--accent); opacity: 0.85; }
 .bar-chart .bar.accent:hover { opacity: 1; }
 .bar-chart .bar.zero { fill: var(--line); }
+
+/* Word-bank line chart. Stroke stays crisp despite non-uniform scaling. */
+.line-chart { display: block; width: 100%; height: 120px; }
+.line-chart .line { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.line-chart .line.total { stroke: var(--accent); }
+.line-chart .line.known { stroke: var(--green); stroke-dasharray: 4 3; }
+.line-chart .line-area { fill: var(--accent); opacity: 0.12; }
+.line-chart .line-dot.total { fill: var(--accent); }
+.line-chart .line-dot.known { fill: var(--green); }
+.line-chart { cursor: pointer; }
+.line-chart .line-marker { stroke: var(--ink-3); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.5; }
+/* Interactive day readout above the chart. */
+.line-readout {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.line-readout-day { font-weight: 600; color: var(--ink); min-width: 84px; }
+.line-readout .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+}
+.line-readout .dot.known { background: var(--green); }
 
 .chart-labels {
   display: flex;

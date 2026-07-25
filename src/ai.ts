@@ -187,8 +187,9 @@ export async function generateStory(opts: {
   lengthWords: number
   /** Titles/topics of the learner's previous stories — steer clear of their themes. */
   avoidThemes?: string[]
-  /** Continue this existing story instead of starting a fresh one. */
-  continueFrom?: { title: string; story: string }
+  /** Continue this existing story instead of starting a fresh one. `direction`
+   *  is the reader's optional steer for what should happen next. */
+  continueFrom?: { title: string; story: string; direction?: string }
 }): Promise<Story> {
   const { deck, knownWords, learningWords, newWordPercent, topic, lengthWords } = opts
   const { avoidThemes = [], continueFrom } = opts
@@ -198,6 +199,9 @@ export async function generateStory(opts: {
       ? `Below is a story in ${deck.language} that a language learner has been reading. Write the NEXT PART of it: continue seamlessly from where it ends, keeping the same characters, setting, tone and register. Advance the plot — don't recap or repeat what already happened.`
       : `Write a story in ${deck.language} for a language learner.`,
     continueFrom ? `Previous part, titled "${continueFrom.title}":\n${continueFrom.story}` : '',
+    continueFrom?.direction?.trim()
+      ? `The reader wants the continuation to go in this direction — make it happen naturally in this next part: "${continueFrom.direction.trim()}"`
+      : '',
     continueFrom
       ? ''
       : topic?.trim()

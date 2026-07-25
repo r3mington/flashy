@@ -14,6 +14,19 @@ function splitSentences(text: string): string[] {
   return text.match(/[^.!?…]+[.!?…]*\s*/gu) ?? (text.trim() ? [text] : [])
 }
 
+function startOfToday(): number {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  const m = Math.floor(seconds / 60)
+  if (m < 60) return `${m}m`
+  return `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
 interface Props {
   deckId: number
   onExit: () => void
@@ -48,6 +61,8 @@ export function StoryPage({ deckId, onExit }: Props) {
   const [selected, setSelected] = useState<Definition | null>(null)
   // Story being continued — the generate form runs in "next part" mode.
   const [continuing, setContinuing] = useState<SavedStory | null>(null)
+  // Optional reader steer for how a continuation should go.
+  const [direction, setDirection] = useState('')
   // Read-aloud state. The play loop reads live rate/voice through refs and an
   // incremented run id cancels a superseded loop.
   const [reading, setReading] = useState(false)
@@ -61,6 +76,16 @@ export function StoryPage({ deckId, onExit }: Props) {
   rateRef.current = rate
   const sentenceRefs = useRef<(HTMLSpanElement | null)[]>([])
   const bookmarkWordRef = useRef<HTMLElement | null>(null)
+
+  // Daily reading timer: seconds already logged today (base) plus this session's
+  // ticks; the sum is persisted periodically and on unmount.
+  const [readBaseSecs, setReadBaseSecs] = useState(0)
+  const [sessionSecs, setSessionSecs] = useState(0)
+  const readDayRef = useRef(startOfToday())
+  const baseRef = useRef(0)
+  baseRef.current = readBaseSecs
+  const sessRef = useRef(0)
+  sessRef.current = sessionSecs
   // Deck words at the moment the story was opened — keeps the "new words" chip
   // list stable while words are added (added ones show a ✓ instead of vanishing).
   const [baselineKeys, setBaselineKeys] = useState<Set<string>>(new Set())
@@ -77,10 +102,10 @@ export function StoryPage({ deckId, onExit }: Props) {
   // against this set.
   const deckKeys = useMemo(() => new Set((cards ?? []).map((c) => defKey(c.word))), [cards])
 
-  // A word is highlighted only when it is NOT in the deck at all AND the model
-  // flagged it a content word — so genuinely new vocabulary stands out, while
-  // any deck word (known or unknown) and function words stay un-highlighted.
-  const isNewWord = (key: string, modelNew: boolean) => modelNew && !deckKeys.has(key)
+  // A word is "new" (highlighted) purely when it isn't in the deck — ground
+  // truth from the word bank, not the model's unreliable isNew flag. Any deck
+  // word (known or unknown) is not highlighted; everything else is.
+  const isNewWord = (key: string) => !!key && !deckKeys.has(key)
 
   // Tap-to-define lookup: glossary from the model, plus the word bank as fallback.
   const defs = useMemo(() => {
@@ -90,7 +115,7 @@ export function StoryPage({ deckId, onExit }: Props) {
     }
     for (const g of story?.glossary ?? []) {
       const key = defKey(g.word)
-      map.set(key, { word: g.word, meaning: g.meaning, isNew: isNewWord(key, g.isNew) })
+      map.set(key, { word: g.word, meaning: g.meaning, isNew: isNewWord(key) })
     }
     return map
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -126,6 +151,35 @@ export function StoryPage({ deckId, onExit }: Props) {
     },
     [],
   )
+
+  // Reading timer — load today's total, tick while a story is open and the tab
+  // is visible, and persist the running total periodically and on unmount.
+  useEffect(() => {
+    db.reading.get(readDayRef.current).then((r) => setReadBaseSecs(r?.seconds ?? 0))
+  }, [])
+  const storyOpen = !!story
+  useEffect(() => {
+    if (!storyOpen) return
+    const id = setInterval(() => {
+      if (!document.hidden) setSessionSecs((s) => s + 1)
+    }, 1000)
+    return () => clearInterval(id)
+  }, [storyOpen])
+  useEffect(() => {
+    const flush = () => {
+      if (sessRef.current > 0) {
+        db.reading.put({ day: readDayRef.current, seconds: baseRef.current + sessRef.current })
+      }
+    }
+    const onHide = () => document.hidden && flush()
+    const id = setInterval(flush, 15000)
+    document.addEventListener('visibilitychange', onHide)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onHide)
+      flush()
+    }
+  }, [])
   useEffect(() => {
     // A new story (or list view) cancels any in-progress reading, exits mark
     // mode, and lands on the sentence holding the saved marker word, if any.
@@ -187,7 +241,7 @@ export function StoryPage({ deckId, onExit }: Props) {
           ? undefined
           : (savedStories ?? []).slice(0, 8).map((s) => (s.topic ? `${s.title} (${s.topic})` : s.title)),
         continueFrom: continuing
-          ? { title: continuing.title, story: continuing.story }
+          ? { title: continuing.title, story: continuing.story, direction: direction.trim() || undefined }
           : undefined,
       })
       const record: Omit<SavedStory, 'id'> = {
@@ -203,6 +257,7 @@ export function StoryPage({ deckId, onExit }: Props) {
       }
       const id = await db.stories.add(record)
       setContinuing(null)
+      setDirection('')
       openStory({ ...record, id })
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
@@ -266,6 +321,13 @@ export function StoryPage({ deckId, onExit }: Props) {
     runRef.current++
     stopSpeaking()
     setReading(false) // keep activeSentence so play resumes from here
+  }
+
+  // Speak a single word (used by the definition popup's pronounce button).
+  async function pronounce(text: string) {
+    stopSpeaking()
+    const voices = await loadVoices()
+    await speak(text, { voice: preferredVoice(voices, langCode), lang: langCode ?? undefined })
   }
 
   // Sentence that holds the marker word (for read-aloud resume alignment).
@@ -342,13 +404,15 @@ export function StoryPage({ deckId, onExit }: Props) {
     (g) => g.isNew && !baselineKeys.has(defKey(g.word)),
   )
 
-  // Header stats for the open story. "To learn" counts the highlighted words —
-  // those the reader hasn't marked known yet.
+  // Header stats for the open story. "new" counts the distinct highlighted
+  // words (those not in the deck) straight from the text, so it always matches
+  // what's highlighted regardless of glossary completeness.
   const storyWords = story ? story.story.trim().split(/\s+/).filter(Boolean) : []
+  const uniqueKeys = new Set(storyWords.map(defKey).filter(Boolean))
   const stats = {
     words: storyWords.length,
-    unique: new Set(storyWords.map(defKey).filter(Boolean)).size,
-    newWords: (story?.glossary ?? []).filter((g) => isNewWord(defKey(g.word), g.isNew)).length,
+    unique: uniqueKeys.size,
+    newWords: [...uniqueKeys].filter((k) => isNewWord(k)).length,
     readMin: Math.max(1, Math.round(storyWords.length / 130)),
   }
 
@@ -361,24 +425,42 @@ export function StoryPage({ deckId, onExit }: Props) {
         <span className="sub">
           {deck.name} · built from your {cards.length} {cards.length === 1 ? 'word' : 'words'}
         </span>
+        <span className="read-timer" title="Time spent reading stories today">
+          ⏱ {formatDuration(readBaseSecs + sessionSecs)} today
+        </span>
       </div>
 
       {story === null ? (
         <>
           <div className="story-form">
             {continuing ? (
-              <div className="continue-banner">
-                <span>
-                  Continuing <b>“{continuing.title}”</b>
-                </span>
-                <button
-                  className="btn ghost small"
-                  title="Start a fresh story instead"
-                  onClick={() => setContinuing(null)}
-                >
-                  ✕
-                </button>
-              </div>
+              <>
+                <div className="continue-banner">
+                  <span>
+                    Continuing <b>“{continuing.title}”</b>
+                  </span>
+                  <button
+                    className="btn ghost small"
+                    title="Start a fresh story instead"
+                    onClick={() => {
+                      setContinuing(null)
+                      setDirection('')
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div className="field">
+                  <label htmlFor="story-direction">What happens next? (optional)</label>
+                  <textarea
+                    id="story-direction"
+                    autoFocus
+                    value={direction}
+                    onChange={(e) => setDirection(e.target.value)}
+                    placeholder="e.g. something surprising happens, or the main character feels sad"
+                  />
+                </div>
+              </>
             ) : (
               <div className="field">
                 <label htmlFor="story-topic">Topic (optional)</label>
@@ -417,8 +499,8 @@ export function StoryPage({ deckId, onExit }: Props) {
                 id="story-length"
                 type="range"
                 min={50}
-                max={500}
-                step={25}
+                max={2000}
+                step={50}
                 value={length}
                 onChange={(e) => setLength(Number(e.target.value))}
               />
@@ -649,10 +731,10 @@ export function StoryPage({ deckId, onExit }: Props) {
                 {tokens.map((t, ti) => {
                   if (t.wordIdx < 0) return <span key={ti}>{t.tok}</span>
                   const marked = t.wordIdx === story.bookmark
-                  const def = defs.get(defKey(t.tok))
-                  // Only new words (not in the deck) are visually marked; deck
-                  // words — known or learning — read as plain, tappable text.
-                  const cls = def?.isNew ? ' new-word' : ' plain'
+                  // Highlight straight from deck membership so ANY word not in
+                  // the bank is orange — even ones the glossary missed. Deck
+                  // words (known or learning) read as plain, tappable text.
+                  const cls = isNewWord(defKey(t.tok)) ? ' new-word' : ' plain'
                   return (
                     <span key={ti} className={marked ? 'story-marked-word' : undefined}>
                       {marked && (
@@ -737,6 +819,16 @@ export function StoryPage({ deckId, onExit }: Props) {
           <div className="word-sheet" onClick={(e) => e.stopPropagation()}>
             <div className="word-sheet-word">
               {selected.word}
+              {canRead && (
+                <button
+                  className="speak-btn"
+                  title="Pronounce"
+                  aria-label={`Pronounce ${selected.word}`}
+                  onClick={() => pronounce(selected.word)}
+                >
+                  🔊
+                </button>
+              )}
               {selected.isNew && !selectedInDeck && !selected.missing && (
                 <span className="state-pill new">new</span>
               )}

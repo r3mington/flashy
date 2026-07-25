@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { updateAppBadge } from './badge'
 import { checkAuth } from './auth'
+import { recordDailySnapshot } from './db'
 import { useSettings } from './useSettings'
 import { DeckList } from './components/DeckList'
 import { DeckView } from './components/DeckView'
@@ -104,6 +105,8 @@ export default function App() {
 
   useEffect(() => {
     checkAuth().then(setAuthed)
+    // Capture today's word-bank size so growth can be charted over time.
+    recordDailySnapshot()
   }, [])
 
   // Force light/dark, or clear the override to follow the OS (the default CSS

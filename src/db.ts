@@ -36,6 +36,23 @@ export interface Card {
   lastReview?: number // timestamp ms
 }
 
+/** A once-a-day count of the whole word bank, so growth can be charted over
+ *  time (the live tables only hold the current state). Keyed by `day`. */
+export interface Snapshot {
+  day: number // start-of-day timestamp (ms)
+  total: number
+  new: number
+  learning: number
+  review: number
+  known: number
+}
+
+/** Seconds spent reading stories on a given day. Keyed by `day`. */
+export interface ReadingLog {
+  day: number // start-of-day timestamp (ms)
+  seconds: number
+}
+
 export interface Review {
   id: number
   cardId: number
@@ -114,6 +131,8 @@ export const db = new Dexie('flashy') as Dexie & {
   blacklist: EntityTable<BlacklistEntry, 'id'>
   settings: EntityTable<AppSettings, 'key'>
   stories: EntityTable<SavedStory, 'id'>
+  snapshots: EntityTable<Snapshot, 'day'>
+  reading: EntityTable<ReadingLog, 'day'>
 }
 
 db.version(1).stores({
@@ -137,6 +156,33 @@ db.version(3).stores({
   settings: 'key',
   stories: '++id, deckId, createdAt',
 })
+
+db.version(4).stores({
+  decks: '++id, name',
+  cards: '++id, deckId, due, [deckId+due], word',
+  reviews: '++id, cardId, deckId, ts',
+  blacklist: '++id, deckId, word',
+  settings: 'key',
+  stories: '++id, deckId, createdAt',
+  snapshots: 'day',
+  reading: 'day',
+})
+
+/** Record (or refresh) today's word-bank snapshot. Idempotent — one row per
+ *  day, overwritten with the latest counts each time it runs. */
+export async function recordDailySnapshot(): Promise<void> {
+  const cards = await db.cards.toArray()
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  await db.snapshots.put({
+    day: d.getTime(),
+    total: cards.length,
+    new: cards.filter((c) => !c.known && c.state === 'new').length,
+    learning: cards.filter((c) => !c.known && c.state === 'learning').length,
+    review: cards.filter((c) => !c.known && c.state === 'review').length,
+    known: cards.filter((c) => c.known).length,
+  })
+}
 
 export function newCardDefaults(): Pick<
   Card,
