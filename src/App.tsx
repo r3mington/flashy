@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { updateAppBadge } from './badge'
 import { checkAuth } from './auth'
+import { useSettings } from './useSettings'
 import { DeckList } from './components/DeckList'
 import { DeckView } from './components/DeckView'
 import { StudySrs } from './components/StudySrs'
@@ -99,10 +100,19 @@ function initialRoute(): Route {
 export default function App() {
   const [route, setRoute] = useState<Route>(initialRoute)
   const [authed, setAuthed] = useState<boolean | null>(null)
+  const settings = useSettings()
 
   useEffect(() => {
     checkAuth().then(setAuthed)
   }, [])
+
+  // Force light/dark, or clear the override to follow the OS (the default CSS
+  // already reacts to prefers-color-scheme).
+  useEffect(() => {
+    const root = document.documentElement
+    if (settings.theme === 'system') delete root.dataset.theme
+    else root.dataset.theme = settings.theme
+  }, [settings.theme])
 
   // Reflect the route in the URL hash (for back/forward + shareable links)
   // and remember it so reopening the app returns the user where they were.

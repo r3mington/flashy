@@ -16,8 +16,10 @@
   --font: ui-sans-serif, -apple-system, 'SF Pro Text', 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
 }
 
+/* Dark palette. Applied when the OS asks for dark (unless the user forces
+   light), or when the user explicitly forces dark via Options. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']) {
     --bg: #171715;
     --surface: #1f1f1d;
     --ink: #f0f0ec;
@@ -29,6 +31,18 @@
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.3);
     --shadow-lg: 0 2px 4px rgb(0 0 0 / 0.4), 0 16px 48px rgb(0 0 0 / 0.5);
   }
+}
+:root[data-theme='dark'] {
+  --bg: #171715;
+  --surface: #1f1f1d;
+  --ink: #f0f0ec;
+  --ink-2: #a0a098;
+  --ink-3: #6b6b64;
+  --line: #2c2c29;
+  --accent: #ff7a2f;
+  --accent-soft: #33241b;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.3);
+  --shadow-lg: 0 2px 4px rgb(0 0 0 / 0.4), 0 16px 48px rgb(0 0 0 / 0.5);
 }
 
 * { box-sizing: border-box; }
@@ -1282,14 +1296,28 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   text-decoration-color: var(--amber);
 }
 
-/* Read-aloud bar + active-sentence highlight. */
+/* Read-aloud bar + active-sentence highlight. Sticky so the marker/controls
+   stay reachable while scrolling a long story. */
 .story-read-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 14px;
+  padding: 8px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
 }
+.story-mark-hint { color: var(--accent); margin: 0 0 10px; }
+/* While marking, invite taps and calm the definition-word styling. */
+.story-body.marking .story-word { cursor: crosshair; text-decoration-color: transparent; }
+.story-body.marking .story-word:hover { background: var(--accent-soft); }
+.story-marked-word { white-space: nowrap; }
+.story-play-group,
+.story-size { display: flex; align-items: center; gap: 6px; }
 .story-rate {
   display: flex;
   align-items: center;
@@ -1299,6 +1327,13 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 }
 .story-rate span { min-width: 42px; }
 .story-rate input { width: 110px; }
+/* Bookmark: marker button state + the marked word in the text. */
+.btn.bookmarked { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.story-bookmark-marker { font-size: 0.85em; vertical-align: 0.1em; margin-right: 1px; }
+.story-marked-word .story-word {
+  box-shadow: inset 0 -2px 0 var(--accent);
+  border-radius: 3px;
+}
 .story-sentence {
   border-radius: 5px;
   transition: background 0.2s ease;

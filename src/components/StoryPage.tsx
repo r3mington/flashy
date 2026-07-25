@@ -3,6 +3,10 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db, newCardDefaults, type SavedStory } from '../db'
 import { generateStory, ApiError } from '../ai'
 import { langCodeFor, loadVoices, preferredVoice, speak, speechSupported, stopSpeaking } from '../speech'
+import { useSettings, saveSettings } from '../useSettings'
+
+const FONT_SCALE_MIN = 0.8
+const FONT_SCALE_MAX = 1.8
 
 /** Split text into sentences, keeping terminators and trailing space so the
  *  pieces re-join into the original. Works for . ! ? … across scripts. */
@@ -49,14 +53,19 @@ export function StoryPage({ deckId, onExit }: Props) {
   const [reading, setReading] = useState(false)
   const [activeSentence, setActiveSentence] = useState<number | null>(null)
   const [rate, setRate] = useState(0.9)
+  // "Mark mode": the next word tapped becomes the reading marker instead of
+  // showing its definition.
+  const [marking, setMarking] = useState(false)
   const runRef = useRef(0)
   const rateRef = useRef(rate)
   rateRef.current = rate
   const sentenceRefs = useRef<(HTMLSpanElement | null)[]>([])
+  const bookmarkWordRef = useRef<HTMLElement | null>(null)
   // Deck words at the moment the story was opened — keeps the "new words" chip
   // list stable while words are added (added ones show a ✓ instead of vanishing).
   const [baselineKeys, setBaselineKeys] = useState<Set<string>>(new Set())
 
+  const settings = useSettings()
   const deck = useLiveQuery(() => db.decks.get(deckId), [deckId])
   const cards = useLiveQuery(() => db.cards.where('deckId').equals(deckId).toArray(), [deckId])
   const savedStories = useLiveQuery(
@@ -64,17 +73,16 @@ export function StoryPage({ deckId, onExit }: Props) {
     [deckId],
   )
 
-  // Words already in the deck. Whether a story word is "new" (offer to add it)
-  // is decided against this set — not the model's isNew flag, which is unreliable.
-  const deckKeys = useMemo(
-    () => new Set((cards ?? []).map((c) => defKey(c.word))),
-    [cards],
-  )
+  // Words already in the deck (known or learning alike). Highlighting is decided
+  // against this set.
+  const deckKeys = useMemo(() => new Set((cards ?? []).map((c) => defKey(c.word))), [cards])
+
+  // A word is highlighted only when it is NOT in the deck at all AND the model
+  // flagged it a content word — so genuinely new vocabulary stands out, while
+  // any deck word (known or unknown) and function words stay un-highlighted.
+  const isNewWord = (key: string, modelNew: boolean) => modelNew && !deckKeys.has(key)
 
   // Tap-to-define lookup: glossary from the model, plus the word bank as fallback.
-  // The glossary now holds every word (function words included), so a word counts
-  // as "new" only when the model flagged it a new content word AND it isn't
-  // already in the deck — otherwise every "the/and/to" would light up.
   const defs = useMemo(() => {
     const map = new Map<string, Definition>()
     for (const c of cards ?? []) {
@@ -82,13 +90,31 @@ export function StoryPage({ deckId, onExit }: Props) {
     }
     for (const g of story?.glossary ?? []) {
       const key = defKey(g.word)
-      map.set(key, { word: g.word, meaning: g.meaning, isNew: g.isNew && !deckKeys.has(key) })
+      map.set(key, { word: g.word, meaning: g.meaning, isNew: isNewWord(key, g.isNew) })
     }
     return map
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cards, story, deckKeys])
 
   // Sentences of the open story — the read-aloud unit and highlight granularity.
   const sentences = useMemo(() => (story ? splitSentences(story.story) : []), [story])
+
+  // Tokenize into sentences → chunks, numbering each word with a story-global
+  // index (the bookmark unit) and recording which sentence each word is in.
+  const layout = useMemo(() => {
+    let w = -1
+    const wordToSentence: number[] = []
+    const rows = sentences.map((s, si) =>
+      s.split(/(\s+)/).map((tok) => {
+        if (!defKey(tok)) return { tok, wordIdx: -1 }
+        w++
+        wordToSentence[w] = si
+        return { tok, wordIdx: w }
+      }),
+    )
+    return { rows, wordToSentence }
+  }, [sentences])
+
   const langCode = deck ? langCodeFor(deck.language) : null
   const canRead = speechSupported && !!story
 
@@ -101,12 +127,22 @@ export function StoryPage({ deckId, onExit }: Props) {
     [],
   )
   useEffect(() => {
-    // A new story (or list view) cancels any in-progress reading.
+    // A new story (or list view) cancels any in-progress reading, exits mark
+    // mode, and lands on the sentence holding the saved marker word, if any.
     runRef.current++
     stopSpeaking()
     setReading(false)
-    setActiveSentence(null)
-  }, [story])
+    setMarking(false)
+    const b = story?.bookmark
+    setActiveSentence(b != null ? (layout.wordToSentence[b] ?? null) : null)
+    if (b != null) {
+      // Scroll the marked word into view once it has rendered.
+      requestAnimationFrame(() =>
+        bookmarkWordRef.current?.scrollIntoView({ block: 'center', behavior: 'auto' }),
+      )
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [story?.id])
   useEffect(() => {
     if (activeSentence == null) return
     sentenceRefs.current[activeSentence]?.scrollIntoView({ block: 'center', behavior: 'smooth' })
@@ -185,6 +221,8 @@ export function StoryPage({ deckId, onExit }: Props) {
     setStory(s)
     setShowTranslation(false)
     setSelected(null)
+    // Land on the saved reading marker so "resume where I left off" is one tap.
+    setActiveSentence(s.bookmark ?? null)
     setBaselineKeys(new Set((cards ?? []).map((c) => defKey(c.word))))
   }
 
@@ -230,14 +268,51 @@ export function StoryPage({ deckId, onExit }: Props) {
     setReading(false) // keep activeSentence so play resumes from here
   }
 
+  // Sentence that holds the marker word (for read-aloud resume alignment).
+  const bookmarkSentence =
+    story?.bookmark != null ? (layout.wordToSentence[story.bookmark] ?? 0) : null
+
   function toggleReading() {
     if (reading) pauseReading()
-    else readAloud(activeSentence ?? 0)
+    else readAloud(activeSentence ?? bookmarkSentence ?? 0)
   }
 
-  // Tap any word: definition comes from the story's glossary (or the deck) —
-  // instant, fully offline, no AI call.
-  function lookup(token: string) {
+  // Move the active sentence; restart playback there if currently reading.
+  function skip(delta: number) {
+    const from = activeSentence ?? bookmarkSentence ?? 0
+    const next = Math.max(0, Math.min(sentences.length - 1, from + delta))
+    if (reading) readAloud(next)
+    else setActiveSentence(next)
+  }
+
+  async function setBookmark(wordIdx: number | undefined) {
+    if (!story) return
+    await db.stories.update(story.id, { bookmark: wordIdx })
+    setStory({ ...story, bookmark: wordIdx })
+  }
+
+  function jumpToBookmark() {
+    if (bookmarkSentence == null) return
+    setActiveSentence(bookmarkSentence)
+    bookmarkWordRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  }
+
+  function changeFontScale(delta: number) {
+    const next = Math.round(
+      Math.min(FONT_SCALE_MAX, Math.max(FONT_SCALE_MIN, settings.storyFontScale + delta)) * 100,
+    ) / 100
+    saveSettings({ storyFontScale: next })
+  }
+
+  // Tap a word. In mark mode it drops the reading marker there; otherwise it
+  // shows the definition (from the glossary/deck — instant, offline, no AI).
+  function onWordTap(token: string, wordIdx: number) {
+    if (marking) {
+      setMarking(false)
+      setBookmark(wordIdx)
+      setActiveSentence(layout.wordToSentence[wordIdx] ?? null)
+      return
+    }
     const key = defKey(token)
     if (!key) return
     const def = defs.get(key)
@@ -267,13 +342,13 @@ export function StoryPage({ deckId, onExit }: Props) {
     (g) => g.isNew && !baselineKeys.has(defKey(g.word)),
   )
 
-  // Header stats for the open story. New count is genuine new vocabulary
-  // (content words flagged by the model that aren't already in the deck).
+  // Header stats for the open story. "To learn" counts the highlighted words —
+  // those the reader hasn't marked known yet.
   const storyWords = story ? story.story.trim().split(/\s+/).filter(Boolean) : []
   const stats = {
     words: storyWords.length,
     unique: new Set(storyWords.map(defKey).filter(Boolean)).size,
-    newWords: (story?.glossary ?? []).filter((g) => g.isNew && !deckKeys.has(defKey(g.word))).length,
+    newWords: (story?.glossary ?? []).filter((g) => isNewWord(defKey(g.word), g.isNew)).length,
     readMin: Math.max(1, Math.round(storyWords.length / 130)),
   }
 
@@ -454,34 +529,94 @@ export function StoryPage({ deckId, onExit }: Props) {
             <span title="Words in the story">{stats.words} words</span>
             <span title="Distinct words">{stats.unique} unique</span>
             {stats.newWords > 0 && (
-              <span className="story-stat-new" title="Words new to you, highlighted below">
+              <span className="story-stat-new" title="Words not in your deck, highlighted below">
                 {stats.newWords} new
               </span>
             )}
             <span title="Estimated time to read">~{stats.readMin} min read</span>
           </div>
-          {canRead && (
-            <div className="story-read-bar">
-              <button
-                className={`btn small${reading ? ' accent' : ' primary'}`}
-                onClick={toggleReading}
-                title={reading ? 'Pause reading' : 'Read the story aloud'}
-              >
-                {reading ? '⏸ Pause' : activeSentence != null ? '▶ Resume' : '🔊 Read aloud'}
-              </button>
-              {activeSentence != null && !reading && (
+
+          <div className="story-read-bar">
+            {canRead && (
+              <div className="story-play-group">
                 <button
                   className="btn small ghost"
-                  onClick={() => {
-                    runRef.current++
-                    stopSpeaking()
-                    setActiveSentence(null)
-                  }}
-                  title="Stop and reset to the start"
+                  onClick={() => skip(-1)}
+                  title="Previous sentence"
+                  disabled={(activeSentence ?? 0) <= 0}
                 >
-                  ⏹
+                  ⏮
                 </button>
-              )}
+                <button
+                  className={`btn small${reading ? ' accent' : ' primary'}`}
+                  onClick={toggleReading}
+                  title={reading ? 'Pause reading' : 'Read the story aloud'}
+                >
+                  {reading ? '⏸ Pause' : activeSentence != null ? '▶ Resume' : '🔊 Read aloud'}
+                </button>
+                <button
+                  className="btn small ghost"
+                  onClick={() => skip(1)}
+                  title="Next sentence"
+                  disabled={(activeSentence ?? 0) >= sentences.length - 1}
+                >
+                  ⏭
+                </button>
+              </div>
+            )}
+
+            <button
+              className={`btn small ${marking ? 'accent' : 'ghost'}${
+                !marking && story.bookmark != null ? ' bookmarked' : ''
+              }`}
+              onClick={() => setMarking((m) => !m)}
+              title={
+                marking
+                  ? 'Cancel — or tap a word in the story'
+                  : story.bookmark != null
+                    ? 'Move your reading marker'
+                    : 'Mark your place — then tap a word'
+              }
+            >
+              {marking ? '✕ Tap a word' : story.bookmark != null ? '🔖 Move marker' : '🔖 Mark spot'}
+            </button>
+            {!marking && story.bookmark != null && (
+              <>
+                <button className="btn small ghost" onClick={jumpToBookmark} title="Go to your marker">
+                  ↩ Go to marker
+                </button>
+                <button
+                  className="btn small ghost"
+                  onClick={() => setBookmark(undefined)}
+                  title="Remove the reading marker"
+                >
+                  ✕
+                </button>
+              </>
+            )}
+
+            <div className="story-size">
+              <button
+                className="btn small ghost"
+                onClick={() => changeFontScale(-0.1)}
+                disabled={settings.storyFontScale <= FONT_SCALE_MIN}
+                title="Smaller text"
+                aria-label="Smaller text"
+              >
+                A−
+              </button>
+              <button
+                className="btn small ghost"
+                onClick={() => changeFontScale(0.1)}
+                disabled={settings.storyFontScale >= FONT_SCALE_MAX}
+                title="Larger text"
+                aria-label="Larger text"
+              >
+                A+
+              </button>
+            </div>
+
+            {canRead && (
               <label className="story-rate" title="Reading speed">
                 <span>{rate.toFixed(2)}×</span>
                 <input
@@ -493,10 +628,17 @@ export function StoryPage({ deckId, onExit }: Props) {
                   onChange={(e) => setRate(Number(e.target.value))}
                 />
               </label>
-            </div>
+            )}
+          </div>
+
+          {marking && (
+            <p className="note story-mark-hint">Tap the word in the story where you stopped reading.</p>
           )}
-          <div className="story-body">
-            {sentences.map((s, i) => (
+          <div
+            className={`story-body${marking ? ' marking' : ''}`}
+            style={{ fontSize: `${17 * settings.storyFontScale}px` }}
+          >
+            {layout.rows.map((tokens, i) => (
               <span
                 key={i}
                 ref={(el) => {
@@ -504,7 +646,36 @@ export function StoryPage({ deckId, onExit }: Props) {
                 }}
                 className={`story-sentence${i === activeSentence ? ' active' : ''}`}
               >
-                <TappableText text={s} defs={defs} onTap={lookup} />
+                {tokens.map((t, ti) => {
+                  if (t.wordIdx < 0) return <span key={ti}>{t.tok}</span>
+                  const marked = t.wordIdx === story.bookmark
+                  const def = defs.get(defKey(t.tok))
+                  // Only new words (not in the deck) are visually marked; deck
+                  // words — known or learning — read as plain, tappable text.
+                  const cls = def?.isNew ? ' new-word' : ' plain'
+                  return (
+                    <span key={ti} className={marked ? 'story-marked-word' : undefined}>
+                      {marked && (
+                        <span className="story-bookmark-marker" aria-hidden="true">
+                          🔖
+                        </span>
+                      )}
+                      <button
+                        ref={
+                          marked
+                            ? (el) => {
+                                bookmarkWordRef.current = el
+                              }
+                            : undefined
+                        }
+                        className={`story-word${cls}`}
+                        onClick={() => onWordTap(t.tok, t.wordIdx)}
+                      >
+                        {t.tok}
+                      </button>
+                    </span>
+                  )
+                })}
               </span>
             ))}
           </div>
@@ -566,7 +737,9 @@ export function StoryPage({ deckId, onExit }: Props) {
           <div className="word-sheet" onClick={(e) => e.stopPropagation()}>
             <div className="word-sheet-word">
               {selected.word}
-              {selected.isNew && !selected.missing && <span className="state-pill new">new</span>}
+              {selected.isNew && !selectedInDeck && !selected.missing && (
+                <span className="state-pill new">new</span>
+              )}
             </div>
             <div className="word-sheet-meaning">
               {selected.missing
@@ -596,31 +769,3 @@ export function StoryPage({ deckId, onExit }: Props) {
   )
 }
 
-function TappableText({
-  text,
-  defs,
-  onTap,
-}: {
-  text: string
-  defs: Map<string, Definition>
-  onTap: (token: string) => void
-}) {
-  // Split into word / non-word chunks; keep whitespace and punctuation as-is.
-  const tokens = text.split(/(\s+)/)
-  return (
-    <>
-      {tokens.map((token, i) => {
-        // Every token containing a letter/number is tappable.
-        if (!defKey(token)) return <span key={i}>{token}</span>
-        const def = defs.get(defKey(token))
-        // In glossary → underlined; new vocabulary → highlighted; otherwise plain.
-        const cls = def ? (def.isNew ? ' new-word' : '') : ' plain'
-        return (
-          <button key={i} className={`story-word${cls}`} onClick={() => onTap(token)}>
-            {token}
-          </button>
-        )
-      })}
-    </>
-  )
-}

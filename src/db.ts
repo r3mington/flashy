@@ -56,6 +56,9 @@ export interface SavedStory {
    *  grouped under that root in the saved-stories list. Unset for standalone
    *  stories and roots. Plain property, not indexed. */
   parentId?: number
+  /** Reading marker: index of the word (Nth tappable word in the story) the
+   *  reader stopped at. One per story. Plain property, not indexed. */
+  bookmark?: number
   createdAt: number
 }
 
@@ -83,6 +86,10 @@ export interface AppSettings {
   /** Let the model "think" before answering AI requests — higher quality,
    *  noticeably slower. Off by default (favours speed). */
   aiThinking: boolean
+  /** App colour theme. 'system' follows the OS setting. */
+  theme: 'system' | 'light' | 'dark'
+  /** Reading text-size multiplier for stories (1 = default). */
+  storyFontScale: number
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -96,6 +103,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoSpeak: true,
   showEmoji: true,
   aiThinking: false,
+  theme: 'system',
+  storyFontScale: 1,
 }
 
 export const db = new Dexie('flashy') as Dexie & {

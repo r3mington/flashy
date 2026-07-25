@@ -32,6 +32,30 @@ export function Options() {
       </div>
 
       <section className="dash-section">
+        <div className="eyebrow">Appearance</div>
+
+        <div className="option-row">
+          <div>
+            <div className="option-name">Theme</div>
+            <div className="option-desc">
+              Night mode. “System” follows your device’s light/dark setting.
+            </div>
+          </div>
+          <div className="seg-control">
+            {(['system', 'light', 'dark'] as const).map((t) => (
+              <button
+                key={t}
+                className={settings.theme === t ? 'on' : ''}
+                onClick={() => saveSettings({ theme: t })}
+              >
+                {t === 'system' ? 'System' : t === 'light' ? 'Light' : 'Dark'}
+              </button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="dash-section">
         <div className="eyebrow">Review</div>
 
         <div className="option-row">
