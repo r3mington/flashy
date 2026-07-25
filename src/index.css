@@ -1325,6 +1325,8 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .story-word.plain:hover, .story-word.plain:focus-visible {
   text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
 }
+/* Dialogue — italicised so conversation stands apart from narration. */
+.story-quoted { font-style: italic; }
 /* New vocabulary — highlighted so it's easy to spot what's worth learning. */
 .story-word.new-word {
   color: var(--amber);

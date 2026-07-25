@@ -126,15 +126,22 @@ export function StoryPage({ deckId, onExit }: Props) {
 
   // Tokenize into sentences → chunks, numbering each word with a story-global
   // index (the bookmark unit) and recording which sentence each word is in.
+  // Also flag tokens inside quotation marks so dialogue can be italicised.
   const layout = useMemo(() => {
     let w = -1
+    let inQuote = false // running quote-mark parity across the whole story
+    const QUOTE = /["“”„‟«»]/g
     const wordToSentence: number[] = []
     const rows = sentences.map((s, si) =>
       s.split(/(\s+)/).map((tok) => {
-        if (!defKey(tok)) return { tok, wordIdx: -1 }
+        const before = inQuote
+        const marks = tok.match(QUOTE)
+        if (marks) for (let k = 0; k < marks.length; k++) inQuote = !inQuote
+        const quoted = before || !!marks
+        if (!defKey(tok)) return { tok, wordIdx: -1, quoted }
         w++
         wordToSentence[w] = si
-        return { tok, wordIdx: w }
+        return { tok, wordIdx: w, quoted }
       }),
     )
     return { rows, wordToSentence }
@@ -386,14 +393,21 @@ export function StoryPage({ deckId, onExit }: Props) {
     setSelected({ word: display, meaning: '', isNew: !deckKeys.has(key), missing: true })
   }
 
-  async function addWord(word: string, meaning: string) {
+  async function addWord(word: string, meaning: string, known = false) {
     await db.cards.add({
       deckId,
       word,
       meaning,
       example: '',
       ...newCardDefaults(),
+      known,
     })
+  }
+
+  // Toggle the known flag on the deck card matching a tapped word.
+  async function setWordKnown(word: string, known: boolean) {
+    const card = (cards ?? []).find((c) => defKey(c.word) === defKey(word))
+    if (card) await db.cards.update(card.id, { known })
   }
 
   // Words worth surfacing under the story. The glossary now holds EVERY word
@@ -416,7 +430,10 @@ export function StoryPage({ deckId, onExit }: Props) {
     readMin: Math.max(1, Math.round(storyWords.length / 130)),
   }
 
-  const selectedInDeck = selected ? deckKeys.has(defKey(selected.word)) : false
+  const selectedCard = selected
+    ? (cards ?? []).find((c) => defKey(c.word) === defKey(selected.word))
+    : undefined
+  const selectedInDeck = !!selectedCard
 
   return (
     <>
@@ -729,7 +746,12 @@ export function StoryPage({ deckId, onExit }: Props) {
                 className={`story-sentence${i === activeSentence ? ' active' : ''}`}
               >
                 {tokens.map((t, ti) => {
-                  if (t.wordIdx < 0) return <span key={ti}>{t.tok}</span>
+                  if (t.wordIdx < 0)
+                    return (
+                      <span key={ti} className={t.quoted ? 'story-quoted' : undefined}>
+                        {t.tok}
+                      </span>
+                    )
                   const marked = t.wordIdx === story.bookmark
                   // Highlight straight from deck membership so ANY word not in
                   // the bank is orange — even ones the glossary missed. Deck
@@ -750,7 +772,7 @@ export function StoryPage({ deckId, onExit }: Props) {
                               }
                             : undefined
                         }
-                        className={`story-word${cls}`}
+                        className={`story-word${cls}${t.quoted ? ' story-quoted' : ''}`}
                         onClick={() => onWordTap(t.tok, t.wordIdx)}
                       >
                         {t.tok}
@@ -839,16 +861,34 @@ export function StoryPage({ deckId, onExit }: Props) {
                 : selected.meaning}
             </div>
             <div className="word-sheet-actions">
-              {selectedInDeck ? (
-                <span className="s-tag added">In deck ✓</span>
+              {selectedCard ? (
+                <>
+                  <span className="s-tag added">{selectedCard.known ? 'Known ✓' : 'In deck ✓'}</span>
+                  <button
+                    className="btn small"
+                    onClick={() => setWordKnown(selected.word, !selectedCard.known)}
+                  >
+                    {selectedCard.known ? 'Unmark known' : 'Mark as known'}
+                  </button>
+                </>
               ) : (
-                <button
-                  className="btn small primary"
-                  disabled={!selected.meaning}
-                  onClick={() => addWord(selected.word, selected.meaning)}
-                >
-                  Add to deck
-                </button>
+                <>
+                  <button
+                    className="btn small primary"
+                    disabled={!selected.meaning}
+                    onClick={() => addWord(selected.word, selected.meaning)}
+                  >
+                    Add to deck
+                  </button>
+                  <button
+                    className="btn small"
+                    disabled={!selected.meaning}
+                    title="Add to the deck already marked as known"
+                    onClick={() => addWord(selected.word, selected.meaning, true)}
+                  >
+                    Add as known
+                  </button>
+                </>
               )}
               <button className="btn small ghost" onClick={() => setSelected(null)}>
                 Close
