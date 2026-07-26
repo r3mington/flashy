@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, newCardDefaults, type SavedStory } from '../db'
-import { generateStory, ApiError } from '../ai'
+import { defineWord, generateStory, ApiError } from '../ai'
 import { langCodeFor, loadVoices, preferredVoice, speak, speechSupported, stopSpeaking } from '../speech'
 import { useSettings, saveSettings } from '../useSettings'
 
@@ -36,8 +36,10 @@ interface Definition {
   word: string
   meaning: string
   isNew: boolean
-  /** Word absent from this story's glossary (stories saved before full glossaries). */
-  missing?: boolean
+  /** Definition being fetched on demand (word absent from this story's glossary). */
+  loading?: boolean
+  /** The on-demand lookup failed. */
+  failed?: boolean
 }
 
 /** Lowercase and strip surrounding punctuation so tokens match glossary entries. */
@@ -375,6 +377,7 @@ export function StoryPage({ deckId, onExit }: Props) {
 
   // Tap a word. In mark mode it drops the reading marker there; otherwise it
   // shows the definition (from the glossary/deck — instant, offline, no AI).
+  // Words the glossary missed get an on-demand AI lookup, cached into the story.
   function onWordTap(token: string, wordIdx: number) {
     if (marking) {
       setMarking(false)
@@ -390,7 +393,41 @@ export function StoryPage({ deckId, onExit }: Props) {
       return
     }
     const display = token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
-    setSelected({ word: display, meaning: '', isNew: !deckKeys.has(key), missing: true })
+    setSelected({ word: display, meaning: '', isNew: !deckKeys.has(key), loading: true })
+    const si = layout.wordToSentence[wordIdx]
+    void lookupMissing(display, key, si != null ? sentences[si] : undefined)
+  }
+
+  // Fetch a definition the glossary missed and persist it into the saved
+  // story's glossary so every future tap is instant and offline.
+  async function lookupMissing(display: string, key: string, sentence?: string) {
+    const sid = story?.id
+    try {
+      const res = await defineWord({ deck: deck!, word: display, sentence })
+      const entry = {
+        word: display,
+        meaning: res.meaning,
+        // Content-word check keeps function words out of the "new words" chips.
+        isNew: res.isContentWord && !deckKeys.has(key),
+      }
+      if (sid != null) {
+        const rec = await db.stories.get(sid)
+        if (rec) {
+          const glossary = [...(rec.glossary ?? []), entry]
+          await db.stories.update(sid, { glossary })
+          setStory((cur) => (cur && cur.id === sid ? { ...cur, glossary } : cur))
+        }
+      }
+      setSelected((sel) =>
+        sel?.loading && defKey(sel.word) === key
+          ? { word: display, meaning: res.meaning, isNew: !deckKeys.has(key) }
+          : sel,
+      )
+    } catch {
+      setSelected((sel) =>
+        sel?.loading && defKey(sel.word) === key ? { ...sel, loading: false, failed: true } : sel,
+      )
+    }
   }
 
   async function addWord(word: string, meaning: string, known = false) {
@@ -530,8 +567,8 @@ export function StoryPage({ deckId, onExit }: Props) {
                 id="story-new"
                 type="range"
                 min={0}
-                max={50}
-                step={5}
+                max={30}
+                step={1}
                 value={newPercent}
                 onChange={(e) => setNewPercent(Number(e.target.value))}
               />
@@ -851,14 +888,16 @@ export function StoryPage({ deckId, onExit }: Props) {
                   🔊
                 </button>
               )}
-              {selected.isNew && !selectedInDeck && !selected.missing && (
+              {selected.isNew && !selectedInDeck && !selected.loading && !selected.failed && (
                 <span className="state-pill new">new</span>
               )}
             </div>
             <div className="word-sheet-meaning">
-              {selected.missing
-                ? 'No definition in this story’s glossary — stories generated from now on include every word.'
-                : selected.meaning}
+              {selected.loading
+                ? 'Looking it up…'
+                : selected.failed
+                  ? 'Couldn’t fetch a definition — check your connection and tap the word again.'
+                  : selected.meaning}
             </div>
             <div className="word-sheet-actions">
               {selectedCard ? (

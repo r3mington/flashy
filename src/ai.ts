@@ -229,6 +229,33 @@ export async function generateStory(opts: {
   return callGeminiJson<Story>(prompt, STORY_SCHEMA)
 }
 
+const DEFINE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    meaning: { type: 'STRING' },
+    isContentWord: { type: 'BOOLEAN' },
+  },
+  required: ['meaning', 'isContentWord'],
+}
+
+/** Define a single word on demand — fallback for story words the glossary missed. */
+export async function defineWord(opts: {
+  deck: Deck
+  word: string
+  /** Sentence the word was tapped in, to pin down the sense used. */
+  sentence?: string
+}): Promise<{ meaning: string; isContentWord: boolean }> {
+  const { deck, word, sentence } = opts
+  const prompt = [
+    `Give a concise English meaning for the ${deck.language} word "${word}", as a glossary entry for a language learner.`,
+    sentence?.trim() ? `It appears in this sentence — define the sense used here: "${sentence.trim()}"` : '',
+    `Also report whether it is a content word (noun, verb, adjective or adverb) rather than a function word.`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+  return callGeminiJson<{ meaning: string; isContentWord: boolean }>(prompt, DEFINE_SCHEMA)
+}
+
 export class ApiError extends Error {
   status: number
 
