@@ -1,8 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, newCardDefaults, type SavedStory } from '../db'
+import { db, newCardDefaults, type Card, type SavedStory } from '../db'
 import { defineWord, generateStory, ApiError } from '../ai'
-import { langCodeFor, loadVoices, preferredVoice, speak, speechSupported, stopSpeaking } from '../speech'
+import {
+  clearMediaSession,
+  keepSpeechAlive,
+  langCodeFor,
+  loadVoices,
+  preferredVoice,
+  setMediaPlaybackState,
+  setMediaSession,
+  speak,
+  speechSupported,
+  stopSpeaking,
+} from '../speech'
+import { rootCandidates } from '../lemma'
 import { useSettings, saveSettings } from '../useSettings'
 
 const FONT_SCALE_MIN = 0.8
@@ -36,6 +48,9 @@ interface Definition {
   word: string
   meaning: string
   isNew: boolean
+  /** Root word this is an inflected form of, when the surface word itself isn't
+   *  in the deck but its root is (e.g. "menjawab" → root "jawab"). */
+  root?: string
   /** Definition being fetched on demand (word absent from this story's glossary). */
   loading?: boolean
   /** The on-demand lookup failed. */
@@ -74,6 +89,8 @@ export function StoryPage({ deckId, onExit }: Props) {
   // showing its definition.
   const [marking, setMarking] = useState(false)
   const runRef = useRef(0)
+  // Stops the background speech keep-alive timer (podcast playback).
+  const keepAliveRef = useRef<(() => void) | null>(null)
   const rateRef = useRef(rate)
   rateRef.current = rate
   const sentenceRefs = useRef<(HTMLSpanElement | null)[]>([])
@@ -100,14 +117,46 @@ export function StoryPage({ deckId, onExit }: Props) {
     [deckId],
   )
 
+  const langCode = deck ? langCodeFor(deck.language) : null
+
+  // Cards keyed by defKey(word) — for resolving a tapped word to its card.
+  const cardByKey = useMemo(() => {
+    const map = new Map<string, Card>()
+    for (const c of cards ?? []) map.set(defKey(c.word), c)
+    return map
+  }, [cards])
+
   // Words already in the deck (known or learning alike). Highlighting is decided
   // against this set.
   const deckKeys = useMemo(() => new Set((cards ?? []).map((c) => defKey(c.word))), [cards])
 
-  // A word is "new" (highlighted) purely when it isn't in the deck — ground
-  // truth from the word bank, not the model's unreliable isNew flag. Any deck
-  // word (known or unknown) is not highlighted; everything else is.
-  const isNewWord = (key: string) => !!key && !deckKeys.has(key)
+  // Resolve a surface-word key to the deck word it belongs to: the word itself
+  // if it's a card, otherwise a morphological root that is (e.g. Indonesian
+  // "menjawab" → "jawab"). Returns null when nothing in the bank matches.
+  // Memoised with a cache since it runs per token during render.
+  const resolveDeckKey = useMemo(() => {
+    const cache = new Map<string, string | null>()
+    return (key: string): string | null => {
+      if (!key) return null
+      const cached = cache.get(key)
+      if (cached !== undefined) return cached
+      let hit: string | null = deckKeys.has(key) ? key : null
+      if (hit === null) {
+        for (const c of rootCandidates(key, langCode)) {
+          if (deckKeys.has(c)) {
+            hit = c
+            break
+          }
+        }
+      }
+      cache.set(key, hit)
+      return hit
+    }
+  }, [deckKeys, langCode])
+
+  // A word is "new" (highlighted) when neither it nor its root is in the deck —
+  // ground truth from the word bank, not the model's unreliable isNew flag.
+  const isNewWord = (key: string) => !!key && !resolveDeckKey(key)
 
   // Tap-to-define lookup: glossary from the model, plus the word bank as fallback.
   const defs = useMemo(() => {
@@ -121,7 +170,7 @@ export function StoryPage({ deckId, onExit }: Props) {
     }
     return map
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cards, story, deckKeys])
+  }, [cards, story, deckKeys, resolveDeckKey])
 
   // Sentences of the open story — the read-aloud unit and highlight granularity.
   const sentences = useMemo(() => (story ? splitSentences(story.story) : []), [story])
@@ -149,14 +198,16 @@ export function StoryPage({ deckId, onExit }: Props) {
     return { rows, wordToSentence }
   }, [sentences])
 
-  const langCode = deck ? langCodeFor(deck.language) : null
   const canRead = speechSupported && !!story
 
-  // Stop audio when leaving the page or switching stories.
+  // Stop audio (and drop the lock-screen controls) when leaving the page.
   useEffect(
     () => () => {
       runRef.current++
       stopSpeaking()
+      keepAliveRef.current?.()
+      keepAliveRef.current = null
+      clearMediaSession()
     },
     [],
   )
@@ -305,10 +356,25 @@ export function StoryPage({ deckId, onExit }: Props) {
 
   // Read the story aloud, sentence by sentence, highlighting the current one.
   // Uses the deck-language system voice — same voices as study/listen, offline.
+  // Publishes a media session so lock-screen / headphone controls drive it and
+  // a keep-alive timer holds playback through a screen-off / backgrounded tab.
   async function readAloud(startIdx: number) {
     const my = ++runRef.current
     stopSpeaking()
     setReading(true)
+    keepAliveRef.current?.()
+    keepAliveRef.current = keepSpeechAlive()
+    if (story) {
+      setMediaSession({
+        title: story.title,
+        artist: deck?.name,
+        onPlay: () => readAloud(activeSentence ?? 0),
+        onPause: pauseReading,
+        onPrev: () => skip(-1),
+        onNext: () => skip(1),
+      })
+      setMediaPlaybackState('playing')
+    }
     const voices = await loadVoices()
     const voice = preferredVoice(voices, langCode)
     for (let i = startIdx; i < sentences.length; i++) {
@@ -323,6 +389,9 @@ export function StoryPage({ deckId, onExit }: Props) {
     if (runRef.current === my) {
       setReading(false)
       setActiveSentence(null)
+      keepAliveRef.current?.()
+      keepAliveRef.current = null
+      setMediaPlaybackState('none')
     }
   }
 
@@ -330,6 +399,9 @@ export function StoryPage({ deckId, onExit }: Props) {
     runRef.current++
     stopSpeaking()
     setReading(false) // keep activeSentence so play resumes from here
+    keepAliveRef.current?.()
+    keepAliveRef.current = null
+    setMediaPlaybackState('paused')
   }
 
   // Speak a single word (used by the definition popup's pronounce button).
@@ -378,6 +450,8 @@ export function StoryPage({ deckId, onExit }: Props) {
   // Tap a word. In mark mode it drops the reading marker there; otherwise it
   // shows the definition (from the glossary/deck — instant, offline, no AI).
   // Words the glossary missed get an on-demand AI lookup, cached into the story.
+  // Every tap that resolves to a card also bumps that card's lookup count — the
+  // "struggle" signal used to sort the deck.
   function onWordTap(token: string, wordIdx: number) {
     if (marking) {
       setMarking(false)
@@ -387,15 +461,37 @@ export function StoryPage({ deckId, onExit }: Props) {
     }
     const key = defKey(token)
     if (!key) return
+    const display = token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+    // The deck word this token belongs to (itself or a morphological root).
+    const deckKey = resolveDeckKey(key)
+    const rootCard = deckKey ? cardByKey.get(deckKey) : undefined
+    if (rootCard) recordLookup(rootCard.id)
+
     const def = defs.get(key)
     if (def) {
-      setSelected(def)
+      // Exact glossary/deck entry — its own meaning is authoritative. Trust the
+      // bank (surface or root) over the model's isNew flag for the "new" pill.
+      setSelected({ ...def, isNew: !deckKey })
       return
     }
-    const display = token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
-    setSelected({ word: display, meaning: '', isNew: !deckKeys.has(key), loading: true })
+    if (rootCard) {
+      // No exact entry, but the word is an inflected form of a known card — show
+      // that card's meaning and flag which root it came from.
+      setSelected({ word: display, meaning: rootCard.meaning, isNew: false, root: rootCard.word })
+      return
+    }
+    setSelected({ word: display, meaning: '', isNew: true, loading: true })
     const si = layout.wordToSentence[wordIdx]
     void lookupMissing(display, key, si != null ? sentences[si] : undefined)
+  }
+
+  // Bump a card's story lookup counter (the deck "struggle" sort metric).
+  // Uses modify() so the read-and-increment happens inside one transaction —
+  // rapid taps on the same card can't lose an increment to a read/write race.
+  async function recordLookup(cardId: number) {
+    await db.cards.where('id').equals(cardId).modify((c) => {
+      c.lookups = (c.lookups ?? 0) + 1
+    })
   }
 
   // Fetch a definition the glossary missed and persist it into the saved
@@ -407,8 +503,9 @@ export function StoryPage({ deckId, onExit }: Props) {
       const entry = {
         word: display,
         meaning: res.meaning,
-        // Content-word check keeps function words out of the "new words" chips.
-        isNew: res.isContentWord && !deckKeys.has(key),
+        // Reached only when the word has no card or known root, so "new" hinges
+        // purely on it being a content word (keeps function words off the chips).
+        isNew: res.isContentWord,
       }
       if (sid != null) {
         const rec = await db.stories.get(sid)
@@ -420,7 +517,7 @@ export function StoryPage({ deckId, onExit }: Props) {
       }
       setSelected((sel) =>
         sel?.loading && defKey(sel.word) === key
-          ? { word: display, meaning: res.meaning, isNew: !deckKeys.has(key) }
+          ? { word: display, meaning: res.meaning, isNew: true }
           : sel,
       )
     } catch {
@@ -451,9 +548,12 @@ export function StoryPage({ deckId, onExit }: Props) {
   // (function words included), so require the model's content-word isNew flag —
   // otherwise "ke", "dan" etc. would flood the list — and still drop anything
   // already in the deck when the story was opened.
-  const newWords = (story?.glossary ?? []).filter(
-    (g) => g.isNew && !baselineKeys.has(defKey(g.word)),
-  )
+  const newWords = (story?.glossary ?? []).filter((g) => {
+    if (!g.isNew) return false
+    // Drop words whose surface form OR morphological root was already in the
+    // bank when the story opened (e.g. "menjawab" when "jawab" is known).
+    return !rootCandidates(defKey(g.word), langCode).some((c) => baselineKeys.has(c))
+  })
 
   // Header stats for the open story. "new" counts the distinct highlighted
   // words (those not in the deck) straight from the text, so it always matches
@@ -698,6 +798,13 @@ export function StoryPage({ deckId, onExit }: Props) {
                 >
                   ⏭
                 </button>
+                <button
+                  className="btn small ghost"
+                  onClick={() => readAloud(0)}
+                  title="Play the whole story from the start — with lock-screen and headphone controls, so it keeps going with the screen off"
+                >
+                  🎧 Podcast
+                </button>
               </div>
             )}
 
@@ -890,6 +997,11 @@ export function StoryPage({ deckId, onExit }: Props) {
               )}
               {selected.isNew && !selectedInDeck && !selected.loading && !selected.failed && (
                 <span className="state-pill new">new</span>
+              )}
+              {selected.root && (
+                <span className="state-pill root" title={`Form of “${selected.root}”, in your deck`}>
+                  form of {selected.root}
+                </span>
               )}
             </div>
             <div className="word-sheet-meaning">

@@ -24,6 +24,7 @@ interface Props {
 }
 
 type StateFilter = 'all' | 'new' | 'learning' | 'review' | 'known'
+type SortBy = 'default' | 'lookups'
 
 const FILTER_DEFS: { key: StateFilter; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -36,6 +37,7 @@ const FILTER_DEFS: { key: StateFilter; label: string }[] = [
 export function DeckView({ deckId, onStudySrs, onStudyFlip, onStory, onListen, onDeleted }: Props) {
   const [search, setSearch] = useState('')
   const [stateFilter, setStateFilter] = useState<StateFilter>('all')
+  const [sortBy, setSortBy] = useState<SortBy>('default')
   const [editing, setEditing] = useState<Card | 'new' | null>(null)
   const [importing, setImporting] = useState(false)
   const [generating, setGenerating] = useState(false)
@@ -84,7 +86,7 @@ export function DeckView({ deckId, onStudySrs, onStudyFlip, onStory, onListen, o
         : cards.filter((c) => !c.known && c.state === stateFilter)
 
   const q = search.trim().toLowerCase()
-  const filtered = q
+  const matched = q
     ? byState.filter(
         (c) =>
           c.word.toLowerCase().includes(q) ||
@@ -92,6 +94,17 @@ export function DeckView({ deckId, onStudySrs, onStudyFlip, onStory, onListen, o
           c.example.toLowerCase().includes(q),
       )
     : byState
+
+  // "Most looked up" surfaces the words you kept tapping to define while
+  // reading stories — the ones worth reviewing. Ties fall back to word order.
+  const filtered =
+    sortBy === 'lookups'
+      ? [...matched].sort(
+          (a, b) => (b.lookups ?? 0) - (a.lookups ?? 0) || a.word.localeCompare(b.word),
+        )
+      : matched
+
+  const anyLookups = cards.some((c) => (c.lookups ?? 0) > 0)
 
   async function deleteDeck() {
     if (!confirm(`Delete deck “${deck!.name}” and its ${cards!.length} cards? This cannot be undone.`))
@@ -276,6 +289,25 @@ export function DeckView({ deckId, onStudySrs, onStudyFlip, onStory, onListen, o
         </div>
       )}
 
+      {anyLookups && (
+        <div className="sort-row">
+          <span className="sort-label">Sort</span>
+          <button
+            className={`filter-chip${sortBy === 'default' ? ' active' : ''}`}
+            onClick={() => setSortBy('default')}
+          >
+            Default
+          </button>
+          <button
+            className={`filter-chip${sortBy === 'lookups' ? ' active' : ''}`}
+            title="Words you looked up most while reading stories"
+            onClick={() => setSortBy('lookups')}
+          >
+            Most looked up
+          </button>
+        </div>
+      )}
+
       {selected.size > 0 && (
         <div className="bulk-bar">
           <label className="check-wrap" title="Select all visible">
@@ -347,6 +379,14 @@ export function DeckView({ deckId, onStudySrs, onStudyFlip, onStory, onListen, o
                     <span className="state-pill known">known</span>
                   ) : (
                     <span className={`state-pill ${card.state}`}>{card.state}</span>
+                  )}
+                  {(card.lookups ?? 0) > 0 && (
+                    <span
+                      className="lookups-badge"
+                      title={`Looked up ${card.lookups}× while reading stories`}
+                    >
+                      👁 {card.lookups}
+                    </span>
                   )}
                 </div>
                 <div className="meaning">{card.meaning}</div>

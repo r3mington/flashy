@@ -191,3 +191,68 @@ export function stopSpeaking() {
 }
 
 export const speechSupported = typeof window !== 'undefined' && 'speechSynthesis' in window
+
+/** Some Chromium builds silently stop speechSynthesis after ~15s, and
+ *  backgrounding a tab can pause it. resume() is a no-op while actively
+ *  speaking, so pinging it on a timer keeps long, screen-off playback alive.
+ *  Returns a stop function. */
+export function keepSpeechAlive(): () => void {
+  if (!('speechSynthesis' in window)) return () => {}
+  const id = setInterval(() => {
+    if (speechSynthesis.speaking) speechSynthesis.resume()
+  }, 8000)
+  return () => clearInterval(id)
+}
+
+export interface MediaSessionConfig {
+  title: string
+  artist?: string
+  onPlay?: () => void
+  onPause?: () => void
+  onNext?: () => void
+  onPrev?: () => void
+}
+
+const MEDIA_ACTIONS: MediaSessionAction[] = ['play', 'pause', 'previoustrack', 'nexttrack']
+
+/** Publish now-playing info and lock-screen / headphone control handlers so a
+ *  story read-aloud behaves like a podcast. No-op where unsupported. */
+export function setMediaSession(cfg: MediaSessionConfig): void {
+  if (!('mediaSession' in navigator)) return
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: cfg.title,
+      artist: cfg.artist ?? 'Flashy',
+    })
+    const bind = (action: MediaSessionAction, handler?: () => void) => {
+      try {
+        navigator.mediaSession.setActionHandler(action, handler ? () => handler() : null)
+      } catch {
+        /* action unsupported on this platform */
+      }
+    }
+    bind('play', cfg.onPlay)
+    bind('pause', cfg.onPause)
+    bind('previoustrack', cfg.onPrev)
+    bind('nexttrack', cfg.onNext)
+  } catch {
+    /* MediaMetadata unsupported */
+  }
+}
+
+export function setMediaPlaybackState(state: MediaSessionPlaybackState): void {
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = state
+}
+
+export function clearMediaSession(): void {
+  if (!('mediaSession' in navigator)) return
+  navigator.mediaSession.playbackState = 'none'
+  for (const a of MEDIA_ACTIONS) {
+    try {
+      navigator.mediaSession.setActionHandler(a, null)
+    } catch {
+      /* ignore */
+    }
+  }
+  navigator.mediaSession.metadata = null
+}

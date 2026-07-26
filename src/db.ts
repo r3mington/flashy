@@ -22,6 +22,9 @@ export interface Card {
   createdAt: number
   /** Marked as known — excluded from study modes. */
   known?: boolean
+  /** How many times this word was tapped for its definition while reading a
+   *  story — a "struggle" signal for sorting the deck. Plain, non-indexed. */
+  lookups?: number
   // SRS state
   state: CardState
   due: number // timestamp ms
