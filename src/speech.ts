@@ -204,6 +204,66 @@ export function keepSpeechAlive(): () => void {
   return () => clearInterval(id)
 }
 
+/** A few seconds of genuine silence as a WAV blob URL, built once. Played (not
+ *  muted) at normal volume, it emits no sound but marks the tab as "audible". */
+let silenceUrl: string | null = null
+function silenceSrc(): string {
+  if (silenceUrl) return silenceUrl
+  const rate = 8000
+  const samples = rate * 5 // 5s, looped
+  const buf = new ArrayBuffer(44 + samples)
+  const view = new DataView(buf)
+  const str = (o: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i))
+  }
+  str(0, 'RIFF')
+  view.setUint32(4, 36 + samples, true)
+  str(8, 'WAVE')
+  str(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true) // PCM
+  view.setUint16(22, 1, true) // mono
+  view.setUint32(24, rate, true)
+  view.setUint32(28, rate, true) // byte rate
+  view.setUint16(32, 1, true) // block align
+  view.setUint16(34, 8, true) // bits/sample
+  str(36, 'data')
+  view.setUint32(40, samples, true)
+  for (let i = 0; i < samples; i++) view.setUint8(44 + i, 128) // 8-bit silence
+  silenceUrl = URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }))
+  return silenceUrl
+}
+
+let silenceEl: HTMLAudioElement | null = null
+
+/** Hold audio focus for background playback. Android/Chrome freezes a
+ *  backgrounded (screen-locked) tab's timers and speech unless the tab is
+ *  "audible", so we loop silent audio at full volume — inaudible, but it keeps
+ *  the tab alive so speechSynthesis keeps talking with the screen off, and
+ *  anchors the media session for lock-screen controls. Must be called from a
+ *  user gesture (autoplay). iOS/WebKit suspends speech regardless. Returns a
+ *  release function. */
+export function holdAudioFocus(): () => void {
+  if (typeof Audio === 'undefined') return () => {}
+  try {
+    if (!silenceEl) {
+      silenceEl = new Audio(silenceSrc())
+      silenceEl.loop = true
+    }
+    silenceEl.currentTime = 0
+    void silenceEl.play().catch(() => {})
+  } catch {
+    /* autoplay blocked or unsupported */
+  }
+  return () => {
+    try {
+      silenceEl?.pause()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 export interface MediaSessionConfig {
   title: string
   artist?: string

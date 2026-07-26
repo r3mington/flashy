@@ -4,6 +4,7 @@ import { db, newCardDefaults, type Card, type SavedStory } from '../db'
 import { defineWord, generateStory, ApiError } from '../ai'
 import {
   clearMediaSession,
+  holdAudioFocus,
   keepSpeechAlive,
   langCodeFor,
   loadVoices,
@@ -91,6 +92,8 @@ export function StoryPage({ deckId, onExit }: Props) {
   const runRef = useRef(0)
   // Stops the background speech keep-alive timer (podcast playback).
   const keepAliveRef = useRef<(() => void) | null>(null)
+  // Releases the silent-audio hold that keeps screen-off playback alive.
+  const audioFocusRef = useRef<(() => void) | null>(null)
   const rateRef = useRef(rate)
   rateRef.current = rate
   const sentenceRefs = useRef<(HTMLSpanElement | null)[]>([])
@@ -205,8 +208,7 @@ export function StoryPage({ deckId, onExit }: Props) {
     () => () => {
       runRef.current++
       stopSpeaking()
-      keepAliveRef.current?.()
-      keepAliveRef.current = null
+      releaseBackgroundAudio()
       clearMediaSession()
     },
     [],
@@ -362,8 +364,12 @@ export function StoryPage({ deckId, onExit }: Props) {
     const my = ++runRef.current
     stopSpeaking()
     setReading(true)
+    // Hold the tab audible + ping speech, so playback survives a locked screen.
+    // Started synchronously here so the silent audio inherits the tap's gesture.
     keepAliveRef.current?.()
     keepAliveRef.current = keepSpeechAlive()
+    audioFocusRef.current?.()
+    audioFocusRef.current = holdAudioFocus()
     if (story) {
       setMediaSession({
         title: story.title,
@@ -389,18 +395,24 @@ export function StoryPage({ deckId, onExit }: Props) {
     if (runRef.current === my) {
       setReading(false)
       setActiveSentence(null)
-      keepAliveRef.current?.()
-      keepAliveRef.current = null
+      releaseBackgroundAudio()
       setMediaPlaybackState('none')
     }
+  }
+
+  // Release the background-playback holds (silent audio + speech ping).
+  function releaseBackgroundAudio() {
+    keepAliveRef.current?.()
+    keepAliveRef.current = null
+    audioFocusRef.current?.()
+    audioFocusRef.current = null
   }
 
   function pauseReading() {
     runRef.current++
     stopSpeaking()
     setReading(false) // keep activeSentence so play resumes from here
-    keepAliveRef.current?.()
-    keepAliveRef.current = null
+    releaseBackgroundAudio()
     setMediaPlaybackState('paused')
   }
 
