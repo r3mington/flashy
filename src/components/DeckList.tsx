@@ -1,8 +1,7 @@
 import { useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db'
-import { langCodeFor } from '../speech'
-import { countWords } from '../text'
+import { ContinueReading } from './ContinueReading'
 
 interface Props {
   onOpen: (deckId: number) => void
@@ -27,25 +26,6 @@ export function DeckList({ onOpen, onOpenStory }: Props) {
       byDeck.set(c.deckId, s)
     }
     return byDeck
-  })
-
-  // Most recently read (or generated — generation opens the story) story,
-  // for the one-tap "continue reading" shortcut. Resumes at the marker.
-  const lastRead = useLiveQuery(async () => {
-    const stories = await db.stories.toArray()
-    if (stories.length === 0) return null
-    const recency = (s: (typeof stories)[number]) => s.lastOpenedAt ?? s.createdAt
-    const story = stories.reduce((a, b) => (recency(a) >= recency(b) ? a : b))
-    const deck = await db.decks.get(story.deckId)
-    if (!deck) return null
-    const pct =
-      story.bookmark != null
-        ? Math.min(
-            100,
-            Math.round(((story.bookmark + 1) / Math.max(1, countWords(story.story, langCodeFor(deck.language)))) * 100),
-          )
-        : null
-    return { story, deck, pct }
   })
 
   async function createDeck() {
@@ -77,25 +57,7 @@ export function DeckList({ onOpen, onOpenStory }: Props) {
         </div>
       </div>
 
-      {lastRead && (
-        <button
-          className="continue-reading"
-          title="Pick up where you left off — opens at your reading marker"
-          onClick={() => onOpenStory(lastRead.story.deckId, lastRead.story.id)}
-        >
-          <span className="cr-label">📖 Continue reading</span>
-          <span className="cr-title">{lastRead.story.title}</span>
-          <span className="cr-meta">
-            {lastRead.deck.name}
-            {lastRead.pct != null ? ` · ${lastRead.pct}% read` : ''}
-          </span>
-          {lastRead.pct != null && (
-            <span className="cr-bar">
-              <span style={{ width: `${lastRead.pct}%` }} />
-            </span>
-          )}
-        </button>
-      )}
+      <ContinueReading onOpen={onOpenStory} />
 
       {decks.length === 0 ? (
         <div className="empty">

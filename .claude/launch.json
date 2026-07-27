@@ -7,6 +7,13 @@
       "runtimeArgs": ["run", "dev"],
       "port": 5199,
       "cwd": "/Users/remixcube/Developer/flashy"
+    },
+    {
+      "name": "flashy-api",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:vercel", "--", "--listen", "5199"],
+      "port": 5199,
+      "cwd": "/Users/remixcube/Developer/flashy"
     }
   ]
 }

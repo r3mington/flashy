@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, type Card } from '../db'
 import { CardEditor } from './CardEditor'
+import { ContinueReading } from './ContinueReading'
 import { ImportCsv } from './ImportCsv'
 import { GenerateCards } from './GenerateCards'
 import { generateEmojis } from '../ai'
@@ -19,6 +20,8 @@ interface Props {
   onStudySrs: () => void
   onStudyFlip: () => void
   onStory: () => void
+  /** Jump straight into a saved story (the "continue reading" shortcut). */
+  onOpenStory: (deckId: number, storyId: number) => void
   onListen: () => void
   onDeleted: () => void
 }
@@ -34,7 +37,15 @@ const FILTER_DEFS: { key: StateFilter; label: string }[] = [
   { key: 'known', label: 'Known' },
 ]
 
-export function DeckView({ deckId, onStudySrs, onStudyFlip, onStory, onListen, onDeleted }: Props) {
+export function DeckView({
+  deckId,
+  onStudySrs,
+  onStudyFlip,
+  onStory,
+  onOpenStory,
+  onListen,
+  onDeleted,
+}: Props) {
   const [search, setSearch] = useState('')
   const [stateFilter, setStateFilter] = useState<StateFilter>('all')
   const [sortBy, setSortBy] = useState<SortBy>('default')
@@ -240,6 +251,8 @@ export function DeckView({ deckId, onStudySrs, onStudyFlip, onStory, onListen, o
           🔊 Listen
         </button>
       </div>
+
+      <ContinueReading deckId={deckId} onOpen={onOpenStory} />
 
       <div className="toolbar">
         <input

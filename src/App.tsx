@@ -215,6 +215,7 @@ export default function App() {
             onStudySrs={() => setRoute({ name: 'study-srs', deckId: route.deckId })}
             onStudyFlip={() => setRoute({ name: 'study-flip', deckId: route.deckId })}
             onStory={() => setRoute({ name: 'story', deckId: route.deckId })}
+            onOpenStory={(deckId, storyId) => setRoute({ name: 'story', deckId, storyId })}
             onListen={() => setRoute({ name: 'listen', deckId: route.deckId })}
             onDeleted={() => setRoute({ name: 'decks' })}
           />
