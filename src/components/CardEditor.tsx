@@ -14,6 +14,7 @@ export function CardEditor({ deckId, card, onClose }: Props) {
   const [exampleTranslation, setExampleTranslation] = useState(card?.exampleTranslation ?? '')
   const [notes, setNotes] = useState(card?.notes ?? '')
   const [emoji, setEmoji] = useState(card?.emoji ?? '')
+  const [roman, setRoman] = useState(card?.roman ?? '')
   const [savedFlash, setSavedFlash] = useState(false)
 
   const valid = word.trim() && meaning.trim()
@@ -27,6 +28,7 @@ export function CardEditor({ deckId, card, onClose }: Props) {
       exampleTranslation: exampleTranslation.trim() || undefined,
       notes: notes.trim() || undefined,
       emoji: emoji.trim() || undefined,
+      roman: roman.trim() || undefined,
     }
     if (card) {
       await db.cards.update(card.id, fields)
@@ -40,6 +42,7 @@ export function CardEditor({ deckId, card, onClose }: Props) {
       setExampleTranslation('')
       setNotes('')
       setEmoji('')
+      setRoman('')
       setSavedFlash(true)
       setTimeout(() => setSavedFlash(false), 1200)
     } else {
@@ -86,6 +89,15 @@ export function CardEditor({ deckId, card, onClose }: Props) {
             value={exampleTranslation}
             onChange={(e) => setExampleTranslation(e.target.value)}
             placeholder="e.g. I walk to the market every morning."
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="card-roman">Romanization (optional)</label>
+          <input
+            id="card-roman"
+            value={roman}
+            onChange={(e) => setRoman(e.target.value)}
+            placeholder="e.g. sawatdi — for non-Latin scripts"
           />
         </div>
         <div className="field">

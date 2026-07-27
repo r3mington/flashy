@@ -79,6 +79,7 @@ export function Flashcard({ card, flipped, onFlip, dealKey, front, mask, languag
             {frontIsWord ? card.word : card.meaning}
             {frontIsWord && speakBtn}
           </div>
+          {frontIsWord && card.roman && <div className="card-roman">{card.roman}</div>}
           {frontIsWord && card.example && (
             <div className="example">{mask ? maskWord(card.example, card.word) : card.example}</div>
           )}
@@ -90,6 +91,7 @@ export function Flashcard({ card, flipped, onFlip, dealKey, front, mask, languag
             {card.word}
             {speakBtn}
           </div>
+          {card.roman && <div className="card-roman">{card.roman}</div>}
           <div className="divider-line" />
           <div className="meaning">{card.meaning}</div>
           {card.example && <div className="example">{card.example}</div>}

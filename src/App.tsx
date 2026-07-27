@@ -20,7 +20,7 @@ export type Route =
   | { name: 'deck'; deckId: number }
   | { name: 'study-srs'; deckId: number }
   | { name: 'study-flip'; deckId: number }
-  | { name: 'story'; deckId: number }
+  | { name: 'story'; deckId: number; storyId?: number }
   | { name: 'listen'; deckId: number }
 
 const ROUTE_KEY = 'flashy:route'
@@ -40,7 +40,7 @@ function routeToHash(r: Route): string {
     case 'study-flip':
       return `#/deck/${r.deckId}/flip`
     case 'story':
-      return `#/deck/${r.deckId}/story`
+      return `#/deck/${r.deckId}/story${r.storyId != null ? `/${r.storyId}` : ''}`
     case 'listen':
       return `#/deck/${r.deckId}/listen`
   }
@@ -51,7 +51,7 @@ function hashToRoute(hash: string): Route | null {
   if (path === '' || path === 'decks') return { name: 'decks' }
   if (path === 'dashboard') return { name: 'dashboard' }
   if (path === 'options') return { name: 'options' }
-  const m = path.match(/^deck\/(\d+)(?:\/(review|flip|story|listen))?$/)
+  const m = path.match(/^deck\/(\d+)(?:\/(review|flip|story|listen)(?:\/(\d+))?)?$/)
   if (m) {
     const deckId = Number(m[1])
     switch (m[2]) {
@@ -60,7 +60,7 @@ function hashToRoute(hash: string): Route | null {
       case 'flip':
         return { name: 'study-flip', deckId }
       case 'story':
-        return { name: 'story', deckId }
+        return { name: 'story', deckId, storyId: m[3] ? Number(m[3]) : undefined }
       case 'listen':
         return { name: 'listen', deckId }
       default:
@@ -192,7 +192,10 @@ export default function App() {
 
       {route.name === 'decks' && (
         <div className="view" key="decks">
-          <DeckList onOpen={(deckId) => setRoute({ name: 'deck', deckId })} />
+          <DeckList
+            onOpen={(deckId) => setRoute({ name: 'deck', deckId })}
+            onOpenStory={(deckId, storyId) => setRoute({ name: 'story', deckId, storyId })}
+          />
         </div>
       )}
       {route.name === 'dashboard' && (
@@ -231,6 +234,7 @@ export default function App() {
         <div className="view" key={`story-${route.deckId}`}>
           <StoryPage
             deckId={route.deckId}
+            initialStoryId={route.storyId}
             onExit={() => setRoute({ name: 'deck', deckId: route.deckId })}
           />
         </div>

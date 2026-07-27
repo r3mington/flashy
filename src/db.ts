@@ -19,6 +19,8 @@ export interface Card {
   notes?: string
   /** 1–2 emoji used as a visual mnemonic for the word. */
   emoji?: string
+  /** Romanization for non-Latin scripts (Thai RTGS, pinyin, romaji…). */
+  roman?: string
   createdAt: number
   /** Marked as known — excluded from study modes. */
   known?: boolean
@@ -70,7 +72,10 @@ export interface SavedStory {
   title: string
   story: string
   translation: string
-  glossary: { word: string; meaning: string; isNew: boolean }[]
+  glossary: { word: string; meaning: string; isNew: boolean; roman?: string }[]
+  /** Personal names of the story's characters — rendered in their own colour
+   *  and excluded from new-word highlighting/chips. */
+  characterNames?: string[]
   topic?: string
   /** Root story this one continues (always the first part's id) — parts are
    *  grouped under that root in the saved-stories list. Unset for standalone
@@ -79,6 +84,9 @@ export interface SavedStory {
   /** Reading marker: index of the word (Nth tappable word in the story) the
    *  reader stopped at. One per story. Plain property, not indexed. */
   bookmark?: number
+  /** When the story was last opened for reading — drives the homepage
+   *  "continue reading" shortcut. Plain property, not indexed. */
+  lastOpenedAt?: number
   createdAt: number
 }
 
@@ -110,6 +118,9 @@ export interface AppSettings {
   theme: 'system' | 'light' | 'dark'
   /** Reading text-size multiplier for stories (1 = default). */
   storyFontScale: number
+  /** Ruby romanization above story words (non-Latin scripts): none, only
+   *  new/highlighted words, or every word. */
+  storyRoman: 'off' | 'new' | 'all'
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -125,6 +136,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiThinking: false,
   theme: 'system',
   storyFontScale: 1,
+  storyRoman: 'new',
 }
 
 export const db = new Dexie('flashy') as Dexie & {

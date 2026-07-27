@@ -6,6 +6,8 @@ export interface Suggestion {
   example: string
   exampleTranslation: string
   emoji?: string
+  /** Romanization, present for languages not written in the Latin alphabet. */
+  roman?: string
 }
 
 /** Whether the user has opted into slower, higher-quality "thinking" for AI
@@ -61,6 +63,7 @@ const CARDS_SCHEMA = {
           example: { type: 'STRING' },
           exampleTranslation: { type: 'STRING' },
           emoji: { type: 'STRING' },
+          roman: { type: 'STRING' },
         },
         required: ['word', 'meaning', 'example', 'exampleTranslation', 'emoji'],
       },
@@ -87,6 +90,7 @@ export async function generateCards(opts: {
       : `Pick genuinely useful, common words a learner should know, at a difficulty consistent with the existing deck.`,
     `Each card needs: the word in ${deck.language}, a concise English meaning, a natural example sentence in ${deck.language} that uses the word, an English translation of that sentence, and an "emoji" field with 1-2 emoji that visually evoke the word's meaning (a memory aid).`,
     `Use casual, everyday conversational ${deck.language} — the register people actually speak in daily life, not formal or literary language.`,
+    ROMAN_RULE(deck.language, 'each word'),
     exclusions.length > 0
       ? `Do NOT include any of these words (already known or unwanted): ${exclusions.join(', ')}`
       : '',
@@ -146,6 +150,14 @@ export interface GlossaryEntry {
   word: string
   meaning: string
   isNew: boolean
+  /** Romanization, present for languages not written in the Latin alphabet. */
+  roman?: string
+}
+
+/** Shared instruction for the optional "roman" field: standard learner
+ *  romanization for non-Latin scripts, omitted entirely for Latin ones. */
+function ROMAN_RULE(language: string, what: string): string {
+  return `If ${language} is NOT written in the Latin alphabet (e.g. Thai, Chinese, Japanese, Korean, Russian, Arabic…), give ${what} a "roman" field with its romanization, using the standard learner system for the language (Thai: Royal Thai General System with tone-friendly vowels; Chinese: Hanyu Pinyin with tone marks; Japanese: Hepburn; Korean: Revised Romanization). If ${language} uses the Latin alphabet, omit the "roman" field entirely.`
 }
 
 export interface Story {
@@ -153,6 +165,7 @@ export interface Story {
   story: string
   translation: string
   glossary: GlossaryEntry[]
+  characterNames: string[]
 }
 
 const STORY_SCHEMA = {
@@ -169,12 +182,14 @@ const STORY_SCHEMA = {
           word: { type: 'STRING' },
           meaning: { type: 'STRING' },
           isNew: { type: 'BOOLEAN' },
+          roman: { type: 'STRING' },
         },
         required: ['word', 'meaning', 'isNew'],
       },
     },
+    characterNames: { type: 'ARRAY', items: { type: 'STRING' } },
   },
-  required: ['title', 'story', 'translation', 'glossary'],
+  required: ['title', 'story', 'translation', 'glossary', 'characterNames'],
 }
 
 export async function generateStory(opts: {
@@ -212,6 +227,8 @@ export async function generateStory(opts: {
       : '',
     `LENGTH — important: the story must be AT LEAST ${lengthWords} words long (aim for ${lengthWords}–${Math.round(lengthWords * 1.15)} words). Count words before answering; if the draft is short, extend the plot until it reaches the target.`,
     `IMPORTANT — register: use casual, everyday conversational ${deck.language}, the way people actually talk in daily life. Prefer informal forms over formal ones (for example, in Indonesian say "aku", not "saya"). No formal, literary, or textbook language.`,
+    `STYLE — dialogue-first: tell the story mainly through conversation. At least half of the words should be inside spoken lines, as short, natural back-and-forth exchanges between the characters; keep narration to brief connective sentences, with no long descriptive or scene-setting paragraphs. Always wrap spoken lines in quotation marks “…” (never dashes), so dialogue is machine-detectable.`,
+    `CHARACTERS: give every character a personal name that is natural and common for a native ${deck.language} speaker — never refer to anyone only as "the man", "my friend", "the seller" and so on.${continueFrom ? ' Keep the names already used in the previous part.' : ''} Return every personal name used in the story in the characterNames array.`,
     `The learner's word bank is below. Build the story primarily from these words (plus basic function words like articles, pronouns and common connectives, which are always allowed).`,
     knownWords.length > 0
       ? `Known words — use these freely and often: ${knownWords.join(', ')}`
@@ -221,7 +238,8 @@ export async function generateStory(opts: {
       : '',
     `At most ${newWordPercent}% of the content words (nouns, verbs, adjectives, adverbs) may be NEW words outside the word bank. ${newWordPercent === 0 ? 'Use no new content words at all.' : 'Prefer common, useful new words at the learner’s level.'}`,
     `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story, a full English translation, and a glossary.`,
-    `The glossary must list EVERY distinct word that appears in the story — content words AND function words (pronouns, prepositions, particles, connectives, numbers, everything). List each word in the exact surface form used in the story (including inflected/conjugated forms), with a concise English meaning matching how it is used there. A reader must be able to look up any single word of the story in this glossary. Set isNew=true only for content words outside the word bank.`,
+    `The glossary must list EVERY distinct word that appears in the story — content words AND function words (pronouns, prepositions, particles, connectives, numbers, everything), including character names. List each word in the exact surface form used in the story (including inflected/conjugated forms), with a concise English meaning matching how it is used there. A reader must be able to look up any single word of the story in this glossary. Set isNew=true only for content words outside the word bank; names are never isNew.`,
+    ROMAN_RULE(deck.language, 'every glossary entry'),
   ]
     .filter(Boolean)
     .join('\n')
@@ -234,6 +252,7 @@ const DEFINE_SCHEMA = {
   properties: {
     meaning: { type: 'STRING' },
     isContentWord: { type: 'BOOLEAN' },
+    roman: { type: 'STRING' },
   },
   required: ['meaning', 'isContentWord'],
 }
@@ -244,16 +263,20 @@ export async function defineWord(opts: {
   word: string
   /** Sentence the word was tapped in, to pin down the sense used. */
   sentence?: string
-}): Promise<{ meaning: string; isContentWord: boolean }> {
+}): Promise<{ meaning: string; isContentWord: boolean; roman?: string }> {
   const { deck, word, sentence } = opts
   const prompt = [
     `Give a concise English meaning for the ${deck.language} word "${word}", as a glossary entry for a language learner.`,
     sentence?.trim() ? `It appears in this sentence — define the sense used here: "${sentence.trim()}"` : '',
     `Also report whether it is a content word (noun, verb, adjective or adverb) rather than a function word.`,
+    ROMAN_RULE(deck.language, 'the word'),
   ]
     .filter(Boolean)
     .join('\n')
-  return callGeminiJson<{ meaning: string; isContentWord: boolean }>(prompt, DEFINE_SCHEMA)
+  return callGeminiJson<{ meaning: string; isContentWord: boolean; roman?: string }>(
+    prompt,
+    DEFINE_SCHEMA,
+  )
 }
 
 export class ApiError extends Error {

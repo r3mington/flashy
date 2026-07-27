@@ -16,16 +16,11 @@ import {
   stopSpeaking,
 } from '../speech'
 import { rootCandidates } from '../lemma'
+import { defKey, splitSentences, tokenizeWords } from '../text'
 import { useSettings, saveSettings } from '../useSettings'
 
 const FONT_SCALE_MIN = 0.8
 const FONT_SCALE_MAX = 1.8
-
-/** Split text into sentences, keeping terminators and trailing space so the
- *  pieces re-join into the original. Works for . ! ? … across scripts. */
-function splitSentences(text: string): string[] {
-  return text.match(/[^.!?…]+[.!?…]*\s*/gu) ?? (text.trim() ? [text] : [])
-}
 
 function startOfToday(): number {
   const d = new Date()
@@ -42,6 +37,8 @@ function formatDuration(seconds: number): string {
 
 interface Props {
   deckId: number
+  /** Deep link: open this saved story (at its reading marker) on mount. */
+  initialStoryId?: number
   onExit: () => void
 }
 
@@ -56,16 +53,13 @@ interface Definition {
   loading?: boolean
   /** The on-demand lookup failed. */
   failed?: boolean
+  /** Romanization (non-Latin scripts). */
+  roman?: string
+  /** The word is a character's personal name. */
+  isName?: boolean
 }
 
-/** Lowercase and strip surrounding punctuation so tokens match glossary entries. */
-function defKey(token: string): string {
-  return token
-    .toLowerCase()
-    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
-}
-
-export function StoryPage({ deckId, onExit }: Props) {
+export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const [topic, setTopic] = useState('')
   const [length, setLength] = useState(150)
   const [newPercent, setNewPercent] = useState(10)
@@ -161,22 +155,45 @@ export function StoryPage({ deckId, onExit }: Props) {
   // ground truth from the word bank, not the model's unreliable isNew flag.
   const isNewWord = (key: string) => !!key && !resolveDeckKey(key)
 
+  // Character names (every word of multi-word names) — rendered in their own
+  // colour and kept out of the new-word highlighting and chips.
+  const nameKeys = useMemo(() => {
+    const set = new Set<string>()
+    for (const name of story?.characterNames ?? []) {
+      for (const part of tokenizeWords(name, langCode)) {
+        const k = defKey(part)
+        if (k) set.add(k)
+      }
+    }
+    return set
+  }, [story?.characterNames, langCode])
+
   // Tap-to-define lookup: glossary from the model, plus the word bank as fallback.
   const defs = useMemo(() => {
     const map = new Map<string, Definition>()
     for (const c of cards ?? []) {
-      map.set(defKey(c.word), { word: c.word, meaning: c.meaning, isNew: false })
+      map.set(defKey(c.word), { word: c.word, meaning: c.meaning, isNew: false, roman: c.roman })
     }
     for (const g of story?.glossary ?? []) {
       const key = defKey(g.word)
-      map.set(key, { word: g.word, meaning: g.meaning, isNew: isNewWord(key) })
+      const isName = nameKeys.has(key)
+      map.set(key, {
+        word: g.word,
+        meaning: g.meaning,
+        isNew: !isName && isNewWord(key),
+        roman: g.roman,
+        isName,
+      })
     }
     return map
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cards, story, deckKeys, resolveDeckKey])
+  }, [cards, story, deckKeys, resolveDeckKey, nameKeys])
 
   // Sentences of the open story — the read-aloud unit and highlight granularity.
-  const sentences = useMemo(() => (story ? splitSentences(story.story) : []), [story])
+  const sentences = useMemo(
+    () => (story ? splitSentences(story.story, langCode) : []),
+    [story, langCode],
+  )
 
   // Tokenize into sentences → chunks, numbering each word with a story-global
   // index (the bookmark unit) and recording which sentence each word is in.
@@ -187,7 +204,7 @@ export function StoryPage({ deckId, onExit }: Props) {
     const QUOTE = /["“”„‟«»]/g
     const wordToSentence: number[] = []
     const rows = sentences.map((s, si) =>
-      s.split(/(\s+)/).map((tok) => {
+      tokenizeWords(s, langCode).map((tok) => {
         const before = inQuote
         const marks = tok.match(QUOTE)
         if (marks) for (let k = 0; k < marks.length; k++) inQuote = !inQuote
@@ -198,8 +215,8 @@ export function StoryPage({ deckId, onExit }: Props) {
         return { tok, wordIdx: w, quoted }
       }),
     )
-    return { rows, wordToSentence }
-  }, [sentences])
+    return { rows, wordToSentence, wordCount: w + 1 }
+  }, [sentences, langCode])
 
   const canRead = speechSupported && !!story
 
@@ -264,6 +281,20 @@ export function StoryPage({ deckId, onExit }: Props) {
     sentenceRefs.current[activeSentence]?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [activeSentence])
 
+  // Deep link (homepage "continue reading"): open the requested story once the
+  // data is in. Guarded so closing the story afterwards doesn't reopen it.
+  const autoOpenedRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (initialStoryId == null || autoOpenedRef.current === initialStoryId) return
+    if (!savedStories || !cards) return
+    const s = savedStories.find((x) => x.id === initialStoryId)
+    if (s) {
+      autoOpenedRef.current = initialStoryId
+      openStory(s)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialStoryId, savedStories, cards])
+
   // Saved stories grouped into threads: each root (or orphan) followed by its
   // continuation parts in reading order. Threads sorted by newest activity.
   const threads = useMemo(() => {
@@ -312,6 +343,7 @@ export function StoryPage({ deckId, onExit }: Props) {
         story: result.story,
         translation: result.translation,
         glossary: result.glossary,
+        characterNames: result.characterNames,
         topic: continuing ? undefined : topic.trim() || undefined,
         // Parts always attach to the thread's root, never to another part.
         parentId: continuing ? (continuing.parentId ?? continuing.id) : undefined,
@@ -341,6 +373,8 @@ export function StoryPage({ deckId, onExit }: Props) {
     // Land on the saved reading marker so "resume where I left off" is one tap.
     setActiveSentence(s.bookmark ?? null)
     setBaselineKeys(new Set((cards ?? []).map((c) => defKey(c.word))))
+    // Remember it as the most recently read story (homepage shortcut).
+    void db.stories.update(s.id, { lastOpenedAt: Date.now() })
   }
 
   async function deleteStory(id: number) {
@@ -489,7 +523,13 @@ export function StoryPage({ deckId, onExit }: Props) {
     if (rootCard) {
       // No exact entry, but the word is an inflected form of a known card — show
       // that card's meaning and flag which root it came from.
-      setSelected({ word: display, meaning: rootCard.meaning, isNew: false, root: rootCard.word })
+      setSelected({
+        word: display,
+        meaning: rootCard.meaning,
+        isNew: false,
+        root: rootCard.word,
+        roman: rootCard.roman,
+      })
       return
     }
     setSelected({ word: display, meaning: '', isNew: true, loading: true })
@@ -518,6 +558,7 @@ export function StoryPage({ deckId, onExit }: Props) {
         // Reached only when the word has no card or known root, so "new" hinges
         // purely on it being a content word (keeps function words off the chips).
         isNew: res.isContentWord,
+        roman: res.roman || undefined,
       }
       if (sid != null) {
         const rec = await db.stories.get(sid)
@@ -529,7 +570,7 @@ export function StoryPage({ deckId, onExit }: Props) {
       }
       setSelected((sel) =>
         sel?.loading && defKey(sel.word) === key
-          ? { word: display, meaning: res.meaning, isNew: true }
+          ? { word: display, meaning: res.meaning, isNew: true, roman: res.roman || undefined }
           : sel,
       )
     } catch {
@@ -539,12 +580,13 @@ export function StoryPage({ deckId, onExit }: Props) {
     }
   }
 
-  async function addWord(word: string, meaning: string, known = false) {
+  async function addWord(word: string, meaning: string, known = false, roman?: string) {
     await db.cards.add({
       deckId,
       word,
       meaning,
       example: '',
+      roman: roman || undefined,
       ...newCardDefaults(),
       known,
     })
@@ -562,21 +604,34 @@ export function StoryPage({ deckId, onExit }: Props) {
   // already in the deck when the story was opened.
   const newWords = (story?.glossary ?? []).filter((g) => {
     if (!g.isNew) return false
+    // Names aren't vocabulary — keep them off the chips.
+    if (nameKeys.has(defKey(g.word))) return false
     // Drop words whose surface form OR morphological root was already in the
     // bank when the story opened (e.g. "menjawab" when "jawab" is known).
     return !rootCandidates(defKey(g.word), langCode).some((c) => baselineKeys.has(c))
   })
 
-  // Header stats for the open story. "new" counts the distinct highlighted
-  // words (those not in the deck) straight from the text, so it always matches
-  // what's highlighted regardless of glossary completeness.
-  const storyWords = story ? story.story.trim().split(/\s+/).filter(Boolean) : []
-  const uniqueKeys = new Set(storyWords.map(defKey).filter(Boolean))
+  // Header stats for the open story. Counted from the tokenized layout (so
+  // spaceless scripts like Thai count words, not phrases). "new" counts the
+  // distinct highlighted words — names excluded — straight from the text, so
+  // it always matches what's highlighted regardless of glossary completeness.
+  const uniqueKeys = new Set(
+    layout.rows.flatMap((row) => row.filter((t) => t.wordIdx >= 0).map((t) => defKey(t.tok))),
+  )
   const stats = {
-    words: storyWords.length,
+    words: layout.wordCount,
     unique: uniqueKeys.size,
-    newWords: [...uniqueKeys].filter((k) => isNewWord(k)).length,
-    readMin: Math.max(1, Math.round(storyWords.length / 130)),
+    newWords: [...uniqueKeys].filter((k) => isNewWord(k) && !nameKeys.has(k)).length,
+    readMin: Math.max(1, Math.round(layout.wordCount / 130)),
+  }
+
+  // Ruby romanization: available when the glossary carries romanizations
+  // (non-Latin scripts only); shown per the storyRoman setting.
+  const hasRoman = (story?.glossary ?? []).some((g) => g.roman)
+  const romanMode = settings.storyRoman
+  function cycleRomanMode() {
+    const next = romanMode === 'off' ? 'new' : romanMode === 'new' ? 'all' : 'off'
+    saveSettings({ storyRoman: next })
   }
 
   const selectedCard = selected
@@ -850,6 +905,16 @@ export function StoryPage({ deckId, onExit }: Props) {
               </>
             )}
 
+            {hasRoman && (
+              <button
+                className={`btn small ${romanMode === 'off' ? 'ghost' : ''}`}
+                onClick={cycleRomanMode}
+                title="Romanization above the words — off, new words only, or all words"
+              >
+                Ā {romanMode}
+              </button>
+            )}
+
             <div className="story-size">
               <button
                 className="btn small ghost"
@@ -909,10 +974,19 @@ export function StoryPage({ deckId, onExit }: Props) {
                       </span>
                     )
                   const marked = t.wordIdx === story.bookmark
+                  const key = defKey(t.tok)
                   // Highlight straight from deck membership so ANY word not in
                   // the bank is orange — even ones the glossary missed. Deck
                   // words (known or learning) read as plain, tappable text.
-                  const cls = isNewWord(defKey(t.tok)) ? ' new-word' : ' plain'
+                  // Character names get their own colour instead.
+                  const isName = nameKeys.has(key)
+                  const isNew = !isName && isNewWord(key)
+                  const cls = isName ? ' story-name' : isNew ? ' new-word' : ' plain'
+                  // Ruby romanization above the word, per the setting.
+                  const roman =
+                    romanMode === 'all' || (romanMode === 'new' && isNew)
+                      ? defs.get(key)?.roman
+                      : undefined
                   return (
                     <span key={ti} className={marked ? 'story-marked-word' : undefined}>
                       {marked && (
@@ -931,7 +1005,14 @@ export function StoryPage({ deckId, onExit }: Props) {
                         className={`story-word${cls}${t.quoted ? ' story-quoted' : ''}`}
                         onClick={() => onWordTap(t.tok, t.wordIdx)}
                       >
-                        {t.tok}
+                        {roman ? (
+                          <ruby>
+                            {t.tok}
+                            <rt>{roman}</rt>
+                          </ruby>
+                        ) : (
+                          t.tok
+                        )}
                       </button>
                     </span>
                   )
@@ -972,6 +1053,7 @@ export function StoryPage({ deckId, onExit }: Props) {
                 {newWords.map((w) => (
                   <span key={w.word} className="chip">
                     {w.word}
+                    {w.roman && <span className="chip-roman">{w.roman}</span>}
                     <em>{w.meaning}</em>
                     {deckKeys.has(defKey(w.word)) ? (
                       <b className="chip-added">✓</b>
@@ -979,7 +1061,7 @@ export function StoryPage({ deckId, onExit }: Props) {
                       <button
                         className="add-word"
                         title={`Add “${w.word}” to the deck`}
-                        onClick={() => addWord(w.word, w.meaning)}
+                        onClick={() => addWord(w.word, w.meaning, false, w.roman)}
                       >
                         +
                       </button>
@@ -1007,15 +1089,21 @@ export function StoryPage({ deckId, onExit }: Props) {
                   🔊
                 </button>
               )}
-              {selected.isNew && !selectedInDeck && !selected.loading && !selected.failed && (
-                <span className="state-pill new">new</span>
-              )}
+              {selected.isName && <span className="state-pill name">name</span>}
+              {selected.isNew &&
+                !selected.isName &&
+                !selectedInDeck &&
+                !selected.loading &&
+                !selected.failed && <span className="state-pill new">new</span>}
               {selected.root && (
                 <span className="state-pill root" title={`Form of “${selected.root}”, in your deck`}>
                   form of {selected.root}
                 </span>
               )}
             </div>
+            {(selected.roman || selectedCard?.roman) && (
+              <div className="word-sheet-roman">{selected.roman ?? selectedCard?.roman}</div>
+            )}
             <div className="word-sheet-meaning">
               {selected.loading
                 ? 'Looking it up…'
@@ -1039,7 +1127,7 @@ export function StoryPage({ deckId, onExit }: Props) {
                   <button
                     className="btn small primary"
                     disabled={!selected.meaning}
-                    onClick={() => addWord(selected.word, selected.meaning)}
+                    onClick={() => addWord(selected.word, selected.meaning, false, selected.roman)}
                   >
                     Add to deck
                   </button>
@@ -1047,7 +1135,7 @@ export function StoryPage({ deckId, onExit }: Props) {
                     className="btn small"
                     disabled={!selected.meaning}
                     title="Add to the deck already marked as known"
-                    onClick={() => addWord(selected.word, selected.meaning, true)}
+                    onClick={() => addWord(selected.word, selected.meaning, true, selected.roman)}
                   >
                     Add as known
                   </button>

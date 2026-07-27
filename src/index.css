@@ -10,6 +10,7 @@
   --green: #2f9e44;
   --amber: #e8930c;
   --red: #e03131;
+  --violet: #7048e8;
   --radius: 14px;
   --shadow: 0 1px 2px rgb(26 26 24 / 0.04), 0 8px 24px rgb(26 26 24 / 0.06);
   --shadow-lg: 0 2px 4px rgb(26 26 24 / 0.06), 0 16px 48px rgb(26 26 24 / 0.12);
@@ -28,6 +29,7 @@
     --line: #2c2c29;
     --accent: #ff7a2f;
     --accent-soft: #33241b;
+    --violet: #9775fa;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.3);
     --shadow-lg: 0 2px 4px rgb(0 0 0 / 0.4), 0 16px 48px rgb(0 0 0 / 0.5);
   }
@@ -41,6 +43,7 @@
   --line: #2c2c29;
   --accent: #ff7a2f;
   --accent-soft: #33241b;
+  --violet: #9775fa;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.3);
   --shadow-lg: 0 2px 4px rgb(0 0 0 / 0.4), 0 16px 48px rgb(0 0 0 / 0.5);
 }
@@ -217,6 +220,52 @@ button { font-family: inherit; }
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 16px;
+}
+
+/* Homepage "continue reading" shortcut — jumps into the last-read story at
+   its marker. */
+.continue-reading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  margin-bottom: 18px;
+  padding: 16px 20px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  color: var(--ink);
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.continue-reading:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+  border-color: var(--accent);
+}
+.continue-reading .cr-label {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.continue-reading .cr-title { font-weight: 600; font-size: 17px; letter-spacing: -0.01em; }
+.continue-reading .cr-meta { color: var(--ink-2); font-size: 13px; }
+.continue-reading .cr-bar {
+  margin-top: 8px;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  overflow: hidden;
+}
+.continue-reading .cr-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 .deck-card {
@@ -443,6 +492,7 @@ button { font-family: inherit; }
   vertical-align: 2px;
 }
 .state-pill.new { background: var(--accent-soft); color: var(--accent); }
+.state-pill.name { background: color-mix(in srgb, var(--violet) 14%, transparent); color: var(--violet); }
 .state-pill.learning { background: color-mix(in srgb, var(--amber) 14%, transparent); color: var(--amber); }
 .state-pill.review { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
 .state-pill.root {
@@ -956,6 +1006,8 @@ button { font-family: inherit; }
   font-size: 13px;
 }
 .chip em { font-style: normal; color: var(--ink-3); font-size: 11px; }
+/* Romanization inside a new-word chip, between the word and its meaning. */
+.chip-roman { color: var(--ink-2); font-size: 11px; font-style: italic; }
 .chip button {
   border: none;
   background: var(--line);
@@ -1000,6 +1052,9 @@ button { font-family: inherit; }
 .suggestion .s-main { flex: 1; min-width: 0; }
 .suggestion .word { font-weight: 600; font-size: 15px; }
 .suggestion .s-meaning { font-weight: 400; color: var(--ink-2); }
+.suggestion .s-roman { font-weight: 400; font-style: italic; color: var(--ink-2); font-size: 0.9em; }
+/* Romanization under the word on a flashcard. */
+.card-roman { color: var(--ink-2); font-style: italic; font-size: 15px; margin-top: -6px; }
 .suggestion .example { font-size: 13px; font-style: italic; color: var(--ink-2); margin-top: 2px; }
 .suggestion .s-translation { font-size: 12px; color: var(--ink-3); }
 
@@ -1364,6 +1419,27 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   background: color-mix(in srgb, var(--amber) 28%, transparent);
   text-decoration-color: var(--amber);
 }
+/* Character names — their own colour so who's-who reads at a glance. */
+.story-word.story-name {
+  color: var(--violet);
+  text-decoration-color: color-mix(in srgb, var(--violet) 45%, transparent);
+}
+.story-word.story-name:hover, .story-word.story-name:focus-visible {
+  background: color-mix(in srgb, var(--violet) 14%, transparent);
+  text-decoration-color: var(--violet);
+}
+
+/* Ruby romanization above story words (Thai, Chinese…). The story body's 1.9
+   line-height leaves room for the annotations. */
+.story-body rt {
+  font-size: 0.52em;
+  font-style: normal;
+  color: var(--ink-2);
+  letter-spacing: 0.01em;
+  user-select: none;
+}
+.story-word.new-word rt { color: color-mix(in srgb, var(--amber) 75%, var(--ink)); }
+.story-word.story-name rt { color: color-mix(in srgb, var(--violet) 75%, var(--ink)); }
 
 /* Read-aloud bar + active-sentence highlight. Sticky so the marker/controls
    stay reachable while scrolling a long story. */
@@ -1460,4 +1536,6 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   margin-bottom: 6px;
 }
 .word-sheet-meaning { color: var(--ink-2); font-size: 15px; margin-bottom: 14px; }
+/* Romanization line in the tap-to-define sheet (non-Latin scripts). */
+.word-sheet-roman { color: var(--ink-2); font-size: 14px; font-style: italic; margin: -6px 0 8px; }
 .word-sheet-actions { display: flex; gap: 8px; align-items: center; }

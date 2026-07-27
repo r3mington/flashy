@@ -60,6 +60,7 @@ export function GenerateCards({ deck, onClose }: Props) {
       example: s.example,
       exampleTranslation: s.exampleTranslation || undefined,
       emoji: s.emoji?.trim() || undefined,
+      roman: s.roman?.trim() || undefined,
       ...newCardDefaults(),
     })
     setStates((prev) => prev.map((st, j) => (j === i ? 'added' : st)))
@@ -126,7 +127,9 @@ export function GenerateCards({ deck, onClose }: Props) {
                 >
                   <div className="s-main">
                     <div className="word">
-                      {s.word} <span className="s-meaning">— {s.meaning}</span>
+                      {s.word}
+                      {s.roman?.trim() && <span className="s-roman"> {s.roman.trim()}</span>}{' '}
+                      <span className="s-meaning">— {s.meaning}</span>
                     </div>
                     <div className="example">{s.example}</div>
                     {s.exampleTranslation && (
