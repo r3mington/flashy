@@ -15,6 +15,7 @@ import {
   speechSupported,
   stopSpeaking,
 } from '../speech'
+import { Icon } from './Icon'
 import { rootCandidates } from '../lemma'
 import { defKey, splitSentences, tokenizeWords } from '../text'
 import { useSettings, saveSettings } from '../useSettings'
@@ -92,6 +93,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   rateRef.current = rate
   const sentenceRefs = useRef<(HTMLSpanElement | null)[]>([])
   const bookmarkWordRef = useRef<HTMLElement | null>(null)
+  // Scroll-through-the-story progress, shown in the (collapsible) read bar.
+  const storyBodyRef = useRef<HTMLDivElement | null>(null)
+  const [progress, setProgress] = useState(0)
 
   // Daily reading timer: seconds already logged today (base) plus this session's
   // ticks; the sum is persisted periodically and on unmount.
@@ -280,6 +284,34 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     if (activeSentence == null) return
     sentenceRefs.current[activeSentence]?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [activeSentence])
+
+  // Reading progress = how much of the story text has scrolled past the bottom
+  // of the viewport. A story shorter than one screen counts as fully shown.
+  const storyId = story?.id
+  useEffect(() => {
+    if (storyId == null) return
+    let frame = 0
+    const measure = () => {
+      frame = 0
+      const el = storyBodyRef.current
+      if (!el) return
+      const rect = el.getBoundingClientRect()
+      if (rect.height <= 0) return
+      const seen = window.innerHeight - rect.top
+      setProgress(Math.min(1, Math.max(0, seen / rect.height)))
+    }
+    const onScroll = () => {
+      if (frame === 0) frame = requestAnimationFrame(measure)
+    }
+    measure()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', onScroll)
+    return () => {
+      if (frame) cancelAnimationFrame(frame)
+      window.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', onScroll)
+    }
+  }, [storyId])
 
   // Deep link (homepage "continue reading"): open the requested story once the
   // data is in. Guarded so closing the story afterwards doesn't reopen it.
@@ -629,6 +661,13 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // (non-Latin scripts only); shown per the storyRoman setting.
   const hasRoman = (story?.glossary ?? []).some((g) => g.roman)
   const romanMode = settings.storyRoman
+  const controlsOpen = settings.storyControlsOpen
+  const progressPct = Math.round(progress * 100)
+  // Where the saved marker sits along the story, as a tick on the progress bar.
+  const bookmarkPct =
+    story?.bookmark != null && layout.wordCount > 0
+      ? Math.min(100, Math.round(((story.bookmark + 1) / layout.wordCount) * 100))
+      : null
   function cycleRomanMode() {
     const next = romanMode === 'off' ? 'new' : romanMode === 'new' ? 'all' : 'off'
     saveSettings({ storyRoman: next })
@@ -647,7 +686,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
           {deck.name} · built from your {cards.length} {cards.length === 1 ? 'word' : 'words'}
         </span>
         <span className="read-timer" title="Time spent reading stories today">
-          ⏱ {formatDuration(readBaseSecs + sessionSecs)} today
+          <Icon name="clock" /> {formatDuration(readBaseSecs + sessionSecs)} today
         </span>
       </div>
 
@@ -839,38 +878,75 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             <span title="Estimated time to read">~{stats.readMin} min read</span>
           </div>
 
-          <div className="story-read-bar">
+          <div className={`story-read-bar${controlsOpen ? '' : ' collapsed'}`}>
+            {/* Always-visible strip: play, how far through you are, and the
+                collapse toggle — everything else folds away behind it. */}
+            <div className="story-bar-head">
+              {canRead && (
+                <button
+                  className={`btn small icon-btn${reading ? ' accent' : ' primary'}`}
+                  onClick={toggleReading}
+                  title={reading ? 'Pause reading' : 'Read the story aloud'}
+                  aria-label={reading ? 'Pause reading' : 'Read the story aloud'}
+                >
+                  <Icon name={reading ? 'pause' : 'play'} />
+                </button>
+              )}
+              <div
+                className="story-progress"
+                title={`${progressPct}% of the way through this story`}
+              >
+                <span className="story-progress-track">
+                  <span className="story-progress-fill" style={{ width: `${progressPct}%` }} />
+                  {bookmarkPct != null && (
+                    <span
+                      className="story-progress-mark"
+                      style={{ left: `${bookmarkPct}%` }}
+                      title={`Your marker is at ${bookmarkPct}%`}
+                    />
+                  )}
+                </span>
+                <span className="story-progress-pct">{progressPct}%</span>
+              </div>
+              <button
+                className="btn small ghost icon-btn"
+                onClick={() => saveSettings({ storyControlsOpen: !controlsOpen })}
+                aria-expanded={controlsOpen}
+                title={controlsOpen ? 'Hide the reading controls' : 'Show the reading controls'}
+                aria-label={controlsOpen ? 'Hide the reading controls' : 'Show the reading controls'}
+              >
+                <Icon name={controlsOpen ? 'chevronUp' : 'chevronDown'} />
+              </button>
+            </div>
+
+            {controlsOpen && (
+            <div className="story-bar-controls">
             {canRead && (
               <div className="story-play-group">
                 <button
-                  className="btn small ghost"
+                  className="btn small ghost icon-btn"
                   onClick={() => skip(-1)}
                   title="Previous sentence"
+                  aria-label="Previous sentence"
                   disabled={(activeSentence ?? 0) <= 0}
                 >
-                  ⏮
+                  <Icon name="skipBack" />
                 </button>
                 <button
-                  className={`btn small${reading ? ' accent' : ' primary'}`}
-                  onClick={toggleReading}
-                  title={reading ? 'Pause reading' : 'Read the story aloud'}
-                >
-                  {reading ? '⏸ Pause' : activeSentence != null ? '▶ Resume' : '🔊 Read aloud'}
-                </button>
-                <button
-                  className="btn small ghost"
+                  className="btn small ghost icon-btn"
                   onClick={() => skip(1)}
                   title="Next sentence"
+                  aria-label="Next sentence"
                   disabled={(activeSentence ?? 0) >= sentences.length - 1}
                 >
-                  ⏭
+                  <Icon name="skipForward" />
                 </button>
                 <button
                   className="btn small ghost"
                   onClick={() => readAloud(0)}
                   title="Play the whole story from the start — with lock-screen and headphone controls, so it keeps going with the screen off"
                 >
-                  🎧 Podcast
+                  <Icon name="headphones" /> Podcast
                 </button>
               </div>
             )}
@@ -888,19 +964,28 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     : 'Mark your place — then tap a word'
               }
             >
-              {marking ? '✕ Tap a word' : story.bookmark != null ? '🔖 Move marker' : '🔖 Mark spot'}
+              {marking ? (
+                <>
+                  <Icon name="x" /> Tap a word
+                </>
+              ) : (
+                <>
+                  <Icon name="bookmark" /> {story.bookmark != null ? 'Move marker' : 'Mark spot'}
+                </>
+              )}
             </button>
             {!marking && story.bookmark != null && (
               <>
                 <button className="btn small ghost" onClick={jumpToBookmark} title="Go to your marker">
-                  ↩ Go to marker
+                  <Icon name="bookmarkGo" /> Go to marker
                 </button>
                 <button
-                  className="btn small ghost"
+                  className="btn small ghost icon-btn"
                   onClick={() => setBookmark(undefined)}
                   title="Remove the reading marker"
+                  aria-label="Remove the reading marker"
                 >
-                  ✕
+                  <Icon name="x" />
                 </button>
               </>
             )}
@@ -911,7 +996,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 onClick={cycleRomanMode}
                 title="Romanization above the words — off, new words only, or all words"
               >
-                Ā {romanMode}
+                <span className="roman-glyph">Aa</span> {romanMode}
               </button>
             )}
 
@@ -949,12 +1034,15 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 />
               </label>
             )}
+            </div>
+            )}
           </div>
 
           {marking && (
             <p className="note story-mark-hint">Tap the word in the story where you stopped reading.</p>
           )}
           <div
+            ref={storyBodyRef}
             className={`story-body${marking ? ' marking' : ''}`}
             style={{ fontSize: `${17 * settings.storyFontScale}px` }}
           >
@@ -989,11 +1077,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                       : undefined
                   return (
                     <span key={ti} className={marked ? 'story-marked-word' : undefined}>
-                      {marked && (
-                        <span className="story-bookmark-marker" aria-hidden="true">
-                          🔖
-                        </span>
-                      )}
+                      {marked && <Icon name="bookmark" className="story-bookmark-marker" />}
                       <button
                         ref={
                           marked
@@ -1086,7 +1170,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   aria-label={`Pronounce ${selected.word}`}
                   onClick={() => pronounce(selected.word)}
                 >
-                  🔊
+                  <Icon name="volume" />
                 </button>
               )}
               {selected.isName && <span className="state-pill name">name</span>}

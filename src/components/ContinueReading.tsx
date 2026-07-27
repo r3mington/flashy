@@ -1,5 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, type SavedStory } from '../db'
+import { Icon } from './Icon'
 import { langCodeFor } from '../speech'
 import { countWords } from '../text'
 
@@ -43,7 +44,9 @@ export function ContinueReading({ deckId, onOpen }: Props) {
       title="Pick up where you left off — opens at your reading marker"
       onClick={() => onOpen(story.deckId, story.id)}
     >
-      <span className="cr-label">📖 Continue reading</span>
+      <span className="cr-label">
+        <Icon name="book" /> Continue reading
+      </span>
       <span className="cr-title">{story.title}</span>
       <span className="cr-meta">{meta.join(' · ')}</span>
       {pct != null && (

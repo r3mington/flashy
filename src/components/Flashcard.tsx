@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { Card } from '../db'
+import { Icon } from './Icon'
 import { useSettings } from '../useSettings'
 import {
   langCodeFor,
@@ -64,7 +65,7 @@ export function Flashcard({ card, flipped, onFlip, dealKey, front, mask, languag
         speakWord()
       }}
     >
-      🔊
+      <Icon name="volume" />
     </button>
   )
 

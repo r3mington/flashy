@@ -121,6 +121,9 @@ export interface AppSettings {
   /** Ruby romanization above story words (non-Latin scripts): none, only
    *  new/highlighted words, or every word. */
   storyRoman: 'off' | 'new' | 'all'
+  /** Whether the reader's control bar is expanded (it collapses to a slim
+   *  play + progress strip so the story gets the screen). */
+  storyControlsOpen: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -137,6 +140,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   storyFontScale: 1,
   storyRoman: 'new',
+  storyControlsOpen: true,
 }
 
 export const db = new Dexie('flashy') as Dexie & {

@@ -246,12 +246,16 @@ button { font-family: inherit; }
   border-color: var(--accent);
 }
 .continue-reading .cr-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   color: var(--accent);
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+.continue-reading .cr-label .icon { width: 1.25em; height: 1.25em; vertical-align: 0; }
 .continue-reading .cr-title { font-weight: 600; font-size: 17px; letter-spacing: -0.01em; }
 .continue-reading .cr-meta { color: var(--ink-2); font-size: 13px; }
 .continue-reading .cr-bar {
@@ -1269,21 +1273,31 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 /* ---- Emoji mnemonics ---- */
 .card-emoji { font-size: 40px; line-height: 1.1; margin-bottom: 10px; }
 .row-emoji { margin-right: 8px; }
+/* Romanization beside a card's word in the deck list (non-Latin scripts). */
+.row-roman {
+  margin-left: 8px;
+  font-weight: 400;
+  font-style: italic;
+  font-size: 0.85em;
+  color: var(--ink-2);
+}
 
 /* ---- Pronunciation ---- */
 .speak-btn {
   background: none;
   border: none;
+  color: inherit;
   cursor: pointer;
-  font-size: 18px;
+  font-size: 15px;
   line-height: 1;
   padding: 4px 6px;
-  margin-left: 6px;
+  margin-left: 4px;
   vertical-align: middle;
-  opacity: 0.55;
+  opacity: 0.5;
   transition: opacity 0.15s;
 }
 .speak-btn:hover { opacity: 1; }
+.speak-btn .icon { vertical-align: -0.2em; }
 
 /* ---- Listen mode ---- */
 .listen-page { max-width: 560px; }
@@ -1441,20 +1455,94 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .story-word.new-word rt { color: color-mix(in srgb, var(--amber) 75%, var(--ink)); }
 .story-word.story-name rt { color: color-mix(in srgb, var(--violet) 75%, var(--ink)); }
 
-/* Read-aloud bar + active-sentence highlight. Sticky so the marker/controls
-   stay reachable while scrolling a long story. */
+/* Inline icons: sized to their label, optically centred on the text baseline. */
+.icon {
+  width: 1.15em;
+  height: 1.15em;
+  flex: none;
+  vertical-align: -0.22em;
+}
+/* Buttons that are only an icon stay square rather than stretching. */
+.btn.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 8px;
+}
+.btn .icon { margin-right: 0.35em; }
+.btn.icon-btn .icon { margin-right: 0; }
+.roman-glyph { font-weight: 600; letter-spacing: -0.03em; }
+
+/* Read-aloud bar + active-sentence highlight. Sticky so play/progress stay
+   reachable while scrolling; the rest of the controls collapse away. */
 .story-read-bar {
   position: sticky;
   top: 0;
   z-index: 5;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
   margin-bottom: 14px;
   padding: 8px 0;
   background: var(--bg);
   border-bottom: 1px solid var(--line);
+}
+/* Always-visible strip: play, progress, expand/collapse. */
+.story-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.story-bar-head .story-progress { flex: 1; }
+.story-bar-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  animation: bar-open 0.18s ease;
+}
+@keyframes bar-open {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Reading progress: how far the story has scrolled past the viewport, with a
+   tick showing where the saved marker sits. */
+.story-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.story-progress-track {
+  position: relative;
+  flex: 1;
+  height: 5px;
+  min-width: 60px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ink-3) 25%, transparent);
+  overflow: hidden;
+}
+.story-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.1s linear;
+}
+.story-progress-mark {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 9px;
+  border-radius: 1px;
+  background: var(--ink-2);
+  transform: translateX(-1px);
+}
+.story-progress-pct {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  min-width: 34px;
+  text-align: right;
 }
 .story-mark-hint { color: var(--accent); margin: 0 0 10px; }
 /* While marking, invite taps and calm the definition-word styling. */
@@ -1474,7 +1562,13 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .story-rate input { width: 110px; }
 /* Bookmark: marker button state + the marked word in the text. */
 .btn.bookmarked { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
-.story-bookmark-marker { font-size: 0.85em; vertical-align: 0.1em; margin-right: 1px; }
+.story-bookmark-marker {
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 1px;
+  color: var(--accent);
+  vertical-align: -0.02em;
+}
 .story-marked-word .story-word {
   box-shadow: inset 0 -2px 0 var(--accent);
   border-radius: 3px;

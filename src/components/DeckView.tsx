@@ -3,6 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db, type Card } from '../db'
 import { CardEditor } from './CardEditor'
 import { ContinueReading } from './ContinueReading'
+import { Icon } from './Icon'
 import { ImportCsv } from './ImportCsv'
 import { GenerateCards } from './GenerateCards'
 import { generateEmojis } from '../ai'
@@ -248,7 +249,7 @@ export function DeckView({
           Flip through
         </button>
         <button className="btn" onClick={onListen} disabled={cards.length === 0}>
-          🔊 Listen
+          <Icon name="volume" /> Listen
         </button>
       </div>
 
@@ -378,6 +379,8 @@ export function DeckView({
                 <div className="word">
                   {card.emoji && <span className="row-emoji">{card.emoji}</span>}
                   {card.word}
+                  {/* Romanization for non-Latin scripts, right beside the word. */}
+                  {card.roman && <span className="row-roman">{card.roman}</span>}
                   {canSpeak && (
                     <button
                       className="speak-btn"
@@ -385,7 +388,7 @@ export function DeckView({
                       aria-label={`Pronounce ${card.word}`}
                       onClick={() => speakWord(card.word)}
                     >
-                      🔊
+                      <Icon name="volume" />
                     </button>
                   )}
                   {card.known ? (

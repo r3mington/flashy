@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db'
+import { Icon } from './Icon'
 import {
   langCodeFor,
   loadVoices,
@@ -264,12 +265,13 @@ export function ListenPage({ deckId, onExit }: Props) {
             onClick={() => skip(-1)}
             disabled={!current}
             title="Previous word"
+            aria-label="Previous word"
           >
-            ⏮
+            <Icon name="skipBack" />
           </button>
           {playing ? (
             <button className="btn accent listen-main" onClick={pause}>
-              ⏸ Pause
+              <Icon name="pause" /> Pause
             </button>
           ) : (
             <button
@@ -277,7 +279,7 @@ export function ListenPage({ deckId, onExit }: Props) {
               onClick={() => playFrom(pos.cycle, pos.idx)}
               disabled={!current}
             >
-              ▶ {pos.idx > 0 || pos.cycle > 0 ? 'Resume' : 'Play'}
+              <Icon name="play" /> {pos.idx > 0 || pos.cycle > 0 ? 'Resume' : 'Play'}
             </button>
           )}
           <button
@@ -285,12 +287,18 @@ export function ListenPage({ deckId, onExit }: Props) {
             onClick={() => skip(1)}
             disabled={!current}
             title="Next word"
+            aria-label="Next word"
           >
-            ⏭
+            <Icon name="skipForward" />
           </button>
           {(playing || pos.idx > 0 || pos.cycle > 0) && (
-            <button className="btn ghost small" onClick={stop} title="Stop and restart from the top">
-              ⏹
+            <button
+              className="btn ghost small icon-btn"
+              onClick={stop}
+              title="Stop and restart from the top"
+              aria-label="Stop and restart from the top"
+            >
+              <Icon name="stop" />
             </button>
           )}
         </div>
