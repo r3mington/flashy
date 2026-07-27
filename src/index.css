@@ -1354,12 +1354,12 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   .waveform.playing span { transform: scaleY(0.5); }
 }
 
-.listen-toggle-row {
-  flex-direction: row;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+/* Plain-language readout of the selected listening sequence. */
+.sequence-preview {
+  margin-top: 8px;
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.6;
 }
 .listen-pos {
   font-size: 12px;

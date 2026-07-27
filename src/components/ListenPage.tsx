@@ -21,26 +21,87 @@ interface Props {
 
 type Scope = 'all' | 'learning'
 
+/** One beat of a listening sequence: a string names what to speak, a number is
+ *  a pause in milliseconds. */
+type Step = 'meaning' | 'word' | 'example' | number
+
+interface Sequence {
+  id: string
+  name: string
+  steps: readonly Step[]
+}
+
+/** The sequences offered in the picker — add a new one by appending a row. */
+const SEQUENCES: readonly Sequence[] = [
+  {
+    id: 'classic',
+    name: 'Classic (with example)',
+    steps: ['meaning', 'word', 'word', 'word', 'example', 600],
+  },
+  {
+    id: 'en-3x',
+    name: 'English, then 3×',
+    steps: ['meaning', 'word', 'word', 'word', 2000],
+  },
+  {
+    id: 'alt-4x',
+    name: 'Alternating',
+    steps: [
+      'meaning',
+      'word',
+      'meaning',
+      'word',
+      'meaning',
+      'word',
+      'meaning',
+      'word',
+      2000,
+    ],
+  },
+]
+
+const DEFAULT_SEQUENCE = SEQUENCES[0]
+
+function sequenceById(id: string): Sequence {
+  return SEQUENCES.find((s) => s.id === id) ?? DEFAULT_SEQUENCE
+}
+
+/** Human-readable preview of a sequence, using the deck's own language name. */
+function describeSequence(seq: Sequence, language: string): string {
+  const label = (step: Step) =>
+    typeof step === 'number'
+      ? `${step >= 1000 ? `${step / 1000}s` : `${step}ms`} pause`
+      : step === 'meaning'
+        ? 'English'
+        : step === 'word'
+          ? language
+          : 'example'
+  // Collapse runs of the same part into "×n" so long sequences stay readable.
+  const parts: string[] = []
+  let run = 0
+  seq.steps.forEach((step, i) => {
+    run++
+    if (seq.steps[i + 1] === step && typeof step !== 'number') return
+    parts.push(run > 1 ? `${label(step)} ×${run}` : label(step))
+    run = 0
+  })
+  return parts.join(' → ')
+}
+
 interface ListenOptions {
   rate: number
-  /** 0 means the word itself is not spoken. */
-  reps: number
   /** 0 means infinite. */
   cycles: number
   scope: Scope
-  /** Speak the English meaning before the word. */
-  speakMeaning: boolean
-  /** Speak the card's example sentence after the word repetitions. */
-  speakExample: boolean
+  /** Which of SEQUENCES to play for each card. */
+  sequenceId: string
 }
 
 const DEFAULT_OPTIONS: ListenOptions = {
   rate: 0.9,
-  reps: 3,
   cycles: 0,
   scope: 'all',
-  speakMeaning: true,
-  speakExample: true,
+  sequenceId: DEFAULT_SEQUENCE.id,
 }
 
 const optionsKey = (deckId: number) => `flashy-listen-${deckId}`
@@ -145,28 +206,23 @@ export function ListenPage({ deckId, onExit }: Props) {
         const card = list[i]
         const opts = optionsRef.current
         const v = voicesRef.current
-        if (opts.speakMeaning) {
-          await speak(card.meaning, {
-            voice: preferredVoice(v, 'en'),
-            lang: 'en',
-            rate: opts.rate,
-          })
-        }
-        for (let r = 0; r < opts.reps; r++) {
+        // Walk the chosen sequence: numbers are pauses, everything else is
+        // spoken in the voice its content belongs to.
+        for (const step of sequenceById(opts.sequenceId).steps) {
           if (runRef.current !== my) return
+          if (typeof step === 'number') {
+            await delay(step)
+            continue
+          }
+          const text =
+            step === 'meaning' ? card.meaning : step === 'word' ? card.word : card.example
+          // Cards missing an example just skip that beat rather than pausing.
+          if (!text.trim()) continue
           await delay(300)
-          await speak(card.word, {
-            voice: preferredVoice(v, langCode),
-            lang: langCode ?? undefined,
-            rate: opts.rate,
-          })
-        }
-        if (opts.speakExample && card.example.trim()) {
           if (runRef.current !== my) return
-          await delay(400)
-          await speak(card.example, {
-            voice: preferredVoice(v, langCode),
-            lang: langCode ?? undefined,
+          await speak(text, {
+            voice: step === 'meaning' ? preferredVoice(v, 'en') : preferredVoice(v, langCode),
+            lang: step === 'meaning' ? 'en' : (langCode ?? undefined),
             rate: opts.rate,
           })
         }
@@ -318,44 +374,21 @@ export function ListenPage({ deckId, onExit }: Props) {
           </div>
 
           <div className="field">
-            <label htmlFor="listen-reps">
-              Repetitions per word · {options.reps === 0 ? 'off (word not spoken)' : `${options.reps}×`}
-            </label>
-            <input
-              id="listen-reps"
-              type="range"
-              min={0}
-              max={6}
-              step={1}
-              value={options.reps}
-              onChange={(e) => saveOptions({ reps: Number(e.target.value) })}
-            />
-          </div>
-
-          <div className="field listen-toggle-row">
-            <label htmlFor="listen-meaning-toggle">Speak English meaning</label>
-            <button
-              id="listen-meaning-toggle"
-              className={`toggle${options.speakMeaning ? ' on' : ''}`}
-              role="switch"
-              aria-checked={options.speakMeaning}
-              onClick={() => saveOptions({ speakMeaning: !options.speakMeaning })}
+            <label htmlFor="listen-sequence">Sequence per word</label>
+            <select
+              id="listen-sequence"
+              value={options.sequenceId}
+              onChange={(e) => saveOptions({ sequenceId: e.target.value })}
             >
-              <span className="knob" />
-            </button>
-          </div>
-
-          <div className="field listen-toggle-row">
-            <label htmlFor="listen-example-toggle">Speak example sentence</label>
-            <button
-              id="listen-example-toggle"
-              className={`toggle${options.speakExample ? ' on' : ''}`}
-              role="switch"
-              aria-checked={options.speakExample}
-              onClick={() => saveOptions({ speakExample: !options.speakExample })}
-            >
-              <span className="knob" />
-            </button>
+              {SEQUENCES.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            <p className="note sequence-preview">
+              {describeSequence(sequenceById(options.sequenceId), deck.language)}
+            </p>
           </div>
 
           <div className="field">
