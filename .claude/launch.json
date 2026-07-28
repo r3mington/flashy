@@ -6,6 +6,7 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 5199,
+      "autoPort": true,
       "cwd": "/Users/remixcube/Developer/flashy"
     },
     {

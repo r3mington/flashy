@@ -180,7 +180,14 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
             {stats.addedInRange} in the last {rangeDays}d · {stats.addedPerWeek}/week
           </span>
         </div>
-        <BarChart data={stats.addedSeries} labelStart={`${rangeDays}d ago`} labelEnd="today" />
+        <BarChart
+          data={stats.addedSeries}
+          labelStart={`${rangeDays}d ago`}
+          labelEnd="today"
+          describe={(i, v) =>
+            `${formatBankDay(stats.days[i], stats.today)} · ${v} ${v === 1 ? 'word' : 'words'} added`
+          }
+        />
         {stats.projection && (
           <p className="note">
             At this pace you reach <strong>{stats.projection.target} words</strong> around{' '}
@@ -201,6 +208,7 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
         <StackedBarChart
           series={stats.gradeSeries}
           keys={GRADES}
+          labels={GRADES.map((g) => GRADE_LABEL[g])}
           colors={['var(--red)', 'var(--amber)', 'var(--green)', 'var(--violet)']}
           labelStart={`${rangeDays}d ago`}
           labelEnd="today"
@@ -240,6 +248,7 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
         <StackedBarChart
           series={stats.timeSeries}
           keys={['study', 'read', 'listen'] as const}
+          labels={['reviewing', 'reading', 'listening']}
           colors={['var(--accent)', 'var(--green)', 'var(--violet)']}
           labelStart={`${rangeDays}d ago`}
           labelEnd="today"
@@ -278,6 +287,10 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
           labelStart="today"
           labelEnd="in 30d"
           accent
+          hint="Tap the chart to read a day"
+          describe={(i, v) =>
+            `${formatBankDay(stats.forecast[i].day, stats.today)} · ${v} ${v === 1 ? 'card' : 'cards'} due`
+          }
         />
       </section>
 
@@ -708,6 +721,7 @@ function compute(raw: RawData, rangeDays: number, deckFilter: number | 'all') {
 
   return {
     today,
+    days,
     cards,
     allReviews,
     stories,
@@ -876,28 +890,67 @@ function Stat({
   )
 }
 
+/** Bar charts are too narrow to tap a single bar on a phone, so the whole
+ *  plot area is the target: whichever column the x position lands in wins. */
+function useColumnPick(n: number) {
+  const [sel, setSel] = useState<number | null>(null)
+  const ref = useRef<SVGSVGElement>(null)
+  const pick = (clientX: number) => {
+    const el = ref.current
+    if (!el || n < 1) return
+    const rect = el.getBoundingClientRect()
+    const frac = (clientX - rect.left) / rect.width
+    setSel(Math.max(0, Math.min(n - 1, Math.floor(frac * n))))
+  }
+  return { sel, ref, pick }
+}
+
 function BarChart({
   data,
   labelStart,
   labelEnd,
   accent = false,
+  describe,
+  hint,
 }: {
   data: number[]
   labelStart: string
   labelEnd: string
   accent?: boolean
+  /** Readout text for the tapped column. */
+  describe?: (i: number, v: number) => string
+  /** Shown until something is tapped. */
+  hint?: string
 }) {
   const max = Math.max(...data, 1)
   const W = 600
   const H = 120
   const gap = data.length > 120 ? 0.5 : 3
   const barW = (W - gap * (data.length - 1)) / data.length
+  const { sel, ref, pick } = useColumnPick(data.length)
 
   return (
     <div className="chart-wrap">
-      <svg viewBox={`0 0 ${W} ${H}`} className="bar-chart" preserveAspectRatio="none">
+      <div className="line-readout">
+        {sel === null ? (
+          <span className="line-readout-hint">{hint ?? 'Tap the chart to read a day'}</span>
+        ) : (
+          <span className="line-readout-total">
+            {describe ? describe(sel, data[sel]) : String(data[sel])}
+          </span>
+        )}
+      </div>
+      <svg
+        ref={ref}
+        viewBox={`0 0 ${W} ${H}`}
+        className="bar-chart pickable"
+        preserveAspectRatio="none"
+        onClick={(e) => pick(e.clientX)}
+        onPointerMove={(e) => e.buttons === 1 && pick(e.clientX)}
+      >
         {data.map((v, i) => {
           const h = v === 0 ? 2 : Math.max(4, (v / max) * (H - 20))
+          const base = v === 0 ? 'bar zero' : accent ? 'bar accent' : 'bar'
           return (
             <rect
               key={i}
@@ -906,12 +959,21 @@ function BarChart({
               width={barW}
               height={h}
               rx={barW > 3 ? 2 : 0}
-              className={v === 0 ? 'bar zero' : accent ? 'bar accent' : 'bar'}
+              className={i === sel ? `${base} sel` : base}
             >
               <title>{v}</title>
             </rect>
           )
         })}
+        {sel !== null && (
+          <line
+            x1={sel * (barW + gap) + barW / 2}
+            x2={sel * (barW + gap) + barW / 2}
+            y1={0}
+            y2={H}
+            className="line-marker"
+          />
+        )}
       </svg>
       <div className="chart-labels">
         <span>{labelStart}</span>
@@ -926,6 +988,7 @@ function BarChart({
 function StackedBarChart<K extends string>({
   series,
   keys,
+  labels,
   colors,
   labelStart,
   labelEnd,
@@ -933,6 +996,8 @@ function StackedBarChart<K extends string>({
 }: {
   series: (Record<K, number> & { day: number })[]
   keys: readonly K[]
+  /** Display names for each key, in the same order — used in the tap readout. */
+  labels: readonly string[]
   colors: string[]
   labelStart: string
   labelEnd: string
@@ -944,10 +1009,40 @@ function StackedBarChart<K extends string>({
   const H = 120
   const gap = series.length > 120 ? 0.5 : 3
   const barW = (W - gap * (series.length - 1)) / series.length
+  const { sel, ref, pick } = useColumnPick(series.length)
+  const point = sel === null ? null : series[sel]
 
   return (
     <div className="chart-wrap">
-      <svg viewBox={`0 0 ${W} ${H}`} className="bar-chart" preserveAspectRatio="none">
+      <div className="line-readout">
+        {point === null ? (
+          <span className="line-readout-hint">Tap the chart to read a day</span>
+        ) : (
+          <>
+            <span className="line-readout-day">
+              {new Date(point.day).toLocaleDateString(undefined, {
+                month: 'short',
+                day: 'numeric',
+              })}
+            </span>
+            <span className="line-readout-total">{format(totals[sel!])}</span>
+            {keys.map((k, ki) => (
+              <span key={k}>
+                <i className="dot" style={{ background: colors[ki] }} />
+                {format(point[k])} {labels[ki]}
+              </span>
+            ))}
+          </>
+        )}
+      </div>
+      <svg
+        ref={ref}
+        viewBox={`0 0 ${W} ${H}`}
+        className="bar-chart pickable"
+        preserveAspectRatio="none"
+        onClick={(e) => pick(e.clientX)}
+        onPointerMove={(e) => e.buttons === 1 && pick(e.clientX)}
+      >
         {series.map((p, i) => {
           const total = totals[i]
           if (total === 0) {
@@ -977,13 +1072,22 @@ function StackedBarChart<K extends string>({
                     width={barW}
                     height={h}
                     fill={colors[ki]}
-                    opacity={0.9}
+                    opacity={sel === null || sel === i ? 0.9 : 0.45}
                   />
                 )
               })}
             </g>
           )
         })}
+        {sel !== null && (
+          <line
+            x1={sel * (barW + gap) + barW / 2}
+            x2={sel * (barW + gap) + barW / 2}
+            y1={0}
+            y2={H}
+            className="line-marker"
+          />
+        )}
       </svg>
       <div className="chart-labels">
         <span>{labelStart}</span>
@@ -1086,13 +1190,25 @@ function Heatmap({
   const weeks: (typeof days)[] = []
   for (let i = 0; i < days.length; i += 7) weeks.push(days.slice(i, i + 7))
   const activeDays = days.filter((d) => d.reviews > 0 || d.seconds > 0).length
+  const [sel, setSel] = useState<number | null>(null)
+  const picked = sel === null ? null : days.find((d) => d.day === sel)
 
   return (
     <div className="chart-wrap">
       <div className="line-readout">
-        <span className="line-readout-total">
-          {activeDays} active {activeDays === 1 ? 'day' : 'days'} of {days.length}
-        </span>
+        {picked ? (
+          <>
+            <span className="line-readout-day">{formatBankDay(picked.day, today)}</span>
+            <span className="line-readout-total">
+              {picked.reviews} {picked.reviews === 1 ? 'review' : 'reviews'}
+            </span>
+            {picked.seconds > 0 && <span>{formatDuration(picked.seconds)}</span>}
+          </>
+        ) : (
+          <span className="line-readout-total">
+            {activeDays} active {activeDays === 1 ? 'day' : 'days'} of {days.length}
+          </span>
+        )}
       </div>
       <div className="heatmap">
         {weeks.map((week, wi) => (
@@ -1105,9 +1221,11 @@ function Heatmap({
                     : 0
                   : Math.min(4, 1 + Math.floor((d.reviews / max) * 3.99))
               return (
-                <div
+                <button
+                  type="button"
                   key={d.day}
-                  className={`heat-cell l${level}${d.day === today ? ' is-today' : ''}`}
+                  onClick={() => setSel((s) => (s === d.day ? null : d.day))}
+                  className={`heat-cell l${level}${d.day === today ? ' is-today' : ''}${d.day === sel ? ' is-sel' : ''}`}
                   title={`${new Date(d.day).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} · ${d.reviews} reviews${d.seconds > 0 ? ` · ${formatDuration(d.seconds)}` : ''}`}
                 />
               )
@@ -1136,17 +1254,36 @@ function formatHour(h: number): string {
 
 function HourChart({ hours }: { hours: { hour: number; count: number; pass: number }[] }) {
   const max = Math.max(...hours.map((h) => h.count), 1)
+  const [sel, setSel] = useState<number | null>(null)
+  const picked = sel === null ? null : hours[sel]
   return (
     <div className="chart-wrap">
+      <div className="line-readout">
+        {picked ? (
+          <>
+            <span className="line-readout-day">{formatHour(picked.hour)}</span>
+            <span className="line-readout-total">
+              {picked.count} {picked.count === 1 ? 'answer' : 'answers'}
+            </span>
+            {picked.count > 0 && (
+              <span>{Math.round((picked.pass / picked.count) * 100)}% correct</span>
+            )}
+          </>
+        ) : (
+          <span className="line-readout-hint">Tap an hour to read its numbers</span>
+        )}
+      </div>
       <div className="hour-chart">
         {hours.map((h) => (
-          <div
-            className="hour-col"
+          <button
+            type="button"
+            className={`hour-col${h.hour === sel ? ' is-sel' : ''}`}
             key={h.hour}
+            onClick={() => setSel((s) => (s === h.hour ? null : h.hour))}
             title={`${formatHour(h.hour)} · ${h.count} answers${h.count > 0 ? ` · ${Math.round((h.pass / h.count) * 100)}% correct` : ''}`}
           >
             <div className="hour-bar" style={{ height: `${(h.count / max) * 100}%` }} />
-          </div>
+          </button>
         ))}
       </div>
       <div className="chart-labels">

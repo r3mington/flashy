@@ -848,6 +848,10 @@ button { font-family: inherit; }
 .bar-chart .bar.accent { fill: var(--accent); opacity: 0.85; }
 .bar-chart .bar.accent:hover { opacity: 1; }
 .bar-chart .bar.zero { fill: var(--line); }
+/* Whole plot area is the tap target — individual bars are far too narrow on a phone. */
+.bar-chart.pickable { cursor: pointer; touch-action: manipulation; }
+.bar-chart .bar.sel { fill: var(--ink); }
+.bar-chart .bar.accent.sel { fill: var(--accent); opacity: 1; }
 
 /* Word-bank line chart. Stroke stays crisp despite non-uniform scaling. */
 .line-chart { display: block; width: 100%; height: 120px; }
@@ -857,7 +861,7 @@ button { font-family: inherit; }
 .line-chart .line-area { fill: var(--accent); opacity: 0.12; }
 .line-chart .line-dot.total { fill: var(--accent); }
 .line-chart .line-dot.known { fill: var(--green); }
-.line-chart { cursor: pointer; }
+.line-chart { cursor: pointer; touch-action: manipulation; }
 .line-chart .line-marker { stroke: var(--ink-3); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.5; }
 /* Interactive day readout above the chart. */
 .line-readout {
@@ -869,6 +873,12 @@ button { font-family: inherit; }
   font-size: 13px;
   color: var(--ink-2);
 }
+/* Reserve the readout's height so tapping a chart doesn't shift the plot area
+   out from under the finger that's about to tap the next day. */
+.line-readout { min-height: 19px; }
+@media (max-width: 640px) {
+  .line-readout { min-height: 42px; align-content: start; }
+}
 .line-readout-day { font-weight: 600; color: var(--ink); min-width: 84px; }
 .line-readout .dot {
   display: inline-block;
@@ -878,6 +888,7 @@ button { font-family: inherit; }
   margin-right: 5px;
 }
 .line-readout .dot.known { background: var(--green); }
+.line-readout-hint { color: var(--ink-3); }
 
 .chart-labels {
   display: flex;
@@ -992,19 +1003,39 @@ button { font-family: inherit; }
   aspect-ratio: 1;
   border-radius: 2px;
   background: var(--line);
+  /* Cells are <button> so a tap reads out the day; strip the native chrome. */
+  appearance: none;
+  border: 0;
+  padding: 0;
+  width: 100%;
+  cursor: pointer;
+  touch-action: manipulation;
 }
 .heat-cell.l1 { background: color-mix(in srgb, var(--accent) 25%, var(--line)); }
 .heat-cell.l2 { background: color-mix(in srgb, var(--accent) 50%, var(--line)); }
 .heat-cell.l3 { background: color-mix(in srgb, var(--accent) 75%, var(--line)); }
 .heat-cell.l4 { background: var(--accent); }
 .heat-cell.is-today { outline: 1.5px solid var(--ink); outline-offset: 1px; }
+.heat-cell.is-sel { outline: 2px solid var(--accent); outline-offset: 1px; }
 .heat-scale { display: inline-flex; align-items: center; gap: 3px; }
-.heat-scale .heat-cell { width: 9px; height: 9px; aspect-ratio: auto; }
+.heat-scale .heat-cell { width: 9px; height: 9px; aspect-ratio: auto; cursor: default; }
 
 /* ---------- hour of day ---------- */
 
 .hour-chart { display: flex; align-items: flex-end; gap: 2px; height: 80px; }
-.hour-col { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.hour-col {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.hour-col.is-sel .hour-bar { background: var(--accent); }
 .hour-bar {
   width: 100%;
   min-height: 2px;
