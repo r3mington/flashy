@@ -1,4 +1,4 @@
-import { db, type Deck } from './db'
+import { db, type Deck, type StoryBible, type StoryChoice } from './db'
 
 export interface Suggestion {
   word: string
@@ -166,6 +166,8 @@ export interface Story {
   translation: string
   glossary: GlossaryEntry[]
   characterNames: string[]
+  choices: StoryChoice[]
+  bible: StoryBible
 }
 
 const STORY_SCHEMA = {
@@ -188,8 +190,79 @@ const STORY_SCHEMA = {
       },
     },
     characterNames: { type: 'ARRAY', items: { type: 'STRING' } },
+    choices: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          text: { type: 'STRING' },
+          translation: { type: 'STRING' },
+        },
+        required: ['text', 'translation'],
+      },
+    },
+    bible: {
+      type: 'OBJECT',
+      properties: {
+        logline: { type: 'STRING' },
+        cast: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              name: { type: 'STRING' },
+              role: { type: 'STRING' },
+              wants: { type: 'STRING' },
+            },
+            required: ['name', 'role', 'wants'],
+          },
+        },
+        places: { type: 'ARRAY', items: { type: 'STRING' } },
+        facts: { type: 'ARRAY', items: { type: 'STRING' } },
+        openThreads: { type: 'ARRAY', items: { type: 'STRING' } },
+      },
+      required: ['logline', 'cast', 'places', 'facts', 'openThreads'],
+    },
   },
-  required: ['title', 'story', 'translation', 'glossary', 'characterNames'],
+  required: [
+    'title',
+    'story',
+    'translation',
+    'glossary',
+    'characterNames',
+    'choices',
+    'bible',
+  ],
+}
+
+/** Dramatic turns a story can be built around. A genre is only a setting —
+ *  what makes a short piece land is the turn inside it, so one of these is
+ *  drawn at random for every part instead of leaving the shape to chance. */
+export const STORY_BEATS = [
+  'someone tells a small lie, and it snowballs',
+  'the reader learns something one of the characters does not know',
+  'a stranger turns up who already knows the main character’s name',
+  'there is a deadline, and it is closer than anyone thought',
+  'someone makes a promise they cannot keep',
+  'something precious goes missing, and suspicion lands on the wrong person',
+  'a conversation is overheard and only half understood',
+  'a favour turns out to cost far more than expected',
+  'someone comes back who was supposed to be gone for good',
+  'a tiny mistake has a consequence out of all proportion',
+  'two characters want the same thing and only one can have it',
+  'a secret is hiding in plain sight, mentioned early and ignored',
+  'an offer arrives that is too good to be honest',
+  'a message reaches the wrong person',
+  'someone recognises a face they were not supposed to see',
+  'a character is caught somewhere they should not be',
+  'the plan works, and that is exactly the problem',
+]
+
+/** Draw a beat, avoiding ones this thread has already played. */
+export function pickBeat(used: string[] = []): string {
+  const fresh = STORY_BEATS.filter((b) => !used.includes(b))
+  const pool = fresh.length > 0 ? fresh : STORY_BEATS
+  return pool[Math.floor(Math.random() * pool.length)]
 }
 
 export async function generateStory(opts: {
@@ -203,19 +276,42 @@ export async function generateStory(opts: {
   /** Titles/topics of the learner's previous stories — steer clear of their themes. */
   avoidThemes?: string[]
   /** Continue this existing story instead of starting a fresh one. `direction`
-   *  is the reader's optional steer for what should happen next. */
-  continueFrom?: { title: string; story: string; direction?: string }
+   *  is the reader's optional steer for what should happen next, `bible` the
+   *  world state the previous part left behind. */
+  continueFrom?: { title: string; story: string; direction?: string; bible?: StoryBible }
+  /** The dramatic turn to build this part around (see `pickBeat`). */
+  beat?: string
+  /** Words the learner keeps forgetting — worked into the plot on purpose so
+   *  they're met repeatedly, in context, instead of only on a flashcard. */
+  focusWords?: string[]
 }): Promise<Story> {
   const { deck, knownWords, learningWords, newWordPercent, topic, lengthWords } = opts
-  const { avoidThemes = [], continueFrom } = opts
+  const { avoidThemes = [], continueFrom, beat, focusWords = [] } = opts
 
+  const bible = continueFrom?.bible
   const prompt = [
     continueFrom
       ? `Below is a story in ${deck.language} that a language learner has been reading. Write the NEXT PART of it: continue seamlessly from where it ends, keeping the same characters, setting, tone and register. Advance the plot — don't recap or repeat what already happened.`
       : `Write a story in ${deck.language} for a language learner.`,
     continueFrom ? `Previous part, titled "${continueFrom.title}":\n${continueFrom.story}` : '',
+    bible
+      ? [
+          `STORY BIBLE — the world so far. All of it is already true: don't contradict it, and don't re-introduce these characters as though the reader were meeting them for the first time.`,
+          `Cast: ${bible.cast.map((c) => `${c.name} (${c.role}; wants ${c.wants})`).join('; ')}`,
+          bible.places.length > 0 ? `Places: ${bible.places.join('; ')}` : '',
+          bible.facts.length > 0 ? `Established facts: ${bible.facts.join('; ')}` : '',
+          bible.openThreads.length > 0
+            ? `Unanswered questions so far — answer ONE of these in this part, and leave at least one still open: ${bible.openThreads.join('; ')}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : '',
     continueFrom?.direction?.trim()
-      ? `The reader wants the continuation to go in this direction — make it happen naturally in this next part: "${continueFrom.direction.trim()}"`
+      ? `THE READER CHOSE THIS — the next part must follow it, and it must start happening within the first few lines, not at the end: "${continueFrom.direction.trim()}"`
+      : '',
+    beat
+      ? `THE TURN — build this part around exactly this dramatic turn: ${beat}. Plant it early inside an ordinary-looking detail, then let it land. Never announce or explain the turn; let the reader notice it.`
       : '',
     continueFrom
       ? ''
@@ -227,7 +323,8 @@ export async function generateStory(opts: {
       : '',
     `LENGTH — important: the story must be AT LEAST ${lengthWords} words long (aim for ${lengthWords}–${Math.round(lengthWords * 1.15)} words). Count words before answering; if the draft is short, extend the plot until it reaches the target.`,
     `IMPORTANT — register: use casual, everyday conversational ${deck.language}, the way people actually talk in daily life. Prefer informal forms over formal ones (for example, in Indonesian say "aku", not "saya"). No formal, literary, or textbook language.`,
-    `STYLE — dialogue-first: tell the story mainly through conversation. At least half of the words should be inside spoken lines, as short, natural back-and-forth exchanges between the characters; keep narration to brief connective sentences, with no long descriptive or scene-setting paragraphs. Always wrap spoken lines in quotation marks “…” (never dashes), so dialogue is machine-detectable.`,
+    `STYLE — dialogue-first: tell the story mainly through conversation. At least half of the words should be inside spoken lines, as short, natural back-and-forth exchanges between the characters; keep narration to brief connective sentences. Always wrap spoken lines in quotation marks “…” (never dashes), so dialogue is machine-detectable.`,
+    `TEXTURE: each scene gets exactly ONE concrete physical detail — a smell, a sound, a texture, a temperature, something someone is holding — in a single short sentence. One per scene, never a descriptive paragraph, and make it specific ("the rice was still too hot to hold") rather than general ("it was a nice day").`,
     `CHARACTERS: give every character a personal name that is natural and common for a native ${deck.language} speaker — never refer to anyone only as "the man", "my friend", "the seller" and so on.${continueFrom ? ' Keep the names already used in the previous part.' : ''} Return every personal name used in the story in the characterNames array.`,
     `The learner's word bank is below. Build the story primarily from these words (plus basic function words like articles, pronouns and common connectives, which are always allowed).`,
     knownWords.length > 0
@@ -237,8 +334,14 @@ export async function generateStory(opts: {
       ? `Words being learned — weave in as many of these as possible for practice: ${learningWords.join(', ')}`
       : '',
     `At most ${newWordPercent}% of the content words (nouns, verbs, adjectives, adverbs) may be NEW words outside the word bank. ${newWordPercent === 0 ? 'Use no new content words at all.' : 'Prefer common, useful new words at the learner’s level.'}`,
-    `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story, a full English translation, and a glossary.`,
-    `The glossary must list EVERY distinct word that appears in the story — content words AND function words (pronouns, prepositions, particles, connectives, numbers, everything), including character names. List each word in the exact surface form used in the story (including inflected/conjugated forms), with a concise English meaning matching how it is used there. A reader must be able to look up any single word of the story in this glossary. Set isNew=true only for content words outside the word bank; names are never isNew.`,
+    focusWords.length > 0
+      ? `PLOT-CRITICAL VOCABULARY: these are words the learner keeps forgetting — ${focusWords.join(', ')}. Each one must appear at least three times, in different sentences and different situations, and at least one of them must matter to the plot (it names the thing that goes missing, the place they must reach, the thing someone wants). Never draw attention to them or define them in the text; just make the story impossible to follow without them.`
+      : '',
+    `ENDING — do NOT resolve the story. The last line must land on a hook: an interruption, a reveal, an arrival, an unanswered question, or a decision whose outcome the reader cannot guess. Never end with everyone going home, everything turning out fine, a lesson learned, or a summary of what happened. Stop at the moment of maximum "wait, what?" — mid-scene is good, mid-sentence is not.`,
+    `THE CHOICE: after the story, offer the reader exactly TWO ways it could go next, as the "choices" array. Each choice is one short phrase (3–8 words) in ${deck.language}, written in the same casual register as the story, plus its English translation. The two must lead somewhere genuinely different, both must be plausible from where the story stopped, and neither may be the obviously "correct" or safe one. Write them as things that could happen next ("follow him to the market", "open the letter instead"), not as questions.`,
+    `THE BIBLE: also return "bible" — the state of the story world after this part${continueFrom ? ', updated from the bible above (carry forward everything still true, add what this part established, and drop questions this part answered)' : ''}. "logline" is ONE English sentence recapping what happened, written so it can be shown to the reader as "Previously…" before the next part. "cast" lists every named character with their role and what they want; "places" the locations used; "facts" the concrete details a later part must stay consistent with; "openThreads" the questions this part leaves unanswered — including the one your ending hook just raised.`,
+    `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story, a full English translation, a glossary, the two choices and the bible.`,
+    `The glossary must list EVERY distinct word that appears in the story — content words AND function words (pronouns, prepositions, particles, connectives, numbers, everything), including character names. List each word in the exact surface form used in the story (including inflected/conjugated forms), with a concise English meaning matching how it is used there. A reader must be able to look up any single word of the story in this glossary. It must cover the words used in the two choices too. Set isNew=true only for content words outside the word bank; names are never isNew.`,
     ROMAN_RULE(deck.language, 'every glossary entry'),
   ]
     .filter(Boolean)

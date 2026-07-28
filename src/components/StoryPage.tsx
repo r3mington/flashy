@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { bumpReading, db, newCardDefaults, type Card, type SavedStory } from '../db'
-import { defineWord, generateStory, ApiError } from '../ai'
+import {
+  bumpReading,
+  db,
+  newCardDefaults,
+  type Card,
+  type SavedStory,
+  type StoryChoice,
+} from '../db'
+import { defineWord, generateStory, pickBeat, ApiError } from '../ai'
+import { leeches } from '../stats'
 import {
   clearMediaSession,
   holdAudioFocus,
@@ -123,6 +131,14 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const savedStories = useLiveQuery(
     () => db.stories.where('deckId').equals(deckId).reverse().sortBy('createdAt'),
     [deckId],
+  )
+  const reviews = useLiveQuery(() => db.reviews.where('deckId').equals(deckId).toArray(), [deckId])
+
+  // Words this deck keeps failing on — handed to the writer so they carry the
+  // plot instead of only ever being met on a flashcard.
+  const focusWords = useMemo(
+    () => leeches(cards ?? [], reviews ?? [], 6).map((l) => l.card.word),
+    [cards, reviews],
   )
 
   const langCode = deck ? langCodeFor(deck.language) : null
@@ -381,10 +397,26 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // "Only unlearned" needs at least one card that isn't marked known.
   const scopeEmpty = scope === 'learning' && cards.every((c) => c.known)
 
-  async function run() {
+  /** Generate a story. `override` lets a tapped choice continue a story
+   *  directly from the reader, without going back through the form (the
+   *  `continuing`/`direction` state wouldn't have landed yet anyway). */
+  async function run(override?: { from?: SavedStory; direction?: string }) {
+    const from = override?.from ?? continuing
+    const steer = (override?.direction ?? direction).trim()
     setLoading(true)
     setError('')
     try {
+      // Don't replay a dramatic turn this thread has already used.
+      const usedBeats = from
+        ? (savedStories ?? [])
+            .filter(
+              (s) =>
+                s.id === (from.parentId ?? from.id) || s.parentId === (from.parentId ?? from.id),
+            )
+            .map((s) => s.beat)
+            .filter((b): b is string => !!b)
+        : []
+      const beat = pickBeat(usedBeats)
       const result = await generateStory({
         deck: deck!,
         // In 'learning' mode, don't seed the story with already-known words —
@@ -392,14 +424,21 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         knownWords: scope === 'all' ? cards!.filter((c) => c.known).map((c) => c.word) : [],
         learningWords: cards!.filter((c) => !c.known).map((c) => c.word),
         newWordPercent: newPercent,
-        topic: continuing ? undefined : topic || undefined,
+        topic: from ? undefined : topic || undefined,
         lengthWords: length,
+        beat,
+        focusWords,
         // Steer fresh stories away from themes already covered (recent first).
-        avoidThemes: continuing
+        avoidThemes: from
           ? undefined
           : (savedStories ?? []).slice(0, 8).map((s) => (s.topic ? `${s.title} (${s.topic})` : s.title)),
-        continueFrom: continuing
-          ? { title: continuing.title, story: continuing.story, direction: direction.trim() || undefined }
+        continueFrom: from
+          ? {
+              title: from.title,
+              story: from.story,
+              direction: steer || undefined,
+              bible: from.bible,
+            }
           : undefined,
       })
       const record: Omit<SavedStory, 'id'> = {
@@ -409,15 +448,21 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         translation: result.translation,
         glossary: result.glossary,
         characterNames: result.characterNames,
-        topic: continuing ? undefined : topic.trim() || undefined,
+        choices: result.choices?.slice(0, 2),
+        bible: result.bible,
+        beat,
+        focusWords: focusWords.length > 0 ? focusWords : undefined,
+        chosen: from && steer ? steer : undefined,
+        topic: from ? undefined : topic.trim() || undefined,
         // Parts always attach to the thread's root, never to another part.
-        parentId: continuing ? (continuing.parentId ?? continuing.id) : undefined,
+        parentId: from ? (from.parentId ?? from.id) : undefined,
         createdAt: Date.now(),
       }
       const id = await db.stories.add(record)
       setContinuing(null)
       setDirection('')
       openStory({ ...record, id })
+      window.scrollTo({ top: 0 })
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         setError('Your session expired — reload the page and sign in again.')
@@ -453,6 +498,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     setContinuing(parts.length > 0 ? parts[parts.length - 1] : root)
     setStory(null)
     setError('')
+  }
+
+  // A tapped choice writes the next part straight away — the reader never
+  // leaves the story, they just fall into the next one.
+  function chooseNext(from: SavedStory, choice: StoryChoice) {
+    void run({ from, direction: choice.translation })
   }
 
   // Read the story aloud, sentence by sentence, highlighting the current one.
@@ -711,6 +762,15 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     : undefined
   const selectedInDeck = !!selectedCard
 
+  // The open story's place in its thread: what came before (for the recap) and
+  // whether a next part already exists (in which case the branch is spent and
+  // the reader gets a "next part" link instead of the two choices).
+  const chainGroup = story ? threads.find((t) => t.root.id === (story.parentId ?? story.id)) : null
+  const chain = chainGroup ? [chainGroup.root, ...chainGroup.parts] : story ? [story] : []
+  const chainIdx = story ? chain.findIndex((s) => s.id === story.id) : -1
+  const prevPart = chainIdx > 0 ? chain[chainIdx - 1] : null
+  const nextPart = chainIdx >= 0 && chainIdx < chain.length - 1 ? chain[chainIdx + 1] : null
+
   return (
     <>
       <div className="page-head">
@@ -818,8 +878,15 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 : scope === 'all'
                   ? `Writes a casual, everyday ${deck.language} story leaning on the words you know and weaving in the ones you're learning.`
                   : `Writes a casual, everyday ${deck.language} story built only from the words you haven't learnt yet.`}{' '}
-              Tap any word in the result for its meaning.
+              Tap any word in the result for its meaning. It ends on a cliffhanger with two ways to
+              go next.
             </p>
+            {focusWords.length > 0 && (
+              <p className="note">
+                Building the plot around {focusWords.length} words you keep forgetting —{' '}
+                <b>{focusWords.join(', ')}</b> — so you meet each of them several times in context.
+              </p>
+            )}
             {scopeEmpty && (
               <p className="note error-note">
                 No unlearned words in this deck — every card is marked known. Switch to “All my
@@ -833,7 +900,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               </button>
               <button
                 className="btn accent"
-                onClick={run}
+                onClick={() => run()}
                 disabled={loading || cards.length === 0 || scopeEmpty}
               >
                 {loading ? 'Writing…' : continuing ? 'Continue story' : 'Generate story'}
@@ -899,7 +966,14 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         </>
       ) : (
         <div className="story-page">
+          {chainIdx > 0 && <div className="story-part-badge">Part {chainIdx + 1}</div>}
           <h2 className="story-title">{story.title}</h2>
+          {prevPart?.bible?.logline && (
+            <p className="story-previously">
+              <b>Previously</b> {prevPart.bible.logline}
+              {story.chosen && <em> You chose: {story.chosen}.</em>}
+            </p>
+          )}
           <div className="story-stats">
             <span title="Words in the story">{stats.words} words</span>
             <span title="Distinct words">{stats.unique} unique</span>
@@ -1138,6 +1212,52 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             ))}
           </div>
           {showTranslation && <div className="story-translation">{story.translation}</div>}
+
+          {nextPart ? (
+            <div className="story-choices">
+              <div className="eyebrow">You already took this one</div>
+              <button className="story-choice next" onClick={() => openStory(nextPart)}>
+                <span className="story-choice-text">{nextPart.title}</span>
+                <span className="story-choice-gloss">
+                  Part {chainIdx + 2}
+                  {nextPart.chosen ? ` · you chose: ${nextPart.chosen}` : ''}
+                </span>
+              </button>
+            </div>
+          ) : (
+            story.choices?.length === 2 && (
+              <div className="story-choices">
+                <div className="eyebrow">What happens next?</div>
+                <div className="story-choice-row">
+                  {story.choices.map((c) => (
+                    <button
+                      key={c.text}
+                      className="story-choice"
+                      disabled={loading}
+                      onClick={() => chooseNext(story, c)}
+                    >
+                      <span className="story-choice-text">{c.text}</span>
+                      <span className="story-choice-gloss">{c.translation}</span>
+                    </button>
+                  ))}
+                </div>
+                {loading && <p className="note">Writing the next part…</p>}
+                {error && <p className="note error-note">{error}</p>}
+                {!loading && (
+                  <button
+                    className="btn ghost small"
+                    onClick={() => {
+                      const g = threads.find((t) => t.root.id === (story.parentId ?? story.id))
+                      if (g) continueThread(g.root, g.parts)
+                    }}
+                  >
+                    Something else…
+                  </button>
+                )}
+              </div>
+            )
+          )}
+
           <div className="story-toolbar">
             <button className="btn ghost small" onClick={() => setShowTranslation((s) => !s)}>
               {showTranslation ? 'Hide translation' : 'Show translation'}

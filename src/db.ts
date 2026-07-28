@@ -81,6 +81,28 @@ export interface Review {
   interval?: number
 }
 
+/** What the story world knows about itself: carried from part to part so a
+ *  thread keeps its cast, its places and its unresolved questions straight
+ *  instead of drifting. Written by the model with each part. */
+export interface StoryBible {
+  /** One-sentence English recap, shown as "Previously…" on the next part. */
+  logline: string
+  cast: { name: string; role: string; wants: string }[]
+  places: string[]
+  /** Established details the next part must not contradict. */
+  facts: string[]
+  /** Questions the story has raised and not yet answered. */
+  openThreads: string[]
+}
+
+/** One of the two ways the reader can send the story next. `text` is in the
+ *  deck language (so the choice itself is reading practice), `translation` the
+ *  English gloss — and the gloss is what steers the continuation. */
+export interface StoryChoice {
+  text: string
+  translation: string
+}
+
 export interface SavedStory {
   id: number
   deckId: number
@@ -88,6 +110,17 @@ export interface SavedStory {
   story: string
   translation: string
   glossary: { word: string; meaning: string; isNew: boolean; roman?: string }[]
+  /** The two branches offered at the end of this part. Plain, not indexed. */
+  choices?: StoryChoice[]
+  /** World state after this part — fed back when continuing. Plain. */
+  bible?: StoryBible
+  /** The dramatic turn this part was built around. Kept so a thread doesn't
+   *  reuse a turn it has already played. Plain, not indexed. */
+  beat?: string
+  /** Words the learner keeps forgetting that were seeded into this part. */
+  focusWords?: string[]
+  /** The choice the reader took to get here (English gloss). Plain. */
+  chosen?: string
   /** Personal names of the story's characters — rendered in their own colour
    *  and excluded from new-word highlighting/chips. */
   characterNames?: string[]
