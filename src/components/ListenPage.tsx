@@ -135,6 +135,49 @@ function Waveform({ playing }: { playing: boolean }) {
   )
 }
 
+/** Log seconds spent actually playing audio, so the dashboard can show
+ *  listening alongside reviewing and reading. Mirrors the story read timer:
+ *  tick while playing, flush the running total periodically and on unmount. */
+function useListeningTimer(playing: boolean) {
+  const dayRef = useRef(startOfToday())
+  const baseRef = useRef(0)
+  const sessRef = useRef(0)
+
+  useEffect(() => {
+    db.listening.get(dayRef.current).then((r) => {
+      baseRef.current = r?.seconds ?? 0
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!playing) return
+    const id = setInterval(() => sessRef.current++, 1000)
+    return () => clearInterval(id)
+  }, [playing])
+
+  useEffect(() => {
+    const flush = () => {
+      if (sessRef.current > 0) {
+        db.listening.put({ day: dayRef.current, seconds: baseRef.current + sessRef.current })
+      }
+    }
+    const onHide = () => document.hidden && flush()
+    const id = setInterval(flush, 15000)
+    document.addEventListener('visibilitychange', onHide)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onHide)
+      flush()
+    }
+  }, [])
+}
+
+function startOfToday(): number {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
 export function ListenPage({ deckId, onExit }: Props) {
   const deck = useLiveQuery(() => db.decks.get(deckId), [deckId])
   const cards = useLiveQuery(() => db.cards.where('deckId').equals(deckId).toArray(), [deckId])
@@ -176,6 +219,8 @@ export function ListenPage({ deckId, onExit }: Props) {
     },
     [],
   )
+
+  useListeningTimer(playing)
 
   function saveOptions(patch: Partial<ListenOptions>) {
     setOptions((prev) => {

@@ -22,8 +22,22 @@ export type Route =
   | { name: 'study-flip'; deckId: number }
   | { name: 'story'; deckId: number; storyId?: number }
   | { name: 'listen'; deckId: number }
+  | { name: 'drill' }
 
 const ROUTE_KEY = 'flashy:route'
+/** Card ids for an ad-hoc drill session, kept out of the URL (there can be
+ *  dozens) but in sessionStorage so a reload mid-session still works. */
+const DRILL_KEY = 'flashy:drill'
+
+function loadDrillIds(): number[] {
+  try {
+    const raw = sessionStorage.getItem(DRILL_KEY)
+    const ids = raw ? JSON.parse(raw) : null
+    return Array.isArray(ids) ? ids.filter((n) => typeof n === 'number') : []
+  } catch {
+    return []
+  }
+}
 
 function routeToHash(r: Route): string {
   switch (r.name) {
@@ -33,6 +47,8 @@ function routeToHash(r: Route): string {
       return '#/dashboard'
     case 'options':
       return '#/options'
+    case 'drill':
+      return '#/drill'
     case 'deck':
       return `#/deck/${r.deckId}`
     case 'study-srs':
@@ -51,6 +67,7 @@ function hashToRoute(hash: string): Route | null {
   if (path === '' || path === 'decks') return { name: 'decks' }
   if (path === 'dashboard') return { name: 'dashboard' }
   if (path === 'options') return { name: 'options' }
+  if (path === 'drill') return { name: 'drill' }
   const m = path.match(/^deck\/(\d+)(?:\/(review|flip|story|listen)(?:\/(\d+))?)?$/)
   if (m) {
     const deckId = Number(m[1])
@@ -100,6 +117,7 @@ function initialRoute(): Route {
 
 export default function App() {
   const [route, setRoute] = useState<Route>(initialRoute)
+  const [drillIds, setDrillIds] = useState<number[]>(loadDrillIds)
   const [authed, setAuthed] = useState<boolean | null>(null)
   const settings = useSettings()
 
@@ -176,13 +194,15 @@ export default function App() {
           {navLink('options', 'Options')}
         </nav>
         <div className="spacer" />
-        {inDeckFlow && (
+        {(inDeckFlow || route.name === 'drill') && (
           <button
             className="btn ghost small"
             onClick={() =>
-              route.name === 'deck'
-                ? setRoute({ name: 'decks' })
-                : setRoute({ name: 'deck', deckId: (route as { deckId: number }).deckId })
+              route.name === 'drill'
+                ? setRoute({ name: 'dashboard' })
+                : route.name === 'deck'
+                  ? setRoute({ name: 'decks' })
+                  : setRoute({ name: 'deck', deckId: (route as { deckId: number }).deckId })
             }
           >
             ← Back
@@ -200,7 +220,25 @@ export default function App() {
       )}
       {route.name === 'dashboard' && (
         <div className="view" key="dashboard">
-          <Dashboard />
+          <Dashboard
+            onOpenDeck={(deckId) => setRoute({ name: 'deck', deckId })}
+            onStudy={(deckId) => setRoute({ name: 'study-srs', deckId })}
+            onOpenStory={(deckId, storyId) => setRoute({ name: 'story', deckId, storyId })}
+            onDrill={(ids) => {
+              setDrillIds(ids)
+              try {
+                sessionStorage.setItem(DRILL_KEY, JSON.stringify(ids))
+              } catch {
+                // ignore storage failures (e.g. private mode)
+              }
+              setRoute({ name: 'drill' })
+            }}
+          />
+        </div>
+      )}
+      {route.name === 'drill' && (
+        <div className="view" key="drill">
+          <StudySrs drillIds={drillIds} onExit={() => setRoute({ name: 'dashboard' })} />
         </div>
       )}
       {route.name === 'options' && (

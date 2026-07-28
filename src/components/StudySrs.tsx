@@ -20,9 +20,19 @@ interface SessionEntry {
   grade: Grade
 }
 
-export function StudySrs({ deckId, onExit }: { deckId: number; onExit: () => void }) {
+export function StudySrs({
+  deckId,
+  drillIds,
+  onExit,
+}: {
+  deckId?: number
+  /** Study exactly these cards, in this order, ignoring due dates — used by
+   *  the dashboard's "drill the hard ones" shortcut. */
+  drillIds?: number[]
+  onExit: () => void
+}) {
   const settings = useSettings()
-  const deck = useLiveQuery(() => db.decks.get(deckId), [deckId])
+  const deck = useLiveQuery(() => (deckId === undefined ? undefined : db.decks.get(deckId)), [deckId])
   const newPerSession = settings.newPerSession
   const [queue, setQueue] = useState<Card[] | null>(null)
   const [total, setTotal] = useState(0)
@@ -41,13 +51,21 @@ export function StudySrs({ deckId, onExit }: { deckId: number; onExit: () => voi
     let cancelled = false
     ;(async () => {
       const now = Date.now()
-      const all = (await db.cards.where('deckId').equals(deckId).toArray()).filter(
-        (c) => !c.known,
-      )
-      const dueCards = all.filter((c) => c.state !== 'new' && c.due <= now)
-      const newCards = all.filter((c) => c.state === 'new').slice(0, newPerSession)
-      dueCards.sort((a, b) => a.due - b.due)
-      const q = [...dueCards, ...newCards]
+      let q: Card[]
+      if (drillIds) {
+        const found = await db.cards.bulkGet(drillIds)
+        q = found.filter((c): c is Card => !!c && !c.known)
+      } else if (deckId !== undefined) {
+        const all = (await db.cards.where('deckId').equals(deckId).toArray()).filter(
+          (c) => !c.known,
+        )
+        const dueCards = all.filter((c) => c.state !== 'new' && c.due <= now)
+        const newCards = all.filter((c) => c.state === 'new').slice(0, newPerSession)
+        dueCards.sort((a, b) => a.due - b.due)
+        q = [...dueCards, ...newCards]
+      } else {
+        q = []
+      }
       if (!cancelled) {
         setQueue(q)
         setTotal(q.length)
@@ -56,7 +74,9 @@ export function StudySrs({ deckId, onExit }: { deckId: number; onExit: () => voi
     return () => {
       cancelled = true
     }
-  }, [deckId, newPerSession])
+    // drillIds is a stable per-mount list; identity changes shouldn't refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deckId, newPerSession, drillIds?.join(',')])
 
   const current = queue?.[0]
 
@@ -64,7 +84,16 @@ export function StudySrs({ deckId, onExit }: { deckId: number; onExit: () => voi
     if (!current || !queue) return
     const updates = schedule(current, g, settings.scheduler)
     await db.cards.update(current.id, updates)
-    const reviewId = await db.reviews.add({ cardId: current.id, deckId, grade: g, ts: Date.now() })
+    const reviewId = await db.reviews.add({
+      cardId: current.id,
+      deckId: current.deckId,
+      grade: g,
+      ts: Date.now(),
+      // The state the card was in when asked — lets the dashboard separate
+      // true retention from learning-step re-reps.
+      state: current.state,
+      interval: current.interval,
+    })
     setLastAction({ card: current, reviewId, grade: g })
     updateAppBadge()
     const updated = { ...current, ...updates }
@@ -140,10 +169,14 @@ export function StudySrs({ deckId, onExit }: { deckId: number; onExit: () => voi
       return (
         <div className="study-done">
           <div className="big">✦</div>
-          <h2>Nothing due</h2>
-          <p>No cards are due for review right now. Come back later.</p>
+          <h2>{drillIds ? 'Nothing to drill' : 'Nothing due'}</h2>
+          <p>
+            {drillIds
+              ? 'These cards have all been marked known.'
+              : 'No cards are due for review right now. Come back later.'}
+          </p>
           <button className="btn primary" onClick={onExit}>
-            Back to deck
+            {drillIds ? 'Back to dashboard' : 'Back to deck'}
           </button>
         </div>
       )

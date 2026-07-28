@@ -863,7 +863,8 @@ button { font-family: inherit; }
 .line-readout {
   display: flex;
   align-items: center;
-  gap: 14px;
+  flex-wrap: wrap;
+  gap: 4px 14px;
   margin-bottom: 8px;
   font-size: 13px;
   color: var(--ink-2);
@@ -918,6 +919,241 @@ button { font-family: inherit; }
 .state-legend .dot.new { background: var(--accent); }
 .state-legend .dot.learning { background: var(--amber); }
 .state-legend .dot.review { background: var(--green); }
+
+.stat-hint { color: var(--ink-3); font-size: 12px; margin-top: 3px; }
+
+/* A secondary, sentence-case aside inside an uppercase eyebrow. */
+.eyebrow-note {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--ink-3);
+  margin-left: 10px;
+}
+
+.note.no-top { margin-top: 0; }
+
+/* ---------- today card ---------- */
+
+.today-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+}
+.today-main { flex: 1 1 260px; min-width: 0; }
+.today-headline { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+.today-card .dash-goal { margin-top: 12px; margin-bottom: 0; }
+.today-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ---------- range switcher ---------- */
+
+.range-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 22px;
+}
+.range-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  margin-right: 4px;
+}
+.range-btn {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.range-btn:hover { border-color: var(--ink-3); color: var(--ink); }
+.range-btn.active { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+
+/* ---------- heatmap ---------- */
+
+.heatmap { display: flex; gap: 3px; }
+/* Cells stay small squares — they grow with the container only up to a point,
+   otherwise a 13-column grid stretches into giant blocks on desktop. */
+.heat-col { display: flex; flex-direction: column; gap: 3px; flex: 1 1 0; max-width: 20px; }
+.heat-cell {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: var(--line);
+}
+.heat-cell.l1 { background: color-mix(in srgb, var(--accent) 25%, var(--line)); }
+.heat-cell.l2 { background: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.heat-cell.l3 { background: color-mix(in srgb, var(--accent) 75%, var(--line)); }
+.heat-cell.l4 { background: var(--accent); }
+.heat-cell.is-today { outline: 1.5px solid var(--ink); outline-offset: 1px; }
+.heat-scale { display: inline-flex; align-items: center; gap: 3px; }
+.heat-scale .heat-cell { width: 9px; height: 9px; aspect-ratio: auto; }
+
+/* ---------- hour of day ---------- */
+
+.hour-chart { display: flex; align-items: flex-end; gap: 2px; height: 80px; }
+.hour-col { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.hour-bar {
+  width: 100%;
+  min-height: 2px;
+  background: var(--ink-3);
+  border-radius: 2px 2px 0 0;
+  transition: background 0.15s ease;
+}
+.hour-col:hover .hour-bar { background: var(--accent); }
+
+/* ---------- maturity histogram ---------- */
+
+.histogram { display: flex; gap: 10px; align-items: flex-end; }
+.hist-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.hist-count { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.hist-track { width: 100%; height: 90px; display: flex; align-items: flex-end; }
+.hist-bar {
+  width: 100%;
+  min-height: 3px;
+  background: var(--amber);
+  border-radius: 3px 3px 0 0;
+  transition: height 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.hist-bar.mature { background: var(--green); }
+.hist-label { font-size: 11px; color: var(--ink-3); }
+
+/* ---------- leeches ---------- */
+
+.leech-list {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.leech-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.4fr) auto;
+  align-items: baseline;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  padding: 11px 16px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.leech-row:last-child { border-bottom: none; }
+.leech-row:hover { background: var(--accent-soft); }
+.leech-word { font-weight: 600; }
+.leech-emoji { margin-right: 6px; }
+.leech-meaning {
+  color: var(--ink-2);
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.leech-reasons { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+.drill-btn { margin-top: 12px; }
+
+/* ---------- deck table ---------- */
+
+.deck-table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+.deck-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.deck-table th {
+  text-align: right;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  font-weight: 600;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.deck-table th:first-child { text-align: left; }
+.deck-table td {
+  text-align: right;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.deck-table td:first-child { text-align: left; }
+.deck-table tr:last-child td { border-bottom: none; }
+.deck-table tr.clickable { cursor: pointer; }
+.deck-table tr.clickable:hover td { background: var(--accent-soft); }
+.deck-cell-name { font-weight: 600; }
+.deck-cell-lang { color: var(--ink-3); font-size: 12px; margin-left: 8px; }
+.deck-table td.hot { color: var(--accent); font-weight: 600; }
+.cell-sub { color: var(--ink-3); font-size: 12px; margin-left: 6px; }
+
+/* ---------- stories on the dashboard ---------- */
+
+.story-progress-list {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+.story-progress-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  padding: 11px 16px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.story-progress-row:last-child { border-bottom: none; }
+.story-progress-row:hover { background: var(--accent-soft); }
+.story-progress-title { font-weight: 600; }
+.story-progress-meta { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+
+/* ---------- gaps & milestones ---------- */
+
+.gap-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.gap-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 15px;
+}
+.gap-count { font-weight: 700; font-variant-numeric: tabular-nums; }
+.gap-label { color: var(--ink-2); font-size: 13px; }
+
+.milestone-track { margin-top: 14px; }
+
+.line-readout-total { font-weight: 600; color: var(--ink); }
+.line-chart.pipeline { height: 140px; }
 
 /* ---------- options ---------- */
 

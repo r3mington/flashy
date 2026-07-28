@@ -58,12 +58,23 @@ export interface ReadingLog {
   seconds: number
 }
 
+/** Seconds spent in the Listen player on a given day. Keyed by `day`. */
+export interface ListeningLog {
+  day: number // start-of-day timestamp (ms)
+  seconds: number
+}
+
 export interface Review {
   id: number
   cardId: number
   deckId: number
   grade: 'again' | 'hard' | 'good' | 'easy'
   ts: number
+  /** The card's state and interval *before* this answer. Recorded so true
+   *  retention (pass rate on already-learned cards) can be measured; absent
+   *  on rows logged before this was tracked. Plain, non-indexed. */
+  state?: CardState
+  interval?: number
 }
 
 export interface SavedStory {
@@ -152,6 +163,7 @@ export const db = new Dexie('flashy') as Dexie & {
   stories: EntityTable<SavedStory, 'id'>
   snapshots: EntityTable<Snapshot, 'day'>
   reading: EntityTable<ReadingLog, 'day'>
+  listening: EntityTable<ListeningLog, 'day'>
 }
 
 db.version(1).stores({
@@ -185,6 +197,18 @@ db.version(4).stores({
   stories: '++id, deckId, createdAt',
   snapshots: 'day',
   reading: 'day',
+})
+
+db.version(5).stores({
+  decks: '++id, name',
+  cards: '++id, deckId, due, [deckId+due], word',
+  reviews: '++id, cardId, deckId, ts',
+  blacklist: '++id, deckId, word',
+  settings: 'key',
+  stories: '++id, deckId, createdAt',
+  snapshots: 'day',
+  reading: 'day',
+  listening: 'day',
 })
 
 /** Record (or refresh) today's word-bank snapshot. Idempotent — one row per
