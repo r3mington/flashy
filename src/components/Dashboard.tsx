@@ -136,6 +136,72 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
 
       <RangeBar value={rangeDays} onChange={setRangeDays} />
 
+      {/* ---------- reading ---------- */}
+
+      {stats.stories.length > 0 && (
+        <section className="dash-section">
+          <div className="eyebrow">
+            Stories
+            <span className="eyebrow-note">
+              {stats.stories.length} written · {stats.storyWords.toLocaleString()} words ·{' '}
+              {stats.distinctGlossary} distinct words met
+            </span>
+          </div>
+          {stats.inProgress.length > 0 && (
+            <div className="story-progress-list">
+              {stats.inProgress.map((s) => (
+                <button
+                  key={s.id}
+                  className="story-progress-row"
+                  onClick={() => onOpenStory?.(s.deckId, s.id)}
+                >
+                  <span className="story-progress-title">{s.title}</span>
+                  <span className="story-progress-meta">
+                    {s.lastOpenedAt ? formatAgo(s.lastOpenedAt) : formatAgo(s.createdAt)}
+                    {s.topic ? ` · ${s.topic}` : ''}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="state-legend">
+            <span>
+              <strong>{stats.threadCount}</strong> serialised{' '}
+              {stats.threadCount === 1 ? 'thread' : 'threads'}
+            </span>
+            <span>
+              <strong>{stats.glossaryToCards}</strong> story words became flashcards
+            </span>
+            {stats.topTopics.length > 0 && <span>Topics · {stats.topTopics.join(', ')}</span>}
+          </div>
+        </section>
+      )}
+
+      {stats.readWordsTotal > 0 && (
+        <section className="dash-section">
+          <div className="eyebrow">
+            Words read
+            <span className="eyebrow-note">
+              {stats.readWordsInRange.toLocaleString()} in the last {rangeDays}d ·{' '}
+              {stats.readWordsPerReadingDay.toLocaleString()}/day on the{' '}
+              {stats.readingDaysInRange} {stats.readingDaysInRange === 1 ? 'day' : 'days'} you read
+            </span>
+          </div>
+          <BarChart
+            data={stats.readWordsSeries}
+            labelStart={`${rangeDays}d ago`}
+            labelEnd="today"
+            describe={(i, v) =>
+              `${formatBankDay(stats.days[i], stats.today)} · ${v.toLocaleString()} ${v === 1 ? 'word' : 'words'} read`
+            }
+          />
+          <p className="note">
+            Counted as you scroll through a story, once per story — re-reading one doesn't count its
+            words again. Reading isn't split per deck.
+          </p>
+        </section>
+      )}
+
       {/* ---------- consistency ---------- */}
 
       <section className="dash-section">
@@ -270,31 +336,6 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
           timed directly. Time isn't split per deck.
         </p>
       </section>
-
-      {stats.readWordsTotal > 0 && (
-        <section className="dash-section">
-          <div className="eyebrow">
-            Words read
-            <span className="eyebrow-note">
-              {stats.readWordsInRange.toLocaleString()} in the last {rangeDays}d ·{' '}
-              {stats.readWordsPerReadingDay.toLocaleString()}/day on the{' '}
-              {stats.readingDaysInRange} {stats.readingDaysInRange === 1 ? 'day' : 'days'} you read
-            </span>
-          </div>
-          <BarChart
-            data={stats.readWordsSeries}
-            labelStart={`${rangeDays}d ago`}
-            labelEnd="today"
-            describe={(i, v) =>
-              `${formatBankDay(stats.days[i], stats.today)} · ${v.toLocaleString()} ${v === 1 ? 'word' : 'words'} read`
-            }
-          />
-          <p className="note">
-            Counted as you scroll through a story, once per story — re-reading one doesn't count its
-            words again. Reading isn't split per deck.
-          </p>
-        </section>
-      )}
 
       {/* ---------- what's coming ---------- */}
 
@@ -483,47 +524,6 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
               ))}
             </div>
           )}
-        </section>
-      )}
-
-      {/* ---------- stories ---------- */}
-
-      {stats.stories.length > 0 && (
-        <section className="dash-section">
-          <div className="eyebrow">
-            Stories
-            <span className="eyebrow-note">
-              {stats.stories.length} written · {stats.storyWords.toLocaleString()} words ·{' '}
-              {stats.distinctGlossary} distinct words met
-            </span>
-          </div>
-          {stats.inProgress.length > 0 && (
-            <div className="story-progress-list">
-              {stats.inProgress.map((s) => (
-                <button
-                  key={s.id}
-                  className="story-progress-row"
-                  onClick={() => onOpenStory?.(s.deckId, s.id)}
-                >
-                  <span className="story-progress-title">{s.title}</span>
-                  <span className="story-progress-meta">
-                    {s.lastOpenedAt ? formatAgo(s.lastOpenedAt) : formatAgo(s.createdAt)}
-                    {s.topic ? ` · ${s.topic}` : ''}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="state-legend">
-            <span>
-              <strong>{stats.threadCount}</strong> serialised{' '}
-              {stats.threadCount === 1 ? 'thread' : 'threads'}
-            </span>
-            <span>
-              <strong>{stats.glossaryToCards}</strong> story words became flashcards
-            </span>
-            {stats.topTopics.length > 0 && <span>Topics · {stats.topTopics.join(', ')}</span>}
-          </div>
         </section>
       )}
 
