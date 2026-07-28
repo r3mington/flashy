@@ -19,7 +19,10 @@ interface Props {
   onExit: () => void
 }
 
-type Scope = 'all' | 'learning'
+type Scope = 'all' | 'learning' | 'lookups'
+
+/** How many of the most-tapped words the "hardest" scope plays. */
+const TOP_LOOKUPS = 20
 
 /** One beat of a listening sequence: a string names what to speak, a number is
  *  a pause in milliseconds. */
@@ -230,7 +233,16 @@ export function ListenPage({ deckId, onExit }: Props) {
     })
   }
 
-  const scoped = (cards ?? []).filter((c) => (options.scope === 'all' ? true : !c.known))
+  // The "hardest" scope plays the words you tapped for a definition most often
+  // while reading, hardest first — the rest keep the deck's own order.
+  const scoped =
+    options.scope === 'lookups'
+      ? (cards ?? [])
+          .filter((c) => (c.lookups ?? 0) > 0)
+          .sort((a, b) => (b.lookups ?? 0) - (a.lookups ?? 0) || a.word.localeCompare(b.word))
+          .slice(0, TOP_LOOKUPS)
+      : (cards ?? []).filter((c) => (options.scope === 'all' ? true : !c.known))
+  const anyLookups = (cards ?? []).some((c) => (c.lookups ?? 0) > 0)
 
   if (!deck || !cards) return null
 
@@ -337,7 +349,8 @@ export function ListenPage({ deckId, onExit }: Props) {
       <div className="page-head">
         <h1>Listen</h1>
         <span className="sub">
-          {deck.name} · {scoped.length} {scoped.length === 1 ? 'word' : 'words'} in rotation
+          {deck.name} · {scoped.length} {scoped.length === 1 ? 'word' : 'words'}{' '}
+          {options.scope === 'lookups' ? 'you keep looking up' : 'in rotation'}
         </span>
       </div>
 
@@ -349,6 +362,11 @@ export function ListenPage({ deckId, onExit }: Props) {
               <div className="listen-word">{current.word}</div>
               <div className="listen-meaning">{current.meaning}</div>
               {current.example.trim() && <div className="listen-example">{current.example}</div>}
+              {options.scope === 'lookups' && (
+                <div className="listen-lookups">
+                  👁 looked up {current.lookups}× while reading
+                </div>
+              )}
               <Waveform playing={playing} />
               <div className="listen-pos">
                 word {pos.idx + 1}/{scoped.length} · cycle {pos.cycle + 1}
@@ -356,7 +374,11 @@ export function ListenPage({ deckId, onExit }: Props) {
               </div>
             </>
           ) : (
-            <div className="listen-meaning">No words in scope.</div>
+            <div className="listen-meaning">
+              {options.scope === 'lookups'
+                ? 'No looked-up words yet.'
+                : 'No words in scope.'}
+            </div>
           )}
         </div>
 
@@ -464,7 +486,15 @@ export function ListenPage({ deckId, onExit }: Props) {
             >
               <option value="all">All words</option>
               <option value="learning">Learning only (skip known)</option>
+              <option value="lookups">Hardest {TOP_LOOKUPS} (most looked up)</option>
             </select>
+            {options.scope === 'lookups' && (
+              <p className="note">
+                {anyLookups
+                  ? `The ${scoped.length} ${scoped.length === 1 ? 'word' : 'words'} you tapped for a definition most often while reading stories, hardest first.`
+                  : 'No words looked up yet — tap a word for its definition while reading a story and it shows up here.'}
+              </p>
+            )}
           </div>
 
           <div className="field">

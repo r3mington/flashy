@@ -271,6 +271,31 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
         </p>
       </section>
 
+      {stats.readWordsTotal > 0 && (
+        <section className="dash-section">
+          <div className="eyebrow">
+            Words read
+            <span className="eyebrow-note">
+              {stats.readWordsInRange.toLocaleString()} in the last {rangeDays}d ·{' '}
+              {stats.readWordsPerReadingDay.toLocaleString()}/day on the{' '}
+              {stats.readingDaysInRange} {stats.readingDaysInRange === 1 ? 'day' : 'days'} you read
+            </span>
+          </div>
+          <BarChart
+            data={stats.readWordsSeries}
+            labelStart={`${rangeDays}d ago`}
+            labelEnd="today"
+            describe={(i, v) =>
+              `${formatBankDay(stats.days[i], stats.today)} · ${v.toLocaleString()} ${v === 1 ? 'word' : 'words'} read`
+            }
+          />
+          <p className="note">
+            Counted as you scroll through a story, once per story — re-reading one doesn't count its
+            words again. Reading isn't split per deck.
+          </p>
+        </section>
+      )}
+
       {/* ---------- what's coming ---------- */}
 
       <section className="dash-section">
@@ -514,6 +539,13 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
             hint={stats.bestDay ? formatAgo(stats.bestDay.day) : undefined}
           />
           <Stat label="Lifetime answers" value={stats.allReviews.length} />
+          {stats.readWordsTotal > 0 && (
+            <Stat
+              label="Words read"
+              value={stats.readWordsTotal.toLocaleString()}
+              hint="in stories"
+            />
+          )}
           <Stat
             label="Next milestone"
             value={`${stats.states.known}/${stats.milestone}`}
@@ -609,6 +641,11 @@ function compute(raw: RawData, rangeDays: number, deckFilter: number | 'all') {
     read: readByDay.get(day) ?? 0,
     listen: listenByDay.get(day) ?? 0,
   }))
+  // Story words scrolled through — logged app-wide, so not split per deck.
+  const readWordsByDay = new Map(raw.reading.map((r) => [r.day, r.words ?? 0]))
+  const readWordsSeries = days.map((day) => readWordsByDay.get(day) ?? 0)
+  const readWordsInRange = readWordsSeries.reduce((a, b) => a + b, 0)
+  const readingDaysInRange = readWordsSeries.filter((w) => w > 0).length
   const timeTotals = timeSeries.reduce(
     (a, p) => ({ study: a.study + p.study, read: a.read + p.read, listen: a.listen + p.listen }),
     { study: 0, read: 0, listen: 0 },
@@ -754,6 +791,12 @@ function compute(raw: RawData, rangeDays: number, deckFilter: number | 'all') {
     gradeTotals,
     timeSeries,
     timeTotals,
+    readWordsSeries,
+    readWordsInRange,
+    readWordsTotal: raw.reading.reduce((a, r) => a + (r.words ?? 0), 0),
+    readWordsPerReadingDay:
+      readingDaysInRange > 0 ? Math.round(readWordsInRange / readingDaysInRange) : 0,
+    readingDaysInRange,
     forecast,
     forecastTotal: forecast.reduce((a, d) => a + d.count, 0),
     dueNow: forecast[0]?.count ?? 0,

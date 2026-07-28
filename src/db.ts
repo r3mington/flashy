@@ -52,10 +52,14 @@ export interface Snapshot {
   known: number
 }
 
-/** Seconds spent reading stories on a given day. Keyed by `day`. */
+/** Time and volume of story reading on a given day. Keyed by `day`. */
 export interface ReadingLog {
   day: number // start-of-day timestamp (ms)
   seconds: number
+  /** Story words scrolled through. Counted once per story (see
+   *  `SavedStory.wordsRead`), so re-reading doesn't inflate it. Absent on rows
+   *  logged before this was tracked. */
+  words?: number
 }
 
 /** Seconds spent in the Listen player on a given day. Keyed by `day`. */
@@ -98,6 +102,10 @@ export interface SavedStory {
   /** When the story was last opened for reading — drives the homepage
    *  "continue reading" shortcut. Plain property, not indexed. */
   lastOpenedAt?: number
+  /** High-water mark of how many words of this story have been scrolled
+   *  through. Only growth past this counts towards the daily words-read
+   *  total, so re-reading an old story doesn't count twice. */
+  wordsRead?: number
   createdAt: number
 }
 
@@ -210,6 +218,22 @@ db.version(5).stores({
   reading: 'day',
   listening: 'day',
 })
+
+/** Update a day's reading log without clobbering the field the other writer
+ *  owns — the timer sets `seconds` outright, the scroll tracker adds words. */
+export function bumpReading(
+  day: number,
+  patch: { seconds?: number; addWords?: number },
+): Promise<void> {
+  return db.transaction('rw', db.reading, async () => {
+    const row = await db.reading.get(day)
+    await db.reading.put({
+      day,
+      seconds: patch.seconds ?? row?.seconds ?? 0,
+      words: (row?.words ?? 0) + (patch.addWords ?? 0),
+    })
+  })
+}
 
 /** Record (or refresh) today's word-bank snapshot. Idempotent — one row per
  *  day, overwritten with the latest counts each time it runs. */

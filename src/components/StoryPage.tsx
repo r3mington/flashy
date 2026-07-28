@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, newCardDefaults, type Card, type SavedStory } from '../db'
+import { bumpReading, db, newCardDefaults, type Card, type SavedStory } from '../db'
 import { defineWord, generateStory, ApiError } from '../ai'
 import {
   clearMediaSession,
@@ -106,6 +106,13 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   baseRef.current = readBaseSecs
   const sessRef = useRef(0)
   sessRef.current = sessionSecs
+  // Words read today: derived from how far through the open story the reader
+  // has scrolled. `high` is the story's saved high-water mark, `seen` the best
+  // reached so far — only the growth between them is ever credited, so
+  // re-reading an old story doesn't count its words again.
+  const wordsHighRef = useRef(0)
+  const wordsSeenRef = useRef(0)
+  const wordsStoryRef = useRef<number | null>(null)
   // Deck words at the moment the story was opened — keeps the "new words" chip
   // list stable while words are added (added ones show a ✓ instead of vanishing).
   const [baselineKeys, setBaselineKeys] = useState<Set<string>>(new Set())
@@ -221,6 +228,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     )
     return { rows, wordToSentence, wordCount: w + 1 }
   }, [sentences, langCode])
+  // Read by the scroll handler, which is bound once per story.
+  const wordCountRef = useRef(0)
+  wordCountRef.current = layout.wordCount
 
   const canRead = speechSupported && !!story
 
@@ -248,10 +258,25 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     }, 1000)
     return () => clearInterval(id)
   }, [storyOpen])
+  // Credit the words newly scrolled past in the open story. Only refs are read,
+  // so the identity of this function doesn't matter to the effects using it.
+  const flushWords = () => {
+    const id = wordsStoryRef.current
+    const gained = wordsSeenRef.current - wordsHighRef.current
+    // The 5s floor keeps a story that's opened and immediately closed — which
+    // reads as 100% progress when it fits on one screen — from counting.
+    if (id == null || gained <= 0 || sessRef.current < 5) return
+    const mark = wordsSeenRef.current
+    wordsHighRef.current = mark
+    db.stories.update(id, { wordsRead: mark })
+    bumpReading(readDayRef.current, { addWords: gained })
+  }
+
   useEffect(() => {
     const flush = () => {
+      flushWords()
       if (sessRef.current > 0) {
-        db.reading.put({ day: readDayRef.current, seconds: baseRef.current + sessRef.current })
+        bumpReading(readDayRef.current, { seconds: baseRef.current + sessRef.current })
       }
     }
     const onHide = () => document.hidden && flush()
@@ -264,6 +289,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     }
   }, [])
   useEffect(() => {
+    // Credit whatever was read in the story being left, then hand the word
+    // counters over to the new one.
+    flushWords()
+    wordsStoryRef.current = story?.id ?? null
+    wordsHighRef.current = story?.wordsRead ?? 0
+    wordsSeenRef.current = story?.wordsRead ?? 0
     // A new story (or list view) cancels any in-progress reading, exits mark
     // mode, and lands on the sentence holding the saved marker word, if any.
     runRef.current++
@@ -298,7 +329,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       const rect = el.getBoundingClientRect()
       if (rect.height <= 0) return
       const seen = window.innerHeight - rect.top
-      setProgress(Math.min(1, Math.max(0, seen / rect.height)))
+      const frac = Math.min(1, Math.max(0, seen / rect.height))
+      setProgress(frac)
+      wordsSeenRef.current = Math.max(wordsSeenRef.current, Math.round(frac * wordCountRef.current))
     }
     const onScroll = () => {
       if (frame === 0) frame = requestAnimationFrame(measure)

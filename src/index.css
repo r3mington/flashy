@@ -1586,6 +1586,12 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   font-style: italic;
   line-height: 1.5;
 }
+.listen-lookups {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
 
 /* Animated waveform — pure CSS, dances while audio plays */
 .waveform {
