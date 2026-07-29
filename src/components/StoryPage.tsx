@@ -28,6 +28,20 @@ import { rootCandidates } from '../lemma'
 import { defKey, splitSentences, tokenizeWords } from '../text'
 import { useSettings, saveSettings } from '../useSettings'
 
+/** What the generate button and its note say during each pass of a story
+ *  generation — writing, topping up a short draft, then glossing the result. */
+const PHASE_LABEL: Record<'writing' | 'extending' | 'glossary', string> = {
+  writing: 'Writing…',
+  extending: 'Making it longer…',
+  glossary: 'Looking up the words…',
+}
+
+const PHASE_NOTE: Record<'writing' | 'extending' | 'glossary', string> = {
+  writing: 'Writing the next part…',
+  extending: 'Came out short — making it longer…',
+  glossary: 'Looking up every word so you can tap them…',
+}
+
 const FONT_SCALE_MIN = 0.8
 const FONT_SCALE_MAX = 1.8
 
@@ -76,9 +90,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // marked known (the ones you haven't learnt yet).
   const [scope, setScope] = useState<'all' | 'learning'>('all')
   const [loading, setLoading] = useState(false)
-  /** Set while a short draft is being extended, so the longer wait has a
-   *  visible reason rather than just a spinner that won't stop. */
-  const [extending, setExtending] = useState(false)
+  /** Which generation pass is running, so the wait has a visible reason
+   *  rather than just a spinner that won't stop. */
+  const [phase, setPhase] = useState<'writing' | 'extending' | 'glossary'>('writing')
   const [error, setError] = useState('')
   const [story, setStory] = useState<SavedStory | null>(null)
   const [showTranslation, setShowTranslation] = useState(false)
@@ -407,7 +421,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     const from = override?.from ?? continuing
     const steer = (override?.direction ?? direction).trim()
     setLoading(true)
-    setExtending(false)
+    setPhase('writing')
     setError('')
     try {
       // Don't replay a dramatic turn this thread has already used.
@@ -430,7 +444,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         newWordPercent: newPercent,
         topic: from ? undefined : topic || undefined,
         lengthWords: length,
-        onProgress: () => setExtending(true),
+        onProgress: (info) => setPhase(info.phase),
         beat,
         focusWords,
         // Steer fresh stories away from themes already covered (recent first).
@@ -478,7 +492,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       }
     } finally {
       setLoading(false)
-      setExtending(false)
+      setPhase('writing')
     }
   }
 
@@ -910,9 +924,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 disabled={loading || cards.length === 0 || scopeEmpty}
               >
                 {loading
-                  ? extending
-                    ? 'Making it longer…'
-                    : 'Writing…'
+                  ? PHASE_LABEL[phase]
                   : continuing
                     ? 'Continue story'
                     : 'Generate story'}
@@ -1253,11 +1265,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     </button>
                   ))}
                 </div>
-                {loading && (
-                  <p className="note">
-                    {extending ? 'Came out short — making it longer…' : 'Writing the next part…'}
-                  </p>
-                )}
+                {loading && <p className="note">{PHASE_NOTE[phase]}</p>}
                 {error && <p className="note error-note">{error}</p>}
                 {!loading && (
                   <button

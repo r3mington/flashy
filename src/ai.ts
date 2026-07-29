@@ -172,25 +172,36 @@ export interface Story {
   bible: StoryBible
 }
 
+const GLOSSARY_ARRAY = {
+  type: 'ARRAY',
+  items: {
+    type: 'OBJECT',
+    properties: {
+      word: { type: 'STRING' },
+      meaning: { type: 'STRING' },
+      isNew: { type: 'BOOLEAN' },
+      roman: { type: 'STRING' },
+    },
+    required: ['word', 'meaning', 'isNew'],
+  },
+}
+
+const GLOSSARY_SCHEMA = {
+  type: 'OBJECT',
+  properties: { glossary: GLOSSARY_ARRAY },
+  required: ['glossary'],
+}
+
+/** The prose call's shape — no glossary. Glossing every word of a story is
+ *  several times more output than the story itself, and asking for both at
+ *  once makes the two compete: the model that has to gloss what it writes
+ *  writes less. The glossary is a separate pass over the finished text. */
 const STORY_SCHEMA = {
   type: 'OBJECT',
   properties: {
     title: { type: 'STRING' },
     story: { type: 'STRING' },
     translation: { type: 'STRING' },
-    glossary: {
-      type: 'ARRAY',
-      items: {
-        type: 'OBJECT',
-        properties: {
-          word: { type: 'STRING' },
-          meaning: { type: 'STRING' },
-          isNew: { type: 'BOOLEAN' },
-          roman: { type: 'STRING' },
-        },
-        required: ['word', 'meaning', 'isNew'],
-      },
-    },
     characterNames: { type: 'ARRAY', items: { type: 'STRING' } },
     choices: {
       type: 'ARRAY',
@@ -226,16 +237,11 @@ const STORY_SCHEMA = {
       required: ['logline', 'cast', 'places', 'facts', 'openThreads'],
     },
   },
-  required: [
-    'title',
-    'story',
-    'translation',
-    'glossary',
-    'characterNames',
-    'choices',
-    'bible',
-  ],
+  required: ['title', 'story', 'translation', 'characterNames', 'choices', 'bible'],
 }
+
+/** The prose half of a story — what the writing call returns. */
+type StoryProse = Omit<Story, 'glossary'>
 
 /** Dramatic turns a story can be built around. A genre is only a setting —
  *  what makes a short piece land is the turn inside it, so one of these is
@@ -293,18 +299,41 @@ const EXTEND_SCHEMA = {
   properties: {
     story: { type: 'STRING' },
     translation: { type: 'STRING' },
-    glossary: STORY_SCHEMA.properties.glossary,
     characterNames: STORY_SCHEMA.properties.characterNames,
     choices: STORY_SCHEMA.properties.choices,
     bible: STORY_SCHEMA.properties.bible,
   },
-  required: ['story', 'translation', 'glossary', 'choices', 'bible'],
+  required: ['story', 'translation', 'choices', 'bible'],
 }
 
-/** Merge glossaries, keeping the first meaning given for a word. */
-function mergeGlossary(a: GlossaryEntry[], b: GlossaryEntry[]): GlossaryEntry[] {
-  const seen = new Set(a.map((e) => e.word.trim().toLowerCase()))
-  return [...a, ...b.filter((e) => !seen.has(e.word.trim().toLowerCase()))]
+/** Gloss a finished story: every word of it, in the surface form it appears
+ *  in, so a reader can tap anything. Split out of the writing call — annotating
+ *  a text that already exists is a different, easier job than predicting the
+ *  glossary of a text being written, and it leaves the writing call free to
+ *  spend its whole output on prose. */
+async function glossaryFor(opts: {
+  deck: Deck
+  story: StoryProse
+  bankWords: string[]
+}): Promise<GlossaryEntry[]> {
+  const { deck, story, bankWords } = opts
+  const choiceText = (story.choices ?? []).map((c) => c.text).join('\n')
+  const prompt = [
+    `Below is a finished story in ${deck.language}, written for a language learner who reads it by tapping words for their meanings. Build the lookup glossary for it.`,
+    `Story:\n${story.story}`,
+    choiceText ? `Also gloss the words in these two follow-on choices:\n${choiceText}` : '',
+    `List EVERY distinct word that appears in the text above — content words AND function words (pronouns, prepositions, particles, connectives, numbers, everything), including character names. Use the exact surface form used in the text (keep inflected, conjugated and affixed forms as they appear; do not reduce them to dictionary form). Give each a concise English meaning matching the sense it carries in that sentence, not its most common sense in isolation.`,
+    `The reader must be able to look up any single word of the story and find it here. Do not skip words that seem obvious, and do not add words that do not appear in the text.`,
+    bankWords.length > 0
+      ? `The learner's word bank: ${bankWords.join(', ')}. Set isNew=true only for content words (nouns, verbs, adjectives, adverbs) outside this bank. Function words are never isNew, and neither are personal names${story.characterNames?.length ? ` (${story.characterNames.join(', ')})` : ''}.`
+      : `Set isNew=true only for content words (nouns, verbs, adjectives, adverbs); function words and personal names are never isNew.`,
+    ROMAN_RULE(deck.language, 'every glossary entry'),
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  const parsed = await callGeminiJson<{ glossary: GlossaryEntry[] }>(prompt, GLOSSARY_SCHEMA)
+  return parsed.glossary ?? []
 }
 
 /** Grow a story that came back short: hand the draft back and ask for the
@@ -312,10 +341,10 @@ function mergeGlossary(a: GlossaryEntry[], b: GlossaryEntry[]): GlossaryEntry[] 
  *  ending, so the choices and bible from this pass replace the earlier ones. */
 async function extendStory(opts: {
   deck: Deck
-  story: Story
+  story: StoryProse
   missingWords: number
   newWordPercent: number
-}): Promise<Story> {
+}): Promise<StoryProse> {
   const { deck, story, missingWords, newWordPercent } = opts
   const prompt = [
     `Below is a story in ${deck.language} written for a language learner. It stopped too early — it needs about ${missingWords} more words.`,
@@ -326,16 +355,14 @@ async function extendStory(opts: {
     `IMPORTANT — register: casual, everyday spoken ${deck.language}, matching the story above. Keep dialogue inside quotation marks “…”.`,
     `At most ${newWordPercent}% of the content words may be new words the learner has not met; prefer the vocabulary already used above.`,
     `ENDING — the continuation must end on a hook, unresolved: an interruption, a reveal, an arrival, or a question the reader cannot answer. Never wrap the story up.`,
-    `Return: "story" (the continuation text only), "translation" (an English translation of the continuation only), "glossary" (every distinct word used in the continuation, in the surface form it appears in, with a concise English meaning; isNew=true only for content words outside the learner's bank; names are never isNew), "characterNames" (any personal names appearing in the continuation), "choices" (exactly TWO short phrases in ${deck.language}, 3–8 words each, with English translations, for how the story could go next from this new ending), and "bible" (the world state after the continuation: logline, cast, places, facts, openThreads).`,
-    ROMAN_RULE(deck.language, 'every glossary entry'),
+    `Return: "story" (the continuation text only), "translation" (an English translation of the continuation only), "characterNames" (any personal names appearing in the continuation), "choices" (exactly TWO short phrases in ${deck.language}, 3–8 words each, with English translations, for how the story could go next from this new ending), and "bible" (the world state after the continuation: logline, cast, places, facts, openThreads).`,
   ].join('\n')
 
-  const more = await callGeminiJson<Omit<Story, 'title'>>(prompt, EXTEND_SCHEMA)
+  const more = await callGeminiJson<Omit<StoryProse, 'title'>>(prompt, EXTEND_SCHEMA)
   return {
     ...story,
     story: `${story.story.trimEnd()}\n\n${more.story.trim()}`,
     translation: `${story.translation.trimEnd()}\n\n${more.translation.trim()}`,
-    glossary: mergeGlossary(story.glossary, more.glossary ?? []),
     characterNames: [
       ...new Set([...(story.characterNames ?? []), ...(more.characterNames ?? [])]),
     ],
@@ -368,9 +395,14 @@ export async function generateStory(opts: {
   /** Words the learner keeps forgetting — worked into the plot on purpose so
    *  they're met repeatedly, in context, instead of only on a flashcard. */
   focusWords?: string[]
-  /** Called when the draft came back short and is being extended, so the UI
-   *  can say what the extra wait is for. */
-  onProgress?: (info: { words: number; target: number; pass: number }) => void
+  /** Progress across the writing passes, so the UI can say what each wait is
+   *  for: extending a short draft, then glossing the finished text. */
+  onProgress?: (info: {
+    phase: 'extending' | 'glossary'
+    words?: number
+    target?: number
+    pass?: number
+  }) => void
 }): Promise<Story> {
   const { deck, knownWords, learningWords, newWordPercent, topic, lengthWords } = opts
   const { avoidThemes = [], continueFrom, beat, focusWords = [] } = opts
@@ -427,27 +459,25 @@ export async function generateStory(opts: {
     `ENDING — do NOT resolve the story. The last line must land on a hook: an interruption, a reveal, an arrival, an unanswered question, or a decision whose outcome the reader cannot guess. Never end with everyone going home, everything turning out fine, a lesson learned, or a summary of what happened. Stop at the moment of maximum "wait, what?" — mid-scene is good, mid-sentence is not.`,
     `THE CHOICE: after the story, offer the reader exactly TWO ways it could go next, as the "choices" array. Each choice is one short phrase (3–8 words) in ${deck.language}, written in the same casual register as the story, plus its English translation. The two must lead somewhere genuinely different, both must be plausible from where the story stopped, and neither may be the obviously "correct" or safe one. Write them as things that could happen next ("follow him to the market", "open the letter instead"), not as questions.`,
     `THE BIBLE: also return "bible" — the state of the story world after this part${continueFrom ? ', updated from the bible above (carry forward everything still true, add what this part established, and drop questions this part answered)' : ''}. "logline" is ONE English sentence recapping what happened, written so it can be shown to the reader as "Previously…" before the next part. "cast" lists every named character with their role and what they want; "places" the locations used; "facts" the concrete details a later part must stay consistent with; "openThreads" the questions this part leaves unanswered — including the one your ending hook just raised.`,
-    `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story, a full English translation, a glossary, the two choices and the bible.`,
-    `The glossary must list EVERY distinct word that appears in the story — content words AND function words (pronouns, prepositions, particles, connectives, numbers, everything), including character names. List each word in the exact surface form used in the story (including inflected/conjugated forms), with a concise English meaning matching how it is used there. A reader must be able to look up any single word of the story in this glossary. It must cover the words used in the two choices too. Set isNew=true only for content words outside the word bank; names are never isNew.`,
-    ROMAN_RULE(deck.language, 'every glossary entry'),
+    `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story, a full English translation, the two choices and the bible. Spend your effort on the story itself — the words will be glossed separately afterwards, so you do not need to define anything here.`,
   ]
     .filter(Boolean)
     .join('\n')
 
-  let story = await callGeminiJson<Story>(prompt, STORY_SCHEMA)
+  let prose = await callGeminiJson<StoryProse>(prompt, STORY_SCHEMA)
 
   // Models can't count their own words, so a draft routinely lands well under
   // the requested length. Measure it the same way the reader does and, while
   // it's short, ask for the missing stretch and splice it on.
   const langCode = langCodeFor(deck.language)
   for (let pass = 0; pass < MAX_EXTENSIONS; pass++) {
-    const have = countWords(story.story, langCode)
+    const have = countWords(prose.story, langCode)
     if (have >= lengthWords * LENGTH_TOLERANCE) break
-    opts.onProgress?.({ words: have, target: lengthWords, pass: pass + 1 })
+    opts.onProgress?.({ phase: 'extending', words: have, target: lengthWords, pass: pass + 1 })
     try {
-      story = await extendStory({
+      prose = await extendStory({
         deck,
-        story,
+        story: prose,
         missingWords: Math.max(40, lengthWords - have),
         newWordPercent,
       })
@@ -456,7 +486,16 @@ export async function generateStory(opts: {
       break
     }
   }
-  return story
+
+  // Gloss last, once, over the text as it finally stands — so extensions cost
+  // nothing extra here and no word of the story goes unglossed.
+  opts.onProgress?.({ phase: 'glossary' })
+  const glossary = await glossaryFor({
+    deck,
+    story: prose,
+    bankWords: [...knownWords, ...learningWords],
+  })
+  return { ...prose, glossary }
 }
 
 const DEFINE_SCHEMA = {
