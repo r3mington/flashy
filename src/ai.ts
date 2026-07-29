@@ -1,4 +1,4 @@
-import { db, type Deck, type StoryBible, type StoryChoice } from './db'
+import { db, type Deck, type StoryBible } from './db'
 import { langCodeFor } from './speech'
 import { countWords } from './text'
 
@@ -168,7 +168,6 @@ export interface Story {
   translation: string
   glossary: GlossaryEntry[]
   characterNames: string[]
-  choices: StoryChoice[]
   bible: StoryBible
 }
 
@@ -203,17 +202,6 @@ const STORY_SCHEMA = {
     story: { type: 'STRING' },
     translation: { type: 'STRING' },
     characterNames: { type: 'ARRAY', items: { type: 'STRING' } },
-    choices: {
-      type: 'ARRAY',
-      items: {
-        type: 'OBJECT',
-        properties: {
-          text: { type: 'STRING' },
-          translation: { type: 'STRING' },
-        },
-        required: ['text', 'translation'],
-      },
-    },
     bible: {
       type: 'OBJECT',
       properties: {
@@ -237,7 +225,7 @@ const STORY_SCHEMA = {
       required: ['logline', 'cast', 'places', 'facts', 'openThreads'],
     },
   },
-  required: ['title', 'story', 'translation', 'characterNames', 'choices', 'bible'],
+  required: ['title', 'story', 'translation', 'characterNames', 'bible'],
 }
 
 /** The prose half of a story — what the writing call returns. */
@@ -300,10 +288,9 @@ const EXTEND_SCHEMA = {
     story: { type: 'STRING' },
     translation: { type: 'STRING' },
     characterNames: STORY_SCHEMA.properties.characterNames,
-    choices: STORY_SCHEMA.properties.choices,
     bible: STORY_SCHEMA.properties.bible,
   },
-  required: ['story', 'translation', 'choices', 'bible'],
+  required: ['story', 'translation', 'bible'],
 }
 
 /** Gloss a finished story: every word of it, in the surface form it appears
@@ -317,11 +304,9 @@ async function glossaryFor(opts: {
   bankWords: string[]
 }): Promise<GlossaryEntry[]> {
   const { deck, story, bankWords } = opts
-  const choiceText = (story.choices ?? []).map((c) => c.text).join('\n')
   const prompt = [
     `Below is a finished story in ${deck.language}, written for a language learner who reads it by tapping words for their meanings. Build the lookup glossary for it.`,
     `Story:\n${story.story}`,
-    choiceText ? `Also gloss the words in these two follow-on choices:\n${choiceText}` : '',
     `List EVERY distinct word that appears in the text above — content words AND function words (pronouns, prepositions, particles, connectives, numbers, everything), including character names. Use the exact surface form used in the text (keep inflected, conjugated and affixed forms as they appear; do not reduce them to dictionary form). Give each a concise English meaning matching the sense it carries in that sentence, not its most common sense in isolation.`,
     `The reader must be able to look up any single word of the story and find it here. Do not skip words that seem obvious, and do not add words that do not appear in the text.`,
     bankWords.length > 0
@@ -338,7 +323,7 @@ async function glossaryFor(opts: {
 
 /** Grow a story that came back short: hand the draft back and ask for the
  *  missing stretch, then splice it on. The continuation carries its own
- *  ending, so the choices and bible from this pass replace the earlier ones. */
+ *  ending, so the bible from this pass replaces the earlier one. */
 async function extendStory(opts: {
   deck: Deck
   story: StoryProse
@@ -355,7 +340,7 @@ async function extendStory(opts: {
     `IMPORTANT — register: casual, everyday spoken ${deck.language}, matching the story above. Keep dialogue inside quotation marks “…”.`,
     `At most ${newWordPercent}% of the content words may be new words the learner has not met; prefer the vocabulary already used above.`,
     `ENDING — the continuation must end on a hook, unresolved: an interruption, a reveal, an arrival, or a question the reader cannot answer. Never wrap the story up.`,
-    `Return: "story" (the continuation text only), "translation" (an English translation of the continuation only), "characterNames" (any personal names appearing in the continuation), "choices" (exactly TWO short phrases in ${deck.language}, 3–8 words each, with English translations, for how the story could go next from this new ending), and "bible" (the world state after the continuation: logline, cast, places, facts, openThreads).`,
+    `Return: "story" (the continuation text only), "translation" (an English translation of the continuation only), "characterNames" (any personal names appearing in the continuation), and "bible" (the world state after the continuation: logline, cast, places, facts, openThreads).`,
   ].join('\n')
 
   const more = await callGeminiJson<Omit<StoryProse, 'title'>>(prompt, EXTEND_SCHEMA)
@@ -366,7 +351,6 @@ async function extendStory(opts: {
     characterNames: [
       ...new Set([...(story.characterNames ?? []), ...(more.characterNames ?? [])]),
     ],
-    choices: more.choices ?? story.choices,
     bible: more.bible ?? story.bible,
   }
 }
@@ -457,9 +441,8 @@ export async function generateStory(opts: {
       ? `PLOT-CRITICAL VOCABULARY: these are words the learner keeps forgetting — ${focusWords.join(', ')}. Each one must appear at least three times, in different sentences and different situations, and at least one of them must matter to the plot (it names the thing that goes missing, the place they must reach, the thing someone wants). Never draw attention to them or define them in the text; just make the story impossible to follow without them.`
       : '',
     `ENDING — do NOT resolve the story. The last line must land on a hook: an interruption, a reveal, an arrival, an unanswered question, or a decision whose outcome the reader cannot guess. Never end with everyone going home, everything turning out fine, a lesson learned, or a summary of what happened. Stop at the moment of maximum "wait, what?" — mid-scene is good, mid-sentence is not.`,
-    `THE CHOICE: after the story, offer the reader exactly TWO ways it could go next, as the "choices" array. Each choice is one short phrase (3–8 words) in ${deck.language}, written in the same casual register as the story, plus its English translation. The two must lead somewhere genuinely different, both must be plausible from where the story stopped, and neither may be the obviously "correct" or safe one. Write them as things that could happen next ("follow him to the market", "open the letter instead"), not as questions.`,
     `THE BIBLE: also return "bible" — the state of the story world after this part${continueFrom ? ', updated from the bible above (carry forward everything still true, add what this part established, and drop questions this part answered)' : ''}. "logline" is ONE English sentence recapping what happened, written so it can be shown to the reader as "Previously…" before the next part. "cast" lists every named character with their role and what they want; "places" the locations used; "facts" the concrete details a later part must stay consistent with; "openThreads" the questions this part leaves unanswered — including the one your ending hook just raised.`,
-    `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story, a full English translation, the two choices and the bible. Spend your effort on the story itself — the words will be glossed separately afterwards, so you do not need to define anything here.`,
+    `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story, a full English translation and the bible. Spend your effort on the story itself — the words will be glossed separately afterwards, so you do not need to define anything here.`,
   ]
     .filter(Boolean)
     .join('\n')

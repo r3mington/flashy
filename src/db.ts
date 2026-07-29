@@ -95,14 +95,6 @@ export interface StoryBible {
   openThreads: string[]
 }
 
-/** One of the two ways the reader can send the story next. `text` is in the
- *  deck language (so the choice itself is reading practice), `translation` the
- *  English gloss — and the gloss is what steers the continuation. */
-export interface StoryChoice {
-  text: string
-  translation: string
-}
-
 export interface SavedStory {
   id: number
   deckId: number
@@ -110,8 +102,6 @@ export interface SavedStory {
   story: string
   translation: string
   glossary: { word: string; meaning: string; isNew: boolean; roman?: string }[]
-  /** The two branches offered at the end of this part. Plain, not indexed. */
-  choices?: StoryChoice[]
   /** World state after this part — fed back when continuing. Plain. */
   bible?: StoryBible
   /** The dramatic turn this part was built around. Kept so a thread doesn't
@@ -119,7 +109,8 @@ export interface SavedStory {
   beat?: string
   /** Words the learner keeps forgetting that were seeded into this part. */
   focusWords?: string[]
-  /** The choice the reader took to get here (English gloss). Plain. */
+  /** What the reader asked to happen next in this part, if they steered it.
+   *  Plain, not indexed. */
   chosen?: string
   /** Personal names of the story's characters — rendered in their own colour
    *  and excluded from new-word highlighting/chips. */

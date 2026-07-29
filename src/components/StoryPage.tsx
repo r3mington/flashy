@@ -6,7 +6,6 @@ import {
   newCardDefaults,
   type Card,
   type SavedStory,
-  type StoryChoice,
 } from '../db'
 import { defineWord, generateStory, pickBeat, ApiError } from '../ai'
 import { leeches } from '../stats'
@@ -28,18 +27,12 @@ import { rootCandidates } from '../lemma'
 import { defKey, splitSentences, tokenizeWords } from '../text'
 import { useSettings, saveSettings } from '../useSettings'
 
-/** What the generate button and its note say during each pass of a story
- *  generation — writing, topping up a short draft, then glossing the result. */
+/** What the generate button says during each pass of a story generation —
+ *  writing, topping up a short draft, then glossing the result. */
 const PHASE_LABEL: Record<'writing' | 'extending' | 'glossary', string> = {
   writing: 'Writing…',
   extending: 'Making it longer…',
   glossary: 'Looking up the words…',
-}
-
-const PHASE_NOTE: Record<'writing' | 'extending' | 'glossary', string> = {
-  writing: 'Writing the next part…',
-  extending: 'Came out short — making it longer…',
-  glossary: 'Looking up every word so you can tap them…',
 }
 
 const FONT_SCALE_MIN = 0.8
@@ -414,12 +407,11 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // "Only unlearned" needs at least one card that isn't marked known.
   const scopeEmpty = scope === 'learning' && cards.every((c) => c.known)
 
-  /** Generate a story. `override` lets a tapped choice continue a story
-   *  directly from the reader, without going back through the form (the
-   *  `continuing`/`direction` state wouldn't have landed yet anyway). */
-  async function run(override?: { from?: SavedStory; direction?: string }) {
-    const from = override?.from ?? continuing
-    const steer = (override?.direction ?? direction).trim()
+  /** Generate a story — a fresh one, or the next part of the thread being
+   *  continued, optionally steered by what the reader asked for. */
+  async function run() {
+    const from = continuing
+    const steer = direction.trim()
     setLoading(true)
     setPhase('writing')
     setError('')
@@ -467,7 +459,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         translation: result.translation,
         glossary: result.glossary,
         characterNames: result.characterNames,
-        choices: result.choices?.slice(0, 2),
         bible: result.bible,
         beat,
         focusWords: focusWords.length > 0 ? focusWords : undefined,
@@ -518,12 +509,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     setContinuing(parts.length > 0 ? parts[parts.length - 1] : root)
     setStory(null)
     setError('')
-  }
-
-  // A tapped choice writes the next part straight away — the reader never
-  // leaves the story, they just fall into the next one.
-  function chooseNext(from: SavedStory, choice: StoryChoice) {
-    void run({ from, direction: choice.translation })
   }
 
   // Read the story aloud, sentence by sentence, highlighting the current one.
@@ -783,8 +768,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const selectedInDeck = !!selectedCard
 
   // The open story's place in its thread: what came before (for the recap) and
-  // whether a next part already exists (in which case the branch is spent and
-  // the reader gets a "next part" link instead of the two choices).
+  // whether a next part already exists (which the reader gets a link to).
   const chainGroup = story ? threads.find((t) => t.root.id === (story.parentId ?? story.id)) : null
   const chain = chainGroup ? [chainGroup.root, ...chainGroup.parts] : story ? [story] : []
   const chainIdx = story ? chain.findIndex((s) => s.id === story.id) : -1
@@ -964,25 +948,31 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                       ✕
                     </button>
                   </div>
-                  {parts.map((p, i) => (
-                    <div className="story-saved-row story-part-row" key={p.id}>
-                      <button className="story-saved-open" onClick={() => openStory(p)}>
-                        <span className="story-saved-title">
-                          <span className="story-part-label">Part {i + 2}</span> {p.title}
-                        </span>
-                        <span className="story-saved-meta">
-                          {new Date(p.createdAt).toLocaleDateString()}
-                        </span>
-                      </button>
-                      <button
-                        className="btn ghost small"
-                        title="Delete this part"
-                        onClick={() => db.stories.delete(p.id)}
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
+                  {/* Newest part first — the one you're most likely to want is
+                      right under the thread, not buried below every older part.
+                      `parts` stays in reading order for the numbering. */}
+                  {parts
+                    .map((p, i) => ({ part: p, number: i + 2 }))
+                    .reverse()
+                    .map(({ part: p, number }) => (
+                      <div className="story-saved-row story-part-row" key={p.id}>
+                        <button className="story-saved-open" onClick={() => openStory(p)}>
+                          <span className="story-saved-title">
+                            <span className="story-part-label">Part {number}</span> {p.title}
+                          </span>
+                          <span className="story-saved-meta">
+                            {new Date(p.createdAt).toLocaleDateString()}
+                          </span>
+                        </button>
+                        <button
+                          className="btn ghost small"
+                          title="Delete this part"
+                          onClick={() => db.stories.delete(p.id)}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
                 </div>
               ))}
             </div>
@@ -1237,49 +1227,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
           </div>
           {showTranslation && <div className="story-translation">{story.translation}</div>}
 
-          {nextPart ? (
-            <div className="story-choices">
-              <div className="eyebrow">You already took this one</div>
-              <button className="story-choice next" onClick={() => openStory(nextPart)}>
-                <span className="story-choice-text">{nextPart.title}</span>
-                <span className="story-choice-gloss">
+          {nextPart && (
+            <div className="story-next">
+              <div className="eyebrow">Next part</div>
+              <button className="story-next-link" onClick={() => openStory(nextPart)}>
+                <span className="story-next-title">{nextPart.title}</span>
+                <span className="story-next-meta">
                   Part {chainIdx + 2}
-                  {nextPart.chosen ? ` · you chose: ${nextPart.chosen}` : ''}
+                  {nextPart.chosen ? ` · you asked for: ${nextPart.chosen}` : ''}
                 </span>
               </button>
             </div>
-          ) : (
-            story.choices?.length === 2 && (
-              <div className="story-choices">
-                <div className="eyebrow">What happens next?</div>
-                <div className="story-choice-row">
-                  {story.choices.map((c) => (
-                    <button
-                      key={c.text}
-                      className="story-choice"
-                      disabled={loading}
-                      onClick={() => chooseNext(story, c)}
-                    >
-                      <span className="story-choice-text">{c.text}</span>
-                      <span className="story-choice-gloss">{c.translation}</span>
-                    </button>
-                  ))}
-                </div>
-                {loading && <p className="note">{PHASE_NOTE[phase]}</p>}
-                {error && <p className="note error-note">{error}</p>}
-                {!loading && (
-                  <button
-                    className="btn ghost small"
-                    onClick={() => {
-                      const g = threads.find((t) => t.root.id === (story.parentId ?? story.id))
-                      if (g) continueThread(g.root, g.parts)
-                    }}
-                  >
-                    Something else…
-                  </button>
-                )}
-              </div>
-            )
           )}
 
           <div className="story-toolbar">
