@@ -11,6 +11,7 @@ import { Dashboard } from './components/Dashboard'
 import { Options } from './components/Options'
 import { StoryPage } from './components/StoryPage'
 import { ListenPage } from './components/ListenPage'
+import { TranslatePage } from './components/TranslatePage'
 import { Login } from './components/Login'
 
 export type Route =
@@ -22,6 +23,7 @@ export type Route =
   | { name: 'study-flip'; deckId: number }
   | { name: 'story'; deckId: number; storyId?: number }
   | { name: 'listen'; deckId: number }
+  | { name: 'translate'; deckId: number; sessionId?: number }
   | { name: 'drill' }
 
 const ROUTE_KEY = 'flashy:route'
@@ -59,6 +61,8 @@ function routeToHash(r: Route): string {
       return `#/deck/${r.deckId}/story${r.storyId != null ? `/${r.storyId}` : ''}`
     case 'listen':
       return `#/deck/${r.deckId}/listen`
+    case 'translate':
+      return `#/deck/${r.deckId}/translate${r.sessionId != null ? `/${r.sessionId}` : ''}`
   }
 }
 
@@ -68,7 +72,7 @@ function hashToRoute(hash: string): Route | null {
   if (path === 'dashboard') return { name: 'dashboard' }
   if (path === 'options') return { name: 'options' }
   if (path === 'drill') return { name: 'drill' }
-  const m = path.match(/^deck\/(\d+)(?:\/(review|flip|story|listen)(?:\/(\d+))?)?$/)
+  const m = path.match(/^deck\/(\d+)(?:\/(review|flip|story|listen|translate)(?:\/(\d+))?)?$/)
   if (m) {
     const deckId = Number(m[1])
     switch (m[2]) {
@@ -80,6 +84,8 @@ function hashToRoute(hash: string): Route | null {
         return { name: 'story', deckId, storyId: m[3] ? Number(m[3]) : undefined }
       case 'listen':
         return { name: 'listen', deckId }
+      case 'translate':
+        return { name: 'translate', deckId, sessionId: m[3] ? Number(m[3]) : undefined }
       default:
         return { name: 'deck', deckId }
     }
@@ -179,7 +185,8 @@ export default function App() {
     route.name === 'study-srs' ||
     route.name === 'study-flip' ||
     route.name === 'story' ||
-    route.name === 'listen'
+    route.name === 'listen' ||
+    route.name === 'translate'
 
   return (
     <div className="shell">
@@ -255,6 +262,7 @@ export default function App() {
             onStory={() => setRoute({ name: 'story', deckId: route.deckId })}
             onOpenStory={(deckId, storyId) => setRoute({ name: 'story', deckId, storyId })}
             onListen={() => setRoute({ name: 'listen', deckId: route.deckId })}
+            onTranslate={() => setRoute({ name: 'translate', deckId: route.deckId })}
             onDeleted={() => setRoute({ name: 'decks' })}
           />
         </div>
@@ -282,6 +290,15 @@ export default function App() {
         <div className="view" key={`listen-${route.deckId}`}>
           <ListenPage
             deckId={route.deckId}
+            onExit={() => setRoute({ name: 'deck', deckId: route.deckId })}
+          />
+        </div>
+      )}
+      {route.name === 'translate' && (
+        <div className="view" key={`translate-${route.deckId}`}>
+          <TranslatePage
+            deckId={route.deckId}
+            initialSessionId={route.sessionId}
             onExit={() => setRoute({ name: 'deck', deckId: route.deckId })}
           />
         </div>

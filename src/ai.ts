@@ -513,6 +513,324 @@ export async function defineWord(opts: {
   )
 }
 
+// ─── Translate: English → target-language dialogue ──────────────────────────
+
+/** Grammar ceilings for Indonesian, written as three cumulative levels. The
+ *  vocabulary is already pinned to the learner's word bank, so this is the only
+ *  difficulty dial left — and left to itself a model writes literary prose no
+ *  beginner can produce, so every level is spelled out rather than implied. */
+const ID_LEVELS: string[][] = [
+  [
+    `Verbs in BASE FORM only — makan, minum, pergi, beli, lihat, tahu, bawa, kasih. No me-, ber-, di-, ter- prefixes and no -kan, -i or -an suffixes anywhere.`,
+    `One clause per turn. Subject–verb–object, and the subject is always stated (never dropped).`,
+    `No copula before an adjective: "Saya lapar", never "Saya adalah lapar".`,
+    `Possessor follows the noun — "nama saya", "rumah kamu". No -ku / -mu / -nya clitics.`,
+    `Negation: "tidak" before verbs and adjectives, "bukan" ONLY before a noun. "Harga itu tidak murah" — never "bukan murah". Use "bukan" only where a noun negation arises naturally; do not force one in to show it off.`,
+    `Questions keep the question word in place — "Kamu mau apa?", "Dia di mana?", "Berapa harganya?" — and never use "apakah".`,
+    `Time is carried by adverbs only, never by the verb: sudah, belum, akan, sedang, tadi, nanti, besok, kemarin.`,
+    `Allowed modals: mau, bisa, harus, boleh. Allowed existential: ada.`,
+    `4–10 words per turn.`,
+  ],
+  [
+    `Verbs may take ber- and me- prefixes (bekerja, berangkat, membaca, membeli). Still no di- passive and no -kan / -i suffixes.`,
+    `The clitics -ku, -mu and -nya are allowed for possession.`,
+    `Simple "yang" relative clauses are allowed, at most one per turn.`,
+    `Also allowed: masih, pernah, lagi, juga, saja, sekali.`,
+    `At most one subordinate clause per turn, introduced by kalau, karena or waktu.`,
+    `4–14 words per turn.`,
+  ],
+  [
+    `The di- passive is allowed and encouraged where a native speaker would use it — Indonesian reaches for it far more often than English does.`,
+    `The -kan and -i suffixes and the ke-…-an circumfix are allowed.`,
+    `Conversational particles are allowed: -lah, kok, sih, dong, deh, ya, nih.`,
+    `Colloquial contractions are allowed: nggak, udah, gimana, gitu, aja, banget, kayak.`,
+    `4–18 words per turn.`,
+  ],
+]
+
+const ID_ALWAYS_BANNED = [
+  `Never use reduplication to mark a plural (buku-buku, anak-anak) — Indonesian does not need it and it confuses beginners.`,
+  `Never use written-register connectives: sehingga, namun, oleh karena itu, adapun, dengan demikian.`,
+  `No idioms, proverbs or figurative language. Every line must mean the sum of its words.`,
+  `No Jakarta slang pronouns (gue, gua, lo, loe) and no regional dialect.`,
+]
+
+/** The grammar block for a dialogue: the cumulative Indonesian levels where we
+ *  have them, a plain graded fallback everywhere else. */
+function grammarSpec(language: string, level: 1 | 2 | 3): string {
+  if (langCodeFor(language) === 'id') {
+    const rules = ID_LEVELS.slice(0, level).flat()
+    return [
+      `GRAMMAR — level ${level} of 3. These are hard limits, not preferences. A line that breaks one is wrong even if it is beautiful ${language}.`,
+      ...rules.map((r) => `• ${r}`),
+      ...ID_ALWAYS_BANNED.map((r) => `• ${r}`),
+    ].join('\n')
+  }
+  const generic = [
+    [
+      `One clause per sentence — no relative clauses, no subordination.`,
+      `Present tense only. Subject always explicit. Subject–verb–object order.`,
+      `4–10 words per turn.`,
+    ],
+    [`Past and future tenses are allowed. At most one subordinate clause per turn.`, `4–14 words per turn.`],
+    [`Any everyday spoken construction is allowed, including conditionals and passives.`, `4–18 words per turn.`],
+  ]
+  return [
+    `GRAMMAR — level ${level} of 3. These are hard limits, not preferences.`,
+    ...generic.slice(0, level).flat().map((r) => `• ${r}`),
+    `• No idioms, proverbs or figurative language. Every line must mean the sum of its words.`,
+    `• Concrete over abstract: people doing things in places, not feelings about them.`,
+  ].join('\n')
+}
+
+/** Register instruction. Standard spoken is the teachable middle — it is what
+ *  most decks are built from — and level 3 is where the colloquial forms open
+ *  up as a deliberate choice rather than as noise. */
+function registerSpec(language: string, level: 1 | 2 | 3): string {
+  if (langCodeFor(language) !== 'id') {
+    return `REGISTER — casual, everyday spoken ${language}, the way people actually talk. Not formal, literary or textbook language.`
+  }
+  return [
+    `REGISTER — standard spoken Indonesian. Use "saya" for I and "kamu" for you; "Anda" only if the scene is genuinely formal (an official, a stranger at a counter).`,
+    level === 3
+      ? `At this level colloquial forms (nggak, udah, aja) may appear, but keep them consistent within a speaker.`
+      : `Write "tidak", "sudah" and "tidak ada" in full — no nggak, udah or gak at this level.`,
+  ].join(' ')
+}
+
+export interface Dialogue {
+  title: string
+  scene: string
+  turns: { speaker: string; english: string; target: string }[]
+}
+
+const DIALOGUE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    title: { type: 'STRING' },
+    scene: { type: 'STRING' },
+    turns: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          speaker: { type: 'STRING' },
+          english: { type: 'STRING' },
+          target: { type: 'STRING' },
+        },
+        required: ['speaker', 'english', 'target'],
+      },
+    },
+  },
+  required: ['title', 'scene', 'turns'],
+}
+
+/** Write the dialogue. Composed in the target language first and glossed into
+ *  English second — the other order produces English-shaped sentences that only
+ *  translate back word for word. */
+export async function writeDialogue(opts: {
+  deck: Deck
+  knownWords: string[]
+  level: 1 | 2 | 3
+  turns: number
+  /** How many distinct bank words the dialogue must actually use. */
+  coverage: number
+  topic?: string
+  /** Titles of recent dialogues, so a new one doesn't replay the same scene. */
+  avoidThemes?: string[]
+}): Promise<Dialogue> {
+  const { deck, knownWords, level, turns, coverage, topic, avoidThemes = [] } = opts
+  const lang = deck.language
+  const prompt = [
+    `Write a short two-person dialogue in ${lang} for a language learner. The learner will be shown the ENGLISH of each line and must produce the ${lang} themselves, so the ${lang} has to be something a beginner could plausibly write.`,
+    `Exactly ${turns} turns, alternating between two speakers. Give both speakers personal names that are natural and common for a native ${lang} speaker, and use the same two names throughout.`,
+    topic?.trim()
+      ? `Situation: "${topic.trim()}".`
+      : `Invent an ordinary, concrete everyday situation with something small at stake — a disagreement, a request, a plan being made, a misunderstanding being cleared up. Not a bare greeting exchange, and not two people simply describing what they see.`,
+    avoidThemes.length > 0
+      ? `The learner's recent dialogues were: ${avoidThemes.join('; ')}. Pick a clearly different situation.`
+      : '',
+    `SCENE — return "scene": ONE short English line giving the place and who is talking (e.g. "At a food stall — Budi is ordering lunch from Sari"). It is shown to the learner untranslated. Without it, individual lines have too many valid renderings.`,
+    grammarSpec(lang, level),
+    registerSpec(lang, level),
+    `VOCABULARY — the point of the whole exercise, and the constraint most easily broken. EVERY content word (noun, verb, adjective, adverb) must come from the learner's word bank below. If a line cannot be said with the bank, change what the character says — never reach outside it for a better word.`,
+    knownWords.length > 0 ? `Word bank: ${knownWords.join(', ')}` : '',
+    `The ONLY words allowed from outside the bank are function words: pronouns, prepositions, articles, question words, numbers, demonstratives, greetings, and common connectives. Every other word in the dialogue must appear in the bank above.`,
+    `Before returning, re-read every line and replace any content word that is not in the bank.`,
+    `COVERAGE — the dialogue must use at least ${coverage} DIFFERENT words from that bank. Spread them out; don't cram them into one turn.`,
+    `ENGLISH — return "english" for every turn: natural, idiomatic English of what the speaker says, the kind a person would actually write. Do not word-for-word calque the ${lang}, and do not include the ${lang} in it.`,
+    `DISAMBIGUATION — where English genuinely underdetermines the ${lang}, append a short square-bracket note to the English word, and nowhere else. Use exactly this style: "you [one person, casual]", "you [polite]", "you [all of you]", "we [you and me]", "we [not you]". Add a note only when the choice is truly undecidable from the English; never annotate anything else.`,
+    `Return "title": a short English title for the scene.`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  const dialogue = await callGeminiJson<Dialogue>(prompt, DIALOGUE_SCHEMA)
+  return { ...dialogue, turns: (dialogue.turns ?? []).filter((t) => t.english && t.target) }
+}
+
+const ALIGN_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    turns: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          index: { type: 'NUMBER' },
+          hints: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                en: { type: 'STRING' },
+                target: { type: 'STRING' },
+                root: { type: 'STRING' },
+              },
+              required: ['en', 'target', 'root'],
+            },
+          },
+        },
+        required: ['index', 'hints'],
+      },
+    },
+  },
+  required: ['turns'],
+}
+
+/** Align each English line to the target line word by word, so tapping an
+ *  English word can reveal the target word behind it. Split from the writing
+ *  call for the same reason the story glossary is: annotating a finished text
+ *  is an easier job than predicting it while composing. */
+export async function alignDialogue(opts: {
+  deck: Deck
+  dialogue: Dialogue
+}): Promise<{ index: number; hints: { en: string; target: string; root: string }[] }[]> {
+  const { deck, dialogue } = opts
+  const lang = deck.language
+  const lines = dialogue.turns
+    .map((t, i) => `${i}. EN: ${t.english}\n   ${lang.toUpperCase()}: ${t.target}`)
+    .join('\n')
+  const prompt = [
+    `Below are pairs of lines: an English sentence and its ${lang} rendering. Align them word by word, so a learner stuck on an English word can be shown the ${lang} word that carries it.`,
+    lines,
+    `For each turn, return its "index" and a "hints" array. Each hint is: "en" — the English word or short phrase, copied EXACTLY as it appears in that English line, including its capitalisation; "target" — the ${lang} word or words that render it, copied exactly from the ${lang} line; "root" — the dictionary form "target" is built on.`,
+    langCodeFor(lang) === 'id'
+      ? `ROOT — strip every Indonesian affix to reach the base word a dictionary would list: membeli → beli, mengambil → ambil, berangkat → angkat, kedinginan → dingin, rumahnya → rumah, dimakan → makan. A word with no affix is its own root.`
+      : `ROOT — the dictionary/citation form of the target word. A word already in that form is its own root.`,
+    `Cover every content word (noun, verb, adjective, adverb) and every pronoun in the English line. Skip English function words that have no counterpart in the ${lang} ("the", "a", "do" in questions, "is" before an adjective).`,
+    `"en" must be a run of consecutive words that really occurs in that English line — never invent or reorder. If a square-bracket note follows a word ("we [you and me]"), the "en" is the word alone, without the bracket.`,
+    `Where several English words map to one ${lang} word, or one English word to several, make that a single hint pairing the whole spans.`,
+  ].join('\n')
+
+  const parsed = await callGeminiJson<{
+    turns: { index: number; hints: { en: string; target: string; root: string }[] }[]
+  }>(prompt, ALIGN_SCHEMA)
+  return parsed.turns ?? []
+}
+
+const GRADE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    lines: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          index: { type: 'NUMBER' },
+          verdict: { type: 'STRING', enum: ['right', 'close', 'missed'] },
+          note: { type: 'STRING' },
+          corrected: { type: 'STRING' },
+        },
+        required: ['index', 'verdict', 'note'],
+      },
+    },
+    overall: { type: 'STRING' },
+    pattern: { type: 'STRING' },
+  },
+  required: ['lines', 'overall'],
+}
+
+/** Indonesian's free variation. Without this list a grader marks perfectly good
+ *  spoken Indonesian wrong, which is the fastest way to make the whole feature
+ *  untrustworthy — and the paired list of real errors is where the useful
+ *  feedback actually comes from. */
+function acceptanceSpec(language: string): string {
+  if (langCodeFor(language) !== 'id') {
+    return `Accept any register or phrasing a native speaker would use for the same meaning. Only mark an answer wrong when the MEANING differs from the prompt.`
+  }
+  return [
+    `ACCEPT SILENTLY — these are free variation in Indonesian, never errors:`,
+    `• saya / aku, and kamu / Anda, unless the scene clearly fixes the register.`,
+    `• tidak / nggak / gak / tak, and sudah / udah.`,
+    `• A dropped subject where it is recoverable from context ("Mau ke mana?").`,
+    `• The bare verb where the affixed form is textbook — "beli" for "membeli", "kasih" for "memberikan". This is how people actually speak.`,
+    `• Adverb position: "besok saya pergi" and "saya pergi besok" are both fine.`,
+    `• Any word order or word choice a native speaker would use for the same meaning.`,
+    `ALWAYS CORRECT — these are real errors and must be marked:`,
+    `• "tidak" where the negated word is a noun (needs "bukan"), and the reverse.`,
+    `• "kita" (you and me) where the meaning is "kami" (not you), and the reverse.`,
+    `• "adalah" placed before an adjective.`,
+    `• Possessor before the noun ("saya nama" for "nama saya").`,
+    `• English word order in questions ("Apa kamu mau?" for "Kamu mau apa?"), or a missing question word.`,
+    `• A verb affix that changes the meaning (di- passive where the sense is active).`,
+  ].join('\n')
+}
+
+/** Grade a finished dialogue in one call. Meaning is what is graded; the
+ *  reference line is handed over as ONE acceptable answer, because a grader
+ *  that treats it as ground truth marks good paraphrases wrong. */
+export async function gradeTranslation(opts: {
+  deck: Deck
+  scene: string
+  level: 1 | 2 | 3
+  lines: {
+    speaker: string
+    english: string
+    reference: string
+    answer: string
+    /** Whether the learner was shown the whole reference line. */
+    shown: boolean
+    /** Target words they half-revealed or fully opened. */
+    revealed: string[]
+  }[]
+}): Promise<{
+  lines: { index: number; verdict: 'right' | 'close' | 'missed'; note: string; corrected?: string }[]
+  overall: string
+  pattern?: string
+}> {
+  const { deck, scene, level, lines } = opts
+  const lang = deck.language
+  const body = lines
+    .map((l, i) =>
+      [
+        `${i}. ${l.speaker} — EN: ${l.english}`,
+        `   REFERENCE: ${l.reference}`,
+        `   LEARNER WROTE: ${l.answer.trim() || '(nothing)'}`,
+        l.shown ? `   (the learner was shown the reference for this line)` : '',
+        l.revealed.length > 0 ? `   (took help on: ${l.revealed.join(', ')})` : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    )
+    .join('\n')
+
+  const prompt = [
+    `A learner of ${lang} translated an English dialogue into ${lang}, line by line. Grade it.`,
+    `Scene: ${scene}`,
+    body,
+    `GRADE MEANING, NOT WORDING. The REFERENCE line is one acceptable answer among many — it is not the only correct rendering, and an answer that differs from it while carrying the same meaning is fully correct.`,
+    acceptanceSpec(lang),
+    `The dialogue was written to grammar level ${level} of 3, but do not penalise a learner for using a construction ABOVE that level correctly.`,
+    `For each line return: its "index", a "verdict" of "right" (the meaning lands), "close" (meaning lands, but something is off — a wrong tense marker, an awkward word choice, a small grammar slip) or "missed" (the meaning changed, or nothing usable was written), and a "note" of one short sentence in plain English saying what happened. Point at the specific word that caused it. For "close" and "missed", also return "corrected": the learner's own line repaired, staying as close to what they wrote as possible rather than swapping in the reference.`,
+    `Where the learner wrote nothing, verdict "missed" and note that it was skipped. Where they were shown the reference, grade what they wrote anyway but say the line was revealed.`,
+    `"overall": two or three sentences addressed to the learner, in a warm, plain voice — what they did well and the one habit costing them most. No scores, no percentages, no bullet lists.`,
+    `"pattern": the single grammar or vocabulary habit worth drilling next, in one short phrase (e.g. "using tidak where the negated word is a noun"). Omit it if there is no clear pattern.`,
+  ].join('\n')
+
+  return callGeminiJson(prompt, GRADE_SCHEMA)
+}
+
 export class ApiError extends Error {
   status: number
 

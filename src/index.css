@@ -2000,3 +2000,186 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ── Translate: write the target language back from English ─────────────── */
+
+.translate-page { max-width: 640px; }
+
+.tr-scene {
+  margin: 0 0 20px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-2);
+  font-size: 14px;
+  font-style: italic;
+}
+
+/* Turns already committed, dimmed back so the live one owns the screen. */
+.tr-done { display: flex; flex-direction: column; gap: 12px; margin-bottom: 26px; }
+.tr-done:empty { margin-bottom: 0; }
+.tr-done-turn { display: flex; flex-direction: column; gap: 2px; opacity: 0.55; }
+.tr-done-en { font-size: 13px; color: var(--ink-2); }
+.tr-done-mine { font-size: 15px; }
+
+.tr-speaker {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.tr-current { display: flex; flex-direction: column; gap: 14px; }
+
+/* The English to render. Line-height leaves room for the hint that drops in
+   under a tapped word without the whole paragraph reflowing. */
+.tr-prompt {
+  font-size: 21px;
+  line-height: 2.1;
+  letter-spacing: -0.01em;
+}
+
+.tr-word {
+  position: relative;
+  display: inline-block;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  vertical-align: baseline;
+}
+.tr-word:hover .tr-word-en { border-bottom-color: var(--accent); }
+.tr-word .tr-word-en {
+  border-bottom: 1px dotted transparent;
+  transition: border-color 0.15s ease;
+}
+/* Once touched, a word stays marked — the struggle is written into the line. */
+.tr-word.r1 .tr-word-en, .tr-word.r2 .tr-word-en { border-bottom-color: var(--ink-3); }
+/* Hung under the word rather than stacked with it, so revealing a hint never
+   reflows the sentence the learner is reading. */
+.tr-word-hint {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: -10px;
+  font-size: 13px;
+  line-height: 1.2;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.tr-word.r2 .tr-word-hint { font-weight: 600; }
+
+.tr-answer {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 19px;
+  line-height: 1.6;
+  padding: 6px 2px;
+  resize: vertical;
+}
+.tr-answer:focus { outline: none; border-bottom-color: var(--accent); }
+
+.tr-shown {
+  font-size: 17px;
+  color: var(--ink-2);
+  padding: 8px 12px;
+  border-left: 2px solid var(--accent);
+}
+
+.tr-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tr-actions .spacer { flex: 1; }
+
+.tr-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 32px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Translate: results ─────────────────────────────────────────────────── */
+
+.tr-tally {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.tr-tally b { font-size: 17px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.tr-tally span { display: flex; align-items: baseline; gap: 6px; }
+
+.tr-overall { margin: 20px 0 0; font-size: 16px; line-height: 1.7; }
+.tr-pattern {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border-left: 2px solid var(--accent);
+  font-size: 15px;
+}
+.tr-pattern .eyebrow { display: block; margin-bottom: 4px; }
+
+.tr-results { display: flex; flex-direction: column; gap: 0; margin-top: 28px; }
+.tr-result { padding: 16px 0; border-top: 1px solid var(--line); }
+.tr-result:last-child { border-bottom: 1px solid var(--line); }
+.tr-result-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+
+.tr-verdict {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.tr-verdict.v-right { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
+.tr-verdict.v-close { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--amber); }
+.tr-verdict.v-missed { background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); }
+.tr-verdict.v-skipped { background: color-mix(in srgb, var(--ink-3) 18%, transparent); color: var(--ink-2); }
+
+.tr-result .tr-en { font-size: 13px; color: var(--ink-2); margin-bottom: 6px; }
+.tr-result .tr-yours { font-size: 17px; line-height: 1.5; }
+.tr-result .tr-yours em { color: var(--ink-3); font-style: italic; }
+.tr-result .tr-fixed {
+  font-size: 17px;
+  line-height: 1.5;
+  color: var(--green);
+  margin-top: 2px;
+}
+.tr-result .tr-note { font-size: 13px; color: var(--ink-2); margin-top: 8px; line-height: 1.6; }
+.tr-result .tr-ref {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.tr-result .tr-ref span { flex: 1; min-width: 0; }
+
+.tr-helped { margin-top: 30px; }
+.tr-helped .chip-list { margin-top: 10px; }
+/* Fully opened, not merely peeked at — the ones least likely to be known. */
+.chip.tr-opened { border-color: var(--accent); color: var(--accent); }
+
+@media (max-width: 560px) {
+  .tr-prompt { font-size: 19px; }
+  .tr-answer { font-size: 17px; }
+}

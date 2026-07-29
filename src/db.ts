@@ -133,6 +133,69 @@ export interface SavedStory {
   createdAt: number
 }
 
+/** One speaker turn of a translation dialogue. The learner sees `speaker` and
+ *  `english` and writes the target line themselves; `target` is the reference
+ *  rendering, kept hidden until they ask for it. */
+export interface DialogueTurn {
+  speaker: string
+  /** The English prompt to translate. May carry square-bracket notes where
+   *  English underdetermines the target ("we [you and me]"). */
+  english: string
+  /** One acceptable rendering in the target language — a reference, not the
+   *  only right answer. */
+  target: string
+  /** English span → target word, from the alignment pass. `root` is the
+   *  dictionary form the target word is built on (Indonesian strips its
+   *  affixes: membeli → beli), which is what the half reveal shows. */
+  hints: { en: string; target: string; root: string }[]
+}
+
+export interface LineGrade {
+  verdict: 'right' | 'close' | 'missed' | 'skipped'
+  /** What was wrong, or what was notable about a right answer. */
+  note: string
+  /** The learner's line, repaired — absent when nothing needed fixing. */
+  corrected?: string
+}
+
+export interface TranslationGrade {
+  /** Index-aligned with the session's turns. */
+  lines: LineGrade[]
+  overall: string
+  /** The single habit worth working on next. */
+  pattern?: string
+}
+
+/** How much help a learner took on one aligned word: sealed, the root's first
+ *  letters, or the whole target word. */
+export type Reveal = 0 | 1 | 2
+
+export interface TranslationSession {
+  id: number
+  deckId: number
+  title: string
+  /** One English line fixing the place and who is talking. Never translated —
+   *  without it half the turns would have a dozen valid renderings. */
+  scene: string
+  /** Grammar ceiling the dialogue was written to (1 simplest, 3 loosest). */
+  level: 1 | 2 | 3
+  turns: DialogueTurn[]
+  /** Learner answers, index-aligned with `turns`. */
+  answers: string[]
+  /** Reveal state per turn, index-aligned with that turn's `hints`. */
+  reveals: Reveal[][]
+  /** Turns whose whole reference line was shown. */
+  shown: boolean[]
+  /** Turn the learner stopped at, so a half-finished dialogue resumes. */
+  at: number
+  /** Deck words the dialogue actually used — coverage as fact, not hope. */
+  bankWords?: string[]
+  grade?: TranslationGrade
+  topic?: string
+  createdAt: number
+  completedAt?: number
+}
+
 export interface BlacklistEntry {
   id: number
   deckId: number
@@ -196,6 +259,7 @@ export const db = new Dexie('flashy') as Dexie & {
   snapshots: EntityTable<Snapshot, 'day'>
   reading: EntityTable<ReadingLog, 'day'>
   listening: EntityTable<ListeningLog, 'day'>
+  translations: EntityTable<TranslationSession, 'id'>
 }
 
 db.version(1).stores({
@@ -241,6 +305,19 @@ db.version(5).stores({
   snapshots: 'day',
   reading: 'day',
   listening: 'day',
+})
+
+db.version(6).stores({
+  decks: '++id, name',
+  cards: '++id, deckId, due, [deckId+due], word',
+  reviews: '++id, cardId, deckId, ts',
+  blacklist: '++id, deckId, word',
+  settings: 'key',
+  stories: '++id, deckId, createdAt',
+  snapshots: 'day',
+  reading: 'day',
+  listening: 'day',
+  translations: '++id, deckId, createdAt',
 })
 
 /** Update a day's reading log without clobbering the field the other writer

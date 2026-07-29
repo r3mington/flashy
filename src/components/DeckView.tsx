@@ -25,6 +25,7 @@ interface Props {
   /** Jump straight into a saved story (the "continue reading" shortcut). */
   onOpenStory: (deckId: number, storyId: number) => void
   onListen: () => void
+  onTranslate: () => void
   onDeleted: () => void
 }
 
@@ -46,6 +47,7 @@ export function DeckView({
   onStory,
   onOpenStory,
   onListen,
+  onTranslate,
   onDeleted,
 }: Props) {
   const [search, setSearch] = useState('')
@@ -269,6 +271,14 @@ export function DeckView({
         </button>
         <button className="btn" onClick={onStory} disabled={cards.length === 0}>
           ✦ Story
+        </button>
+        <button
+          className="btn"
+          title="Translate a dialogue built from the words you know"
+          onClick={onTranslate}
+          disabled={cards.length === 0}
+        >
+          ✦ Translate
         </button>
         {cards.some((c) => !c.emoji) && (
           <button
