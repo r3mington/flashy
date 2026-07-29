@@ -1,4 +1,6 @@
 import { db, type Deck, type StoryBible, type StoryChoice } from './db'
+import { langCodeFor } from './speech'
+import { countWords } from './text'
 
 export interface Suggestion {
   word: string
@@ -265,6 +267,88 @@ export function pickBeat(used: string[] = []): string {
   return pool[Math.floor(Math.random() * pool.length)]
 }
 
+/** Roughly how many words a sentence of dialogue-led prose runs to. Used to
+ *  turn a word target into a sentence count, which models hit far more
+ *  reliably than a word count they can't actually compute. */
+const WORDS_PER_SENTENCE = 9
+
+/** The length instruction. A bare word count is the one thing a language model
+ *  cannot verify about its own draft, so it reliably lands short; anchoring the
+ *  target to countable structure — sentences and scenes — and asking a little
+ *  above target is what actually moves the length. */
+function lengthSpec(lengthWords: number): string {
+  const sentences = Math.round(lengthWords / WORDS_PER_SENTENCE)
+  const scenes = Math.max(2, Math.round(lengthWords / 120))
+  return [
+    `LENGTH — a hard requirement, and the one writers of these stories most often get wrong by stopping early.`,
+    `Target: ${lengthWords}–${Math.round(lengthWords * 1.25)} words.`,
+    `Because words are hard to count, hit it structurally instead: write about ${sentences} sentences (never fewer than ${Math.round(sentences * 0.9)}), spread over ${scenes} ${scenes === 1 ? 'scene' : 'distinct scenes'} — a change of place, of time, or of who is present marks a new scene.`,
+    `A story of two or three exchanges is far too short. Give the plot enough turns to fill the length: keep the scene going past the first answer, let characters disagree, interrupt, change their minds.`,
+    `When you think you are finished, check the sentence count and keep writing if it is short.`,
+  ].join(' ')
+}
+
+const EXTEND_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    story: { type: 'STRING' },
+    translation: { type: 'STRING' },
+    glossary: STORY_SCHEMA.properties.glossary,
+    characterNames: STORY_SCHEMA.properties.characterNames,
+    choices: STORY_SCHEMA.properties.choices,
+    bible: STORY_SCHEMA.properties.bible,
+  },
+  required: ['story', 'translation', 'glossary', 'choices', 'bible'],
+}
+
+/** Merge glossaries, keeping the first meaning given for a word. */
+function mergeGlossary(a: GlossaryEntry[], b: GlossaryEntry[]): GlossaryEntry[] {
+  const seen = new Set(a.map((e) => e.word.trim().toLowerCase()))
+  return [...a, ...b.filter((e) => !seen.has(e.word.trim().toLowerCase()))]
+}
+
+/** Grow a story that came back short: hand the draft back and ask for the
+ *  missing stretch, then splice it on. The continuation carries its own
+ *  ending, so the choices and bible from this pass replace the earlier ones. */
+async function extendStory(opts: {
+  deck: Deck
+  story: Story
+  missingWords: number
+  newWordPercent: number
+}): Promise<Story> {
+  const { deck, story, missingWords, newWordPercent } = opts
+  const prompt = [
+    `Below is a story in ${deck.language} written for a language learner. It stopped too early — it needs about ${missingWords} more words.`,
+    `Story so far, titled "${story.title}":\n${story.story}`,
+    `Write ONLY the continuation: the text that follows on directly from the last line, in the same voice, tense and register, with the same characters. Do not repeat, recap or rewrite any of the above, and do not start a new story.`,
+    lengthSpec(missingWords),
+    `The continuation must carry the story forward with real events — a new turn, a complication, an arrival — not filler description or small talk stretched out.`,
+    `IMPORTANT — register: casual, everyday spoken ${deck.language}, matching the story above. Keep dialogue inside quotation marks “…”.`,
+    `At most ${newWordPercent}% of the content words may be new words the learner has not met; prefer the vocabulary already used above.`,
+    `ENDING — the continuation must end on a hook, unresolved: an interruption, a reveal, an arrival, or a question the reader cannot answer. Never wrap the story up.`,
+    `Return: "story" (the continuation text only), "translation" (an English translation of the continuation only), "glossary" (every distinct word used in the continuation, in the surface form it appears in, with a concise English meaning; isNew=true only for content words outside the learner's bank; names are never isNew), "characterNames" (any personal names appearing in the continuation), "choices" (exactly TWO short phrases in ${deck.language}, 3–8 words each, with English translations, for how the story could go next from this new ending), and "bible" (the world state after the continuation: logline, cast, places, facts, openThreads).`,
+    ROMAN_RULE(deck.language, 'every glossary entry'),
+  ].join('\n')
+
+  const more = await callGeminiJson<Omit<Story, 'title'>>(prompt, EXTEND_SCHEMA)
+  return {
+    ...story,
+    story: `${story.story.trimEnd()}\n\n${more.story.trim()}`,
+    translation: `${story.translation.trimEnd()}\n\n${more.translation.trim()}`,
+    glossary: mergeGlossary(story.glossary, more.glossary ?? []),
+    characterNames: [
+      ...new Set([...(story.characterNames ?? []), ...(more.characterNames ?? [])]),
+    ],
+    choices: more.choices ?? story.choices,
+    bible: more.bible ?? story.bible,
+  }
+}
+
+/** How close to the requested length is close enough to stop topping up. */
+const LENGTH_TOLERANCE = 0.9
+/** Cap on top-up passes — each one is another round-trip. */
+const MAX_EXTENSIONS = 2
+
 export async function generateStory(opts: {
   deck: Deck
   knownWords: string[]
@@ -284,6 +368,9 @@ export async function generateStory(opts: {
   /** Words the learner keeps forgetting — worked into the plot on purpose so
    *  they're met repeatedly, in context, instead of only on a flashcard. */
   focusWords?: string[]
+  /** Called when the draft came back short and is being extended, so the UI
+   *  can say what the extra wait is for. */
+  onProgress?: (info: { words: number; target: number; pass: number }) => void
 }): Promise<Story> {
   const { deck, knownWords, learningWords, newWordPercent, topic, lengthWords } = opts
   const { avoidThemes = [], continueFrom, beat, focusWords = [] } = opts
@@ -321,7 +408,7 @@ export async function generateStory(opts: {
     !continueFrom && avoidThemes.length > 0
       ? `The learner's previous stories were about the following — choose a clearly DIFFERENT theme, setting and cast: ${avoidThemes.join('; ')}`
       : '',
-    `LENGTH — important: the story must be AT LEAST ${lengthWords} words long (aim for ${lengthWords}–${Math.round(lengthWords * 1.15)} words). Count words before answering; if the draft is short, extend the plot until it reaches the target.`,
+    lengthSpec(lengthWords),
     `IMPORTANT — register: use casual, everyday conversational ${deck.language}, the way people actually talk in daily life. Prefer informal forms over formal ones (for example, in Indonesian say "aku", not "saya"). No formal, literary, or textbook language.`,
     `STYLE — dialogue-first: tell the story mainly through conversation. At least half of the words should be inside spoken lines, as short, natural back-and-forth exchanges between the characters; keep narration to brief connective sentences. Always wrap spoken lines in quotation marks “…” (never dashes), so dialogue is machine-detectable.`,
     `TEXTURE: each scene gets exactly ONE concrete physical detail — a smell, a sound, a texture, a temperature, something someone is holding — in a single short sentence. One per scene, never a descriptive paragraph, and make it specific ("the rice was still too hot to hold") rather than general ("it was a nice day").`,
@@ -347,7 +434,29 @@ export async function generateStory(opts: {
     .filter(Boolean)
     .join('\n')
 
-  return callGeminiJson<Story>(prompt, STORY_SCHEMA)
+  let story = await callGeminiJson<Story>(prompt, STORY_SCHEMA)
+
+  // Models can't count their own words, so a draft routinely lands well under
+  // the requested length. Measure it the same way the reader does and, while
+  // it's short, ask for the missing stretch and splice it on.
+  const langCode = langCodeFor(deck.language)
+  for (let pass = 0; pass < MAX_EXTENSIONS; pass++) {
+    const have = countWords(story.story, langCode)
+    if (have >= lengthWords * LENGTH_TOLERANCE) break
+    opts.onProgress?.({ words: have, target: lengthWords, pass: pass + 1 })
+    try {
+      story = await extendStory({
+        deck,
+        story,
+        missingWords: Math.max(40, lengthWords - have),
+        newWordPercent,
+      })
+    } catch {
+      // A failed top-up shouldn't cost the reader the story they already have.
+      break
+    }
+  }
+  return story
 }
 
 const DEFINE_SCHEMA = {

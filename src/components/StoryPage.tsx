@@ -76,6 +76,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // marked known (the ones you haven't learnt yet).
   const [scope, setScope] = useState<'all' | 'learning'>('all')
   const [loading, setLoading] = useState(false)
+  /** Set while a short draft is being extended, so the longer wait has a
+   *  visible reason rather than just a spinner that won't stop. */
+  const [extending, setExtending] = useState(false)
   const [error, setError] = useState('')
   const [story, setStory] = useState<SavedStory | null>(null)
   const [showTranslation, setShowTranslation] = useState(false)
@@ -404,6 +407,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     const from = override?.from ?? continuing
     const steer = (override?.direction ?? direction).trim()
     setLoading(true)
+    setExtending(false)
     setError('')
     try {
       // Don't replay a dramatic turn this thread has already used.
@@ -426,6 +430,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         newWordPercent: newPercent,
         topic: from ? undefined : topic || undefined,
         lengthWords: length,
+        onProgress: () => setExtending(true),
         beat,
         focusWords,
         // Steer fresh stories away from themes already covered (recent first).
@@ -473,6 +478,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       }
     } finally {
       setLoading(false)
+      setExtending(false)
     }
   }
 
@@ -903,7 +909,13 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 onClick={() => run()}
                 disabled={loading || cards.length === 0 || scopeEmpty}
               >
-                {loading ? 'Writing…' : continuing ? 'Continue story' : 'Generate story'}
+                {loading
+                  ? extending
+                    ? 'Making it longer…'
+                    : 'Writing…'
+                  : continuing
+                    ? 'Continue story'
+                    : 'Generate story'}
               </button>
             </div>
           </div>
@@ -1241,7 +1253,11 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     </button>
                   ))}
                 </div>
-                {loading && <p className="note">Writing the next part…</p>}
+                {loading && (
+                  <p className="note">
+                    {extending ? 'Came out short — making it longer…' : 'Writing the next part…'}
+                  </p>
+                )}
                 {error && <p className="note error-note">{error}</p>}
                 {!loading && (
                   <button
