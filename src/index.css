@@ -1965,3 +1965,52 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 /* Romanization line in the tap-to-define sheet (non-Latin scripts). */
 .word-sheet-roman { color: var(--ink-2); font-size: 14px; font-style: italic; margin: -6px 0 8px; }
 .word-sheet-actions { display: flex; gap: 8px; align-items: center; }
+
+/* --- Export modal ------------------------------------------------------- */
+.export-block { margin-top: 18px; }
+.export-block .eyebrow { margin-bottom: 10px; }
+.export-block .filter-chips { margin-bottom: 10px; }
+.export-presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.export-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 8px 14px;
+  margin-bottom: 10px;
+}
+/* The shared .check-wrap centres a lone checkbox; here it labels one. */
+.export-column {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--ink-2);
+  place-items: initial;
+}
+.export-lookup-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.export-lookup-filter input {
+  width: 64px;
+  text-align: center;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 14px;
+  font-family: inherit;
+}
+.export-lookup-filter input:focus { outline: none; border-color: var(--accent); }
+.export-block .seg-control { width: fit-content; }
+.export-preview { margin-top: 18px; }
+.export-preview .import-table td {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

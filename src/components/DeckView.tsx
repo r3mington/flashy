@@ -5,6 +5,7 @@ import { CardEditor } from './CardEditor'
 import { ContinueReading } from './ContinueReading'
 import { Icon } from './Icon'
 import { ImportCsv } from './ImportCsv'
+import { ExportCards } from './ExportCards'
 import { GenerateCards } from './GenerateCards'
 import { generateEmojis } from '../ai'
 import {
@@ -52,6 +53,7 @@ export function DeckView({
   const [sortBy, setSortBy] = useState<SortBy>('default')
   const [editing, setEditing] = useState<Card | 'new' | null>(null)
   const [importing, setImporting] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [editingDeck, setEditingDeck] = useState(false)
   const [deckName, setDeckName] = useState('')
@@ -281,6 +283,9 @@ export function DeckView({
         <button className="btn" onClick={() => setImporting(true)}>
           Import CSV
         </button>
+        <button className="btn" onClick={() => setExporting(true)} disabled={cards.length === 0}>
+          Export
+        </button>
         <button className="btn primary" onClick={() => setEditing('new')}>
           Add card
         </button>
@@ -443,6 +448,9 @@ export function DeckView({
         />
       )}
       {importing && <ImportCsv deckId={deckId} onClose={() => setImporting(false)} />}
+      {exporting && (
+        <ExportCards deck={deck} cards={cards} onClose={() => setExporting(false)} />
+      )}
       {generating && <GenerateCards deck={deck} onClose={() => setGenerating(false)} />}
 
       {editingDeck && (
