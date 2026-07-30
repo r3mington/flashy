@@ -184,8 +184,14 @@ export interface TranslationSession {
   answers: string[]
   /** Reveal state per turn, index-aligned with that turn's `hints`. */
   reveals: Reveal[][]
-  /** Turns whose whole reference line was shown. */
+  /** Turns where the learner asked for the whole reference line BEFORE
+   *  answering. Fed to the grader as help taken — kept strictly separate from
+   *  `checked`, which every line ends up in and means nothing about effort. */
   shown: boolean[]
+  /** Turns the learner has committed and compared against the reference. Their
+   *  answer is locked from here on: having seen the reference, an edit would be
+   *  copying rather than recall. Absent on sessions from before compare existed. */
+  checked?: boolean[]
   /** Turn the learner stopped at, so a half-finished dialogue resumes. */
   at: number
   /** Deck words the dialogue actually used — coverage as fact, not hope. */

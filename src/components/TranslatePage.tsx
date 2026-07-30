@@ -136,6 +136,7 @@ export function TranslatePage({ deckId, initialSessionId, onExit }: Props) {
   const [draft, setDraft] = useState('')
   const [voice, setVoice] = useState<SpeechSynthesisVoice | null>(null)
   const answerRef = useRef<HTMLTextAreaElement | null>(null)
+  const nextRef = useRef<HTMLButtonElement | null>(null)
   const autoOpenedRef = useRef<number | null>(null)
 
   const deck = useLiveQuery(() => db.decks.get(deckId), [deckId])
@@ -189,6 +190,13 @@ export function TranslatePage({ deckId, initialSessionId, onExit }: Props) {
       setDraft(s.answers[s.at] ?? '')
     }
   }, [initialSessionId, saved])
+
+  // After Compare, move focus to the advance button so Enter carries the
+  // learner through both steps without reaching for the mouse.
+  const checkedNow = session?.checked?.[session.at] ?? false
+  useEffect(() => {
+    if (checkedNow) nextRef.current?.focus()
+  }, [checkedNow, session?.at])
 
   const maxCoverage = Math.max(5, Math.min(60, bankCards.length))
   const effectiveCoverage = Math.min(coverage, maxCoverage)
@@ -255,6 +263,7 @@ export function TranslatePage({ deckId, initialSessionId, onExit }: Props) {
         answers: turns.map(() => ''),
         reveals: turns.map((t) => t.hints.map(() => 0 as Reveal)),
         shown: turns.map(() => false),
+        checked: turns.map(() => false),
         at: 0,
         bankWords: [...usedKeys],
         topic: topic.trim() || undefined,
@@ -341,10 +350,27 @@ export function TranslatePage({ deckId, initialSessionId, onExit }: Props) {
     }
   }
 
-  function commit(next: number, value = draft) {
+  /** Lock the current line in and reveal the reference beside it. Deliberately
+   *  does NOT advance: comparing your own attempt against the answer while it's
+   *  still in your head is the point, and it's free — grading is still one call
+   *  at the very end. */
+  function check(value = draft) {
     if (!session) return
     const answers = session.answers.slice()
     answers[session.at] = value
+    const checked = (session.checked ?? session.turns.map(() => false)).slice()
+    checked[session.at] = true
+    patch({ answers, checked })
+    setDraft(value)
+  }
+
+  /** Move to another line. Saves whatever is in the box first, so stepping back
+   *  mid-sentence doesn't lose it (a no-op on a locked line, where the draft and
+   *  the stored answer are already the same). */
+  function commit(next: number) {
+    if (!session) return
+    const answers = session.answers.slice()
+    answers[session.at] = draft
     patch({ answers, at: next })
     setDraft(answers[next] ?? '')
     answerRef.current?.focus()
@@ -648,6 +674,7 @@ export function TranslatePage({ deckId, initialSessionId, onExit }: Props) {
   const reveals = session.reveals[session.at] ?? []
   const toks = groupTokens(alignEnglish(turn.english, turn.hints))
   const last = session.at === session.turns.length - 1
+  const isChecked = session.checked?.[session.at] ?? false
 
   return (
     <div className="translate-page">
@@ -666,6 +693,9 @@ export function TranslatePage({ deckId, initialSessionId, onExit }: Props) {
             <span className="tr-speaker">{t.speaker}</span>
             <span className="tr-done-en">{t.english}</span>
             <span className="tr-done-mine">{session.answers[i]?.trim() || '—'}</span>
+            {/* The reference stays with the line it belongs to, so scrolling back
+                over the dialogue isn't a record of uncorrected mistakes. */}
+            {session.checked?.[i] && <span className="tr-done-ref">{t.target}</span>}
           </div>
         ))}
       </div>
@@ -680,13 +710,18 @@ export function TranslatePage({ deckId, initialSessionId, onExit }: Props) {
               <button
                 key={i}
                 className={`tr-word r${reveals[g.hint] ?? 0}`}
+                // Once the reference is on screen, a hint would reveal nothing
+                // and would still be recorded against the card as a lookup.
+                disabled={isChecked}
                 onClick={() => tapHint(g.hint!)}
                 title={
-                  (reveals[g.hint] ?? 0) === 0
-                    ? 'Show the first letters of the root'
-                    : (reveals[g.hint] ?? 0) === 1
-                      ? 'Show the whole word'
-                      : undefined
+                  isChecked
+                    ? undefined
+                    : (reveals[g.hint] ?? 0) === 0
+                      ? 'Show the first letters of the root'
+                      : (reveals[g.hint] ?? 0) === 1
+                        ? 'Show the whole word'
+                        : undefined
                 }
               >
                 <span className="tr-word-en">{g.text}</span>
@@ -702,24 +737,48 @@ export function TranslatePage({ deckId, initialSessionId, onExit }: Props) {
           )}
         </div>
 
-        <textarea
-          className="tr-answer"
-          ref={answerRef}
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey && !loading) {
-              e.preventDefault()
-              if (last) finish()
-              else commit(session.at + 1)
-            }
-          }}
-          placeholder={`In ${deck.language}…`}
-          rows={2}
-        />
-
-        {session.shown[session.at] && <div className="tr-shown">{turn.target}</div>}
+        {isChecked ? (
+          <div className="tr-compare">
+            <div className="tr-compare-row">
+              <span className="tr-compare-label">Yours</span>
+              <span className="tr-compare-text">
+                {session.answers[session.at]?.trim() || <em>nothing</em>}
+              </span>
+            </div>
+            <div className="tr-compare-row">
+              <span className="tr-compare-label">Reference</span>
+              <span className="tr-compare-text ref">{turn.target}</span>
+              {speechSupported && (
+                <button
+                  className="btn ghost small"
+                  title="Hear it"
+                  onClick={() => speakLine(turn.target)}
+                >
+                  <Icon name="volume" />
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
+            <textarea
+              className="tr-answer"
+              ref={answerRef}
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey && !loading) {
+                  e.preventDefault()
+                  check()
+                }
+              }}
+              placeholder={`In ${deck.language}…`}
+              rows={2}
+            />
+            {session.shown[session.at] && <div className="tr-shown">{turn.target}</div>}
+          </>
+        )}
 
         <div className="tr-actions">
           <button
@@ -729,26 +788,39 @@ export function TranslatePage({ deckId, initialSessionId, onExit }: Props) {
           >
             ← Back
           </button>
-          {!session.shown[session.at] && (
-            <button className="btn ghost small" onClick={showLine}>
+          {!isChecked && !session.shown[session.at] && (
+            <button
+              className="btn ghost small"
+              title="Reveal this line before you answer — recorded as help taken"
+              onClick={showLine}
+            >
               Show me
             </button>
           )}
           <div className="spacer" />
-          <button
-            className="btn ghost small"
-            title="Leave this line blank and move on"
-            onClick={() => (last ? finish('') : commit(session.at + 1, ''))}
-          >
-            Skip
-          </button>
-          <button
-            className="btn accent"
-            onClick={() => (last ? finish() : commit(session.at + 1))}
-            disabled={loading}
-          >
-            {loading ? PHASE_LABEL[phase] : last ? 'Finish & grade' : 'Next'}
-          </button>
+          {isChecked ? (
+            <button
+              className="btn accent"
+              ref={nextRef}
+              onClick={() => (last ? finish() : commit(session.at + 1))}
+              disabled={loading}
+            >
+              {loading ? PHASE_LABEL[phase] : last ? 'Finish & grade' : 'Next line'}
+            </button>
+          ) : (
+            <>
+              <button
+                className="btn ghost small"
+                title="Leave this line blank and see the reference"
+                onClick={() => check('')}
+              >
+                Skip
+              </button>
+              <button className="btn accent" onClick={() => check()}>
+                Compare
+              </button>
+            </>
+          )}
         </div>
         {error && <p className="note error-note">{error}</p>}
       </div>

@@ -2183,3 +2183,39 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   .tr-prompt { font-size: 19px; }
   .tr-answer { font-size: 17px; }
 }
+
+/* Your attempt against the reference, side by side, before any grading — the
+   comparison is free and immediate; the verdict comes once, at the end. */
+.tr-compare { display: flex; flex-direction: column; gap: 10px; padding: 4px 0; }
+.tr-compare-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.tr-compare-row:last-child { border-bottom: none; padding-bottom: 0; }
+.tr-compare-label {
+  flex: 0 0 72px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding-top: 4px;
+}
+.tr-compare-text { flex: 1; min-width: 0; font-size: 19px; line-height: 1.55; }
+.tr-compare-text em { color: var(--ink-3); font-style: italic; font-size: 16px; }
+/* Distinct from the learner's line, but NOT green — nothing here is a verdict. */
+.tr-compare-text.ref { color: var(--accent); }
+.tr-compare-row .btn { align-self: center; flex: 0 0 auto; }
+
+.tr-done-ref { font-size: 13px; color: var(--accent); opacity: 0.75; }
+
+.tr-word:disabled { cursor: default; }
+
+@media (max-width: 560px) {
+  .tr-compare-text { font-size: 17px; }
+  .tr-compare-row { flex-wrap: wrap; gap: 4px 12px; }
+  .tr-compare-label { flex-basis: 100%; padding-top: 0; }
+}
