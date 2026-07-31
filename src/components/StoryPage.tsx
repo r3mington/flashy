@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useDeck } from '../useDeck'
-import { useFlushLoop } from '../useFlushLoop'
+import { useReadingTimer } from '../useReadingTimer'
 import {
-  bumpReading,
   db,
   newCardDefaults,
   type Card,
@@ -11,7 +10,7 @@ import {
 } from '../db'
 import { defineWord, generateStory, pickBeat, ApiError } from '../ai'
 import { leeches } from '../stats'
-import { formatDuration, startOfToday } from '../time'
+import { formatDuration } from '../time'
 import {
   clearMediaSession,
   holdAudioFocus,
@@ -105,25 +104,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const storyBodyRef = useRef<HTMLDivElement | null>(null)
   const [progress, setProgress] = useState(0)
 
-  // Daily reading timer: seconds already logged today (base) plus this session's
-  // ticks; the sum is persisted periodically and on unmount.
-  const [readBaseSecs, setReadBaseSecs] = useState(0)
-  const [sessionSecs, setSessionSecs] = useState(0)
-  const readDayRef = useRef(startOfToday())
-  const baseRef = useRef(0)
-  baseRef.current = readBaseSecs
-  const sessRef = useRef(0)
-  sessRef.current = sessionSecs
-  // Words read today: derived from how far through the open story the reader
-  // has scrolled. `high` is the story's saved high-water mark, `seen` the best
-  // reached so far — only the growth between them is ever credited, so
-  // re-reading an old story doesn't count its words again.
-  const wordsHighRef = useRef(0)
-  const wordsSeenRef = useRef(0)
-  const wordsStoryRef = useRef<number | null>(null)
   // Deck words at the moment the story was opened — keeps the "new words" chip
   // list stable while words are added (added ones show a ✓ instead of vanishing).
   const [baselineKeys, setBaselineKeys] = useState<Set<string>>(new Set())
+
+  // Daily reading log — ticks only while a story is open.
+  const timer = useReadingTimer(!!story)
 
   const settings = useSettings()
   const { deck, cards, langCode } = useDeck(deckId)
@@ -259,46 +245,10 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     [],
   )
 
-  // Reading timer — load today's total, tick while a story is open and the tab
-  // is visible, and persist the running total periodically and on unmount.
-  useEffect(() => {
-    db.reading.get(readDayRef.current).then((r) => setReadBaseSecs(r?.seconds ?? 0))
-  }, [])
-  const storyOpen = !!story
-  useEffect(() => {
-    if (!storyOpen) return
-    const id = setInterval(() => {
-      if (!document.hidden) setSessionSecs((s) => s + 1)
-    }, 1000)
-    return () => clearInterval(id)
-  }, [storyOpen])
-  // Credit the words newly scrolled past in the open story. Only refs are read,
-  // so the identity of this function doesn't matter to the effects using it.
-  const flushWords = () => {
-    const id = wordsStoryRef.current
-    const gained = wordsSeenRef.current - wordsHighRef.current
-    // The 5s floor keeps a story that's opened and immediately closed — which
-    // reads as 100% progress when it fits on one screen — from counting.
-    if (id == null || gained <= 0 || sessRef.current < 5) return
-    const mark = wordsSeenRef.current
-    wordsHighRef.current = mark
-    db.stories.update(id, { wordsRead: mark })
-    bumpReading(readDayRef.current, { addWords: gained })
-  }
-
-  useFlushLoop(() => {
-    flushWords()
-    if (sessRef.current > 0) {
-      bumpReading(readDayRef.current, { seconds: baseRef.current + sessRef.current })
-    }
-  })
   useEffect(() => {
     // Credit whatever was read in the story being left, then hand the word
     // counters over to the new one.
-    flushWords()
-    wordsStoryRef.current = story?.id ?? null
-    wordsHighRef.current = story?.wordsRead ?? 0
-    wordsSeenRef.current = story?.wordsRead ?? 0
+    timer.adopt(story ?? null)
     // A new story (or list view) cancels any in-progress reading, exits mark
     // mode, and lands on the sentence holding the saved marker word, if any.
     runRef.current++
@@ -323,6 +273,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // Reading progress = how much of the story text has scrolled past the bottom
   // of the viewport. A story shorter than one screen counts as fully shown.
   const storyId = story?.id
+  const wordsSeenRef = timer.seen
   useEffect(() => {
     if (storyId == null) return
     let frame = 0
@@ -348,7 +299,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       window.removeEventListener('scroll', onScroll)
       window.removeEventListener('resize', onScroll)
     }
-  }, [storyId])
+  }, [storyId, wordsSeenRef])
 
   // Deep link (homepage "continue reading"): open the requested story once the
   // data is in. Guarded so closing the story afterwards doesn't reopen it.
@@ -760,7 +711,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
           {deck.name} · built from your {cards.length} {cards.length === 1 ? 'word' : 'words'}
         </span>
         <span className="read-timer" title="Time spent reading stories today">
-          <Icon name="clock" /> {formatDuration(readBaseSecs + sessionSecs)} today
+          <Icon name="clock" /> {formatDuration(timer.todaySecs)} today
         </span>
       </div>
 
