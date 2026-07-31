@@ -5,45 +5,46 @@
  *  These are CANDIDATE generators, not a precise stemmer: every candidate is
  *  tested against the real word bank by the caller, so over-generating is
  *  harmless — spurious stems simply match no card. That trades a perfect
- *  stemmer for a short, liberal rule set that still catches the common cases. */
+ *  stemmer for a short, liberal rule set that still catches the common cases.
+ *
+ *  What is deliberately NOT peeled matters just as much. The answer these
+ *  callers want is "does the learner already know this word?", so only affixes
+ *  that leave the word recognisably the same come off: clitics, particles,
+ *  reduplication and the verbal prefixes. Indonesian's derivational affixes
+ *  build genuinely different words — "dekat" (near) does not hand you
+ *  "dekatkan" (to move closer), nor "makan" (eat) "makanan" (food), nor
+ *  "kerja" (work) "pekerja" (worker) — and collapsing those told the reader
+ *  they already knew vocabulary they had never met. */
 
-// Indonesian derivational/inflectional suffixes, stripped in the usual order:
-// clitic particles, then possessive pronouns, then the derivational suffixes.
+// Clitics only: particles first, then the possessive pronouns.
 const ID_PARTICLES = ['lah', 'kah', 'tah', 'pun']
 const ID_POSSESSIVES = ['ku', 'mu', 'nya']
-const ID_SUFFIXES = ['i', 'kan', 'an']
 
 /** Each rule removes a prefix and offers one or more restored initial
  *  consonants — Indonesian nasal prefixes assimilate and often drop the root's
  *  first letter (memukul → pukul, menulis → tulis, menyapu → sapu). We emit a
- *  candidate for every restoration; only real roots survive the bank check. */
+ *  candidate for every restoration; only real roots survive the bank check.
+ *
+ *  Verbal prefixes only. The noun-forming pe(N)-, per-, ke- and se- are absent
+ *  on purpose: they derive new vocabulary rather than inflect existing words. */
 const ID_PREFIX_RULES: { prefix: string; restore: string[] }[] = [
   { prefix: 'menge', restore: [''] }, // monosyllabic root: mengecat → cat
-  { prefix: 'penge', restore: [''] },
   { prefix: 'meng', restore: ['', 'k'] }, // mengambil → ambil, mengukur → (k)ukur
-  { prefix: 'peng', restore: ['', 'k'] },
   { prefix: 'meny', restore: ['s'] }, // menyapu → sapu
-  { prefix: 'peny', restore: ['s'] },
   { prefix: 'mem', restore: ['', 'p'] }, // membaca → baca, memukul → pukul
-  { prefix: 'pem', restore: ['', 'p'] },
   { prefix: 'men', restore: ['', 't'] }, // mendengar → dengar, menulis → tulis
-  { prefix: 'pen', restore: ['', 't'] },
   { prefix: 'me', restore: [''] }, // melihat → lihat
-  { prefix: 'pe', restore: [''] },
   { prefix: 'ber', restore: [''] }, // bermain → main
   { prefix: 'bel', restore: [''] }, // belajar → ajar (irregular)
   { prefix: 'be', restore: [''] }, // bekerja → kerja
   { prefix: 'ter', restore: [''] }, // terbuka → buka
   { prefix: 'te', restore: [''] },
-  { prefix: 'per', restore: [''] },
   { prefix: 'di', restore: [''] }, // dibaca → baca
-  { prefix: 'ke', restore: [''] },
-  { prefix: 'se', restore: [''] }, // sebuah → buah
 ]
 
 const MIN_ROOT = 2
 
-function idStripSuffixes(word: string): Set<string> {
+function idStripClitics(word: string): Set<string> {
   const out = new Set<string>([word])
   const peel = (groups: string[]) => {
     for (const w of [...out]) {
@@ -54,7 +55,6 @@ function idStripSuffixes(word: string): Set<string> {
   }
   peel(ID_PARTICLES)
   peel(ID_POSSESSIVES)
-  peel(ID_SUFFIXES)
   return out
 }
 
@@ -82,11 +82,11 @@ export function rootCandidates(word: string, langCode: string | null): string[] 
   if (w.includes('-')) {
     for (const half of w.split('-')) if (half.length >= MIN_ROOT) out.add(half)
   }
-  // Suffixes first, then prefixes off each suffix-stripped form — covers
-  // circumfixes (me-…-kan, ke-…-an) without a separate pass.
+  // Clitics first, then prefixes off each clitic-stripped form, so a word
+  // carrying both (dibacanya → dibaca → baca) still reaches its root.
   for (const s of [...out]) {
-    for (const noSuffix of idStripSuffixes(s)) {
-      for (const root of idStripPrefixes(noSuffix)) out.add(root)
+    for (const bare of idStripClitics(s)) {
+      for (const root of idStripPrefixes(bare)) out.add(root)
     }
   }
   return [...out]
