@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { useDeck } from '../useDeck'
+import { useFlushLoop } from '../useFlushLoop'
 import {
   bumpReading,
   db,
@@ -14,9 +16,9 @@ import {
   clearMediaSession,
   holdAudioFocus,
   keepSpeechAlive,
-  langCodeFor,
   loadVoices,
   preferredVoice,
+  speakIn,
   setMediaPlaybackState,
   setMediaSession,
   speak,
@@ -124,8 +126,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const [baselineKeys, setBaselineKeys] = useState<Set<string>>(new Set())
 
   const settings = useSettings()
-  const deck = useLiveQuery(() => db.decks.get(deckId), [deckId])
-  const cards = useLiveQuery(() => db.cards.where('deckId').equals(deckId).toArray(), [deckId])
+  const { deck, cards, langCode } = useDeck(deckId)
   const savedStories = useLiveQuery(
     () => db.stories.where('deckId').equals(deckId).reverse().sortBy('createdAt'),
     [deckId],
@@ -139,7 +140,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     [cards, reviews],
   )
 
-  const langCode = deck ? langCodeFor(deck.language) : null
 
   // Cards keyed by defKey(word) — for resolving a tapped word to its card.
   const cardByKey = useMemo(() => {
@@ -286,22 +286,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     bumpReading(readDayRef.current, { addWords: gained })
   }
 
-  useEffect(() => {
-    const flush = () => {
-      flushWords()
-      if (sessRef.current > 0) {
-        bumpReading(readDayRef.current, { seconds: baseRef.current + sessRef.current })
-      }
+  useFlushLoop(() => {
+    flushWords()
+    if (sessRef.current > 0) {
+      bumpReading(readDayRef.current, { seconds: baseRef.current + sessRef.current })
     }
-    const onHide = () => document.hidden && flush()
-    const id = setInterval(flush, 15000)
-    document.addEventListener('visibilitychange', onHide)
-    return () => {
-      clearInterval(id)
-      document.removeEventListener('visibilitychange', onHide)
-      flush()
-    }
-  }, [])
+  })
   useEffect(() => {
     // Credit whatever was read in the story being left, then hand the word
     // counters over to the new one.
@@ -562,8 +552,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // Speak a single word (used by the definition popup's pronounce button).
   async function pronounce(text: string) {
     stopSpeaking()
-    const voices = await loadVoices()
-    await speak(text, { voice: preferredVoice(voices, langCode), lang: langCode ?? undefined })
+    await speakIn(text, langCode)
   }
 
   // Sentence that holds the marker word (for read-aloud resume alignment).

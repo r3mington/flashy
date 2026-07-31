@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { useDeck } from '../useDeck'
 import { db, type Card, type Reveal, type TranslationSession } from '../db'
 import { ApiError, alignDialogue, gradeTranslation, writeDialogue } from '../ai'
 import { defKey } from '../text'
 import { rootCandidates } from '../lemma'
-import { langCodeFor, loadVoices, preferredVoice, speak, speechSupported, stopSpeaking } from '../speech'
+import { speakIn, speechSupported, stopSpeaking } from '../speech'
 import { Icon } from './Icon'
 
 interface Props {
@@ -134,24 +135,16 @@ export function TranslatePage({ deckId, initialSessionId, onExit }: Props) {
   const [error, setError] = useState('')
   const [session, setSession] = useState<TranslationSession | null>(null)
   const [draft, setDraft] = useState('')
-  const [voice, setVoice] = useState<SpeechSynthesisVoice | null>(null)
   const answerRef = useRef<HTMLTextAreaElement | null>(null)
   const nextRef = useRef<HTMLButtonElement | null>(null)
   const autoOpenedRef = useRef<number | null>(null)
 
-  const deck = useLiveQuery(() => db.decks.get(deckId), [deckId])
-  const cards = useLiveQuery(() => db.cards.where('deckId').equals(deckId).toArray(), [deckId])
+  const { deck, cards, langCode } = useDeck(deckId)
   const saved = useLiveQuery(
     () => db.translations.where('deckId').equals(deckId).reverse().sortBy('createdAt'),
     [deckId],
   )
 
-  const langCode = deck ? langCodeFor(deck.language) : null
-
-  useEffect(() => {
-    if (!speechSupported || !langCode) return
-    loadVoices().then((vs) => setVoice(preferredVoice(vs, langCode)))
-  }, [langCode])
 
   useEffect(() => () => stopSpeaking(), [])
 
@@ -394,7 +387,7 @@ export function TranslatePage({ deckId, initialSessionId, onExit }: Props) {
 
   const speakLine = (text: string) => {
     stopSpeaking()
-    speak(text, { voice, lang: langCode ?? undefined, rate: 0.9 })
+    void speakIn(text, langCode, { rate: 0.9 })
   }
 
   // ─── Setup ────────────────────────────────────────────────────────────────

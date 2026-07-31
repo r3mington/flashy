@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { useLiveQuery } from 'dexie-react-hooks'
+import { useDeck } from '../useDeck'
 import { db } from '../db'
+import { useFlushLoop } from '../useFlushLoop'
 import { startOfToday } from '../time'
 import { Icon } from './Icon'
 import {
-  langCodeFor,
   loadVoices,
   onVoicesChanged,
   preferredVoice,
@@ -159,26 +159,15 @@ function useListeningTimer(playing: boolean) {
     return () => clearInterval(id)
   }, [playing])
 
-  useEffect(() => {
-    const flush = () => {
-      if (sessRef.current > 0) {
-        db.listening.put({ day: dayRef.current, seconds: baseRef.current + sessRef.current })
-      }
+  useFlushLoop(() => {
+    if (sessRef.current > 0) {
+      db.listening.put({ day: dayRef.current, seconds: baseRef.current + sessRef.current })
     }
-    const onHide = () => document.hidden && flush()
-    const id = setInterval(flush, 15000)
-    document.addEventListener('visibilitychange', onHide)
-    return () => {
-      clearInterval(id)
-      document.removeEventListener('visibilitychange', onHide)
-      flush()
-    }
-  }, [])
+  })
 }
 
 export function ListenPage({ deckId, onExit }: Props) {
-  const deck = useLiveQuery(() => db.decks.get(deckId), [deckId])
-  const cards = useLiveQuery(() => db.cards.where('deckId').equals(deckId).toArray(), [deckId])
+  const { deck, cards, langCode } = useDeck(deckId)
 
   const [options, setOptions] = useState<ListenOptions>(() => loadOptions(deckId))
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([])
@@ -193,7 +182,6 @@ export function ListenPage({ deckId, onExit }: Props) {
   const voicesRef = useRef(voices)
   voicesRef.current = voices
 
-  const langCode = deck ? langCodeFor(deck.language) : null
 
   useEffect(() => {
     loadVoices().then(setVoices)

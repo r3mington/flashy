@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useLiveQuery } from 'dexie-react-hooks'
+import { useDeck } from '../useDeck'
 import { db, type Card } from '../db'
 import { CardEditor } from './CardEditor'
 import { ContinueReading } from './ContinueReading'
@@ -9,10 +9,7 @@ import { ExportCards } from './ExportCards'
 import { GenerateCards } from './GenerateCards'
 import { generateEmojis } from '../ai'
 import {
-  langCodeFor,
-  loadVoices,
-  preferredVoice,
-  speak,
+  speakIn,
   speechSupported,
   stopSpeaking,
 } from '../speech'
@@ -63,24 +60,17 @@ export function DeckView({
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [emojiLoading, setEmojiLoading] = useState(false)
 
-  const deck = useLiveQuery(() => db.decks.get(deckId), [deckId])
-  const cards = useLiveQuery(() => db.cards.where('deckId').equals(deckId).toArray(), [deckId])
+  const { deck, cards, langCode } = useDeck(deckId)
 
   // Stop any pronunciation when leaving the deck view.
   useEffect(() => () => stopSpeaking(), [])
 
   if (!deck || !cards) return null
-
-  const langCode = langCodeFor(deck.language)
   const canSpeak = speechSupported && !!langCode
 
   async function speakWord(word: string) {
     stopSpeaking()
-    const voices = await loadVoices()
-    await speak(word, {
-      voice: preferredVoice(voices, langCode),
-      lang: langCode ?? undefined,
-    })
+    await speakIn(word, langCode)
   }
 
   const now = Date.now()

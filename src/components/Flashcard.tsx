@@ -4,9 +4,7 @@ import { Icon } from './Icon'
 import { useSettings } from '../useSettings'
 import {
   langCodeFor,
-  loadVoices,
-  preferredVoice,
-  speak,
+  speakIn,
   speechSupported,
   stopSpeaking,
 } from '../speech'
@@ -33,11 +31,7 @@ export function Flashcard({ card, flipped, onFlip, dealKey, front, mask, languag
 
   async function speakWord() {
     stopSpeaking()
-    const voices = await loadVoices()
-    await speak(card.word, {
-      voice: preferredVoice(voices, langCode),
-      lang: langCode ?? undefined,
-    })
+    await speakIn(card.word, langCode)
   }
 
   // Auto-pronounce the word once per card, when it first becomes visible

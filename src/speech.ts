@@ -186,6 +186,23 @@ export function speak(text: string, opts: SpeakOptions = {}): Promise<void> {
   })
 }
 
+/** Say something in a deck's language, picking the user's preferred voice for
+ *  it. Wraps the load-voices-then-pick dance every caller was repeating; the
+ *  voice list is cached by `loadVoices`, so this is cheap to call per utterance.
+ *  Screens that let the user *choose* a voice still work with the list directly. */
+export async function speakIn(
+  text: string,
+  langCode: string | null,
+  opts: { rate?: number } = {},
+): Promise<void> {
+  const voices = await loadVoices()
+  return speak(text, {
+    voice: preferredVoice(voices, langCode),
+    lang: langCode ?? undefined,
+    rate: opts.rate,
+  })
+}
+
 export function stopSpeaking() {
   if ('speechSynthesis' in window) speechSynthesis.cancel()
 }
