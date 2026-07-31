@@ -9,6 +9,7 @@ import {
 } from '../db'
 import { defineWord, generateStory, pickBeat, ApiError } from '../ai'
 import { leeches } from '../stats'
+import { formatDuration, startOfToday } from '../time'
 import {
   clearMediaSession,
   holdAudioFocus,
@@ -37,19 +38,6 @@ const PHASE_LABEL: Record<'writing' | 'extending' | 'glossary', string> = {
 
 const FONT_SCALE_MIN = 0.8
 const FONT_SCALE_MAX = 1.8
-
-function startOfToday(): number {
-  const d = new Date()
-  d.setHours(0, 0, 0, 0)
-  return d.getTime()
-}
-
-function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`
-  const m = Math.floor(seconds / 60)
-  if (m < 60) return `${m}m`
-  return `${Math.floor(m / 60)}h ${m % 60}m`
-}
 
 interface Props {
   deckId: number

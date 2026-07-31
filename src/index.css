@@ -1262,7 +1262,6 @@ button { font-family: inherit; }
 }
 .num-input:focus { outline: none; border-color: var(--accent); }
 
-.key-row { display: flex; gap: 8px; margin-top: 4px; }
 
 .chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
 
@@ -1406,23 +1405,6 @@ button { font-family: inherit; }
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-
-/* ---- Per-deck forecasts ---- */
-.deck-forecasts { display: flex; flex-direction: column; gap: 18px; }
-.deck-forecast-name {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-.deck-forecast-total {
-  font-weight: 400;
-  font-size: 12px;
-  color: var(--ink-2);
-  font-variant-numeric: tabular-nums;
 }
 
 /* ---- Story generation ---- */

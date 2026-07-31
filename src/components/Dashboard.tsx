@@ -2,8 +2,8 @@ import { useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, type Card, type Review } from '../db'
 import { useSettings } from '../useSettings'
+import { DAY, formatAgo, formatDuration, startOfDay } from '../time'
 import {
-  DAY,
   MATURE_DAYS,
   type BankPoint,
   buildBankSeries,
@@ -11,8 +11,6 @@ import {
   currentStreak,
   deckStats,
   dueForecast,
-  formatAgo,
-  formatDuration,
   inferSessions,
   leeches,
   longestStreak,
@@ -20,7 +18,6 @@ import {
   nextMilestone,
   retention,
   secondsPerAnswer,
-  startOfDay,
   studySecondsByDay,
 } from '../stats'
 

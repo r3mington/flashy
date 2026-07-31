@@ -234,7 +234,7 @@ type StoryProse = Omit<Story, 'glossary'>
 /** Dramatic turns a story can be built around. A genre is only a setting —
  *  what makes a short piece land is the turn inside it, so one of these is
  *  drawn at random for every part instead of leaving the shape to chance. */
-export const STORY_BEATS = [
+const STORY_BEATS = [
   'someone tells a small lie, and it snowballs',
   'the reader learns something one of the characters does not know',
   'a stranger turns up who already knows the main character’s name',

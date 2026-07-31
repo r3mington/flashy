@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, type Card } from '../db'
+import { DAY, startOfDay } from '../time'
 import { schedule, previewInterval, type Grade } from '../srs'
 import { Flashcard } from './Flashcard'
 import { useSettings } from '../useSettings'
@@ -251,14 +252,6 @@ export function StudySrs({
       </div>
     </div>
   )
-}
-
-const DAY = 24 * 60 * 60 * 1000
-
-function startOfDay(ts: number): number {
-  const d = new Date(ts)
-  d.setHours(0, 0, 0, 0)
-  return d.getTime()
 }
 
 function SessionSummary({

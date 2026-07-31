@@ -6,7 +6,7 @@
  *  Lao, Burmese). Korean uses spaces and is excluded. */
 const SPACELESS_LANGS = new Set(['th', 'zh', 'ja', 'km', 'lo', 'my'])
 
-export function needsSegmentation(langCode: string | null): boolean {
+function needsSegmentation(langCode: string | null): boolean {
   return !!langCode && SPACELESS_LANGS.has(langCode) && typeof Intl.Segmenter === 'function'
 }
 

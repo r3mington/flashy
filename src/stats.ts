@@ -1,12 +1,5 @@
 import type { Card, Deck, Review, SavedStory, Snapshot } from './db'
-
-export const DAY = 24 * 60 * 60 * 1000
-
-export function startOfDay(ts: number): number {
-  const d = new Date(ts)
-  d.setHours(0, 0, 0, 0)
-  return d.getTime()
-}
+import { DAY, startOfDay } from './time'
 
 /** A run of consecutive days ending today (or yesterday, so a day that hasn't
  *  been studied yet doesn't break the chain). */
@@ -310,23 +303,6 @@ export function countByDay<T>(items: T[], ts: (item: T) => number): Map<number, 
   return out
 }
 
-export function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${Math.round(seconds)}s`
-  const m = Math.round(seconds / 60)
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  return `${h}h ${m % 60}m`
-}
-
-export function formatAgo(ts: number, now = Date.now()): string {
-  const days = Math.floor((startOfDay(now) - startOfDay(ts)) / DAY)
-  if (days <= 0) return 'today'
-  if (days === 1) return 'yesterday'
-  if (days < 7) return `${days}d ago`
-  if (days < 30) return `${Math.floor(days / 7)}w ago`
-  if (days < 365) return `${Math.floor(days / 30)}mo ago`
-  return `${Math.floor(days / 365)}y ago`
-}
 
 /** The next round number worth chasing, for the milestone bar. */
 export function nextMilestone(n: number): number {

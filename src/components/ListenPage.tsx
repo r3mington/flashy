@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db'
+import { startOfToday } from '../time'
 import { Icon } from './Icon'
 import {
   langCodeFor,
@@ -173,12 +174,6 @@ function useListeningTimer(playing: boolean) {
       flush()
     }
   }, [])
-}
-
-function startOfToday(): number {
-  const d = new Date()
-  d.setHours(0, 0, 0, 0)
-  return d.getTime()
 }
 
 export function ListenPage({ deckId, onExit }: Props) {

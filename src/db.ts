@@ -1,4 +1,5 @@
 import Dexie, { type EntityTable } from 'dexie'
+import { startOfToday } from './time'
 
 export interface Deck {
   id: number
@@ -346,10 +347,8 @@ export function bumpReading(
  *  day, overwritten with the latest counts each time it runs. */
 export async function recordDailySnapshot(): Promise<void> {
   const cards = await db.cards.toArray()
-  const d = new Date()
-  d.setHours(0, 0, 0, 0)
   await db.snapshots.put({
-    day: d.getTime(),
+    day: startOfToday(),
     total: cards.length,
     new: cards.filter((c) => !c.known && c.state === 'new').length,
     learning: cards.filter((c) => !c.known && c.state === 'learning').length,
