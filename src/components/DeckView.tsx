@@ -121,6 +121,9 @@ export function DeckView({
       : matched
 
   const anyLookups = cards.some((c) => (c.lookups ?? 0) > 0)
+  // Cards the example backfill would write for — ignored words aren't
+  // vocabulary, so they never need one.
+  const missingExamples = cards.filter((c) => !c.example?.trim() && !c.ignored).length
 
   async function deleteDeck() {
     if (!confirm(`Delete deck “${deck!.name}” and its ${cards!.length} cards? This cannot be undone.`))
@@ -326,18 +329,24 @@ export function DeckView({
             {emojiLoading ? 'Picking…' : '✦ Emoji'}
           </button>
         )}
-        {cards.some((c) => !c.example?.trim() && !c.ignored) && (
-          <button
-            className="btn"
-            title="AI-write an example sentence for every card that doesn't have one"
-            onClick={fillExamples}
-            disabled={exampleProgress !== null}
-          >
-            {exampleProgress
-              ? `Writing ${exampleProgress[0]}/${exampleProgress[1]}…`
+        {/* Always on show, so the control can be found before it is needed —
+            it just goes quiet once every card has an example. */}
+        <button
+          className="btn"
+          title={
+            missingExamples > 0
+              ? `AI-write an example sentence for the ${missingExamples} ${missingExamples === 1 ? 'card' : 'cards'} without one`
+              : 'Every card already has an example sentence'
+          }
+          onClick={fillExamples}
+          disabled={exampleProgress !== null || missingExamples === 0}
+        >
+          {exampleProgress
+            ? `Writing ${exampleProgress[0]}/${exampleProgress[1]}…`
+            : missingExamples > 0
+              ? `✦ Examples (${missingExamples})`
               : '✦ Examples'}
-          </button>
-        )}
+        </button>
         <button className="btn" onClick={() => setImporting(true)}>
           Import CSV
         </button>
