@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useDeck } from '../useDeck'
-import { db } from '../db'
+import { db, inRotation } from '../db'
 import { useFlushLoop } from '../useFlushLoop'
 import { startOfToday } from '../time'
 import { Icon } from './Icon'
@@ -224,7 +224,7 @@ export function ListenPage({ deckId, onExit }: Props) {
           .filter((c) => (c.lookups ?? 0) > 0)
           .sort((a, b) => (b.lookups ?? 0) - (a.lookups ?? 0) || a.word.localeCompare(b.word))
           .slice(0, TOP_LOOKUPS)
-      : (cards ?? []).filter((c) => (options.scope === 'all' ? true : !c.known))
+      : (cards ?? []).filter((c) => (options.scope === 'all' ? !c.ignored : inRotation(c)))
   const anyLookups = (cards ?? []).some((c) => (c.lookups ?? 0) > 0)
 
   if (!deck || !cards) return null

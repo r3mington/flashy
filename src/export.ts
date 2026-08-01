@@ -1,10 +1,10 @@
 import Papa from 'papaparse'
 import type { Card, Deck } from './db'
 
-/** A card's status as the deck view shows it — "known" wins over the SRS
- *  state, because a known card is out of study whatever its state says. */
-export function cardStatus(card: Card): 'new' | 'learning' | 'review' | 'known' {
-  return card.known ? 'known' : card.state
+/** A card's status as the deck view shows it — "known" and "ignored" win over
+ *  the SRS state, because such a card is out of study whatever its state says. */
+export function cardStatus(card: Card): 'new' | 'learning' | 'review' | 'known' | 'ignored' {
+  return card.ignored ? 'ignored' : card.known ? 'known' : card.state
 }
 
 export type ExportColumn =
@@ -17,6 +17,7 @@ export type ExportColumn =
   | 'emoji'
   | 'status'
   | 'known'
+  | 'ignored'
   | 'lookups'
   | 'addedAt'
   | 'dueAt'
@@ -34,8 +35,9 @@ export const EXPORT_COLUMNS: { key: ExportColumn; label: string; hint?: string }
   { key: 'exampleTranslation', label: 'Example translation' },
   { key: 'notes', label: 'Notes' },
   { key: 'emoji', label: 'Emoji' },
-  { key: 'status', label: 'Status', hint: 'new / learning / review / known' },
+  { key: 'status', label: 'Status', hint: 'new / learning / review / known / ignored' },
   { key: 'known', label: 'Known', hint: 'yes / no' },
+  { key: 'ignored', label: 'Ignored', hint: 'yes / no' },
   { key: 'lookups', label: 'Look-ups', hint: 'times tapped while reading' },
   { key: 'addedAt', label: 'Date added' },
   { key: 'dueAt', label: 'Next due' },
@@ -91,6 +93,8 @@ export function cellValue(card: Card, col: ExportColumn): string | number | null
       return cardStatus(card)
     case 'known':
       return card.known ? 'yes' : 'no'
+    case 'ignored':
+      return card.ignored ? 'yes' : 'no'
     case 'lookups':
       return card.lookups ?? 0
     case 'addedAt':

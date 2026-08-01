@@ -28,7 +28,11 @@ export type RawData = {
   listening: ListeningLog[]
 }
 
-export function compute(raw: RawData, rangeDays: number, deckFilter: number | 'all') {
+export function compute(rawInput: RawData, rangeDays: number, deckFilter: number | 'all') {
+  // Ignored words (brand names, place names…) live in the deck only to keep
+  // stories from flagging them as new. They are not vocabulary, so they are
+  // dropped before anything here counts them — as known or as anything else.
+  const raw: RawData = { ...rawInput, cards: rawInput.cards.filter((c) => !c.ignored) }
   const now = Date.now()
   const today = startOfDay(now)
   const windowStart = today - (rangeDays - 1) * DAY

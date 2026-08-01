@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useDeck } from '../useDeck'
-import { db, type Card } from '../db'
+import { db, inRotation, type Card } from '../db'
 import { CardEditor } from './CardEditor'
 import { ContinueReading } from './ContinueReading'
 import { Icon } from './Icon'
 import { ImportCsv } from './ImportCsv'
 import { ExportCards } from './ExportCards'
 import { GenerateCards } from './GenerateCards'
-import { generateEmojis } from '../ai'
+import { generateEmojis, generateExamples } from '../ai'
 import {
   speakIn,
   speechSupported,
@@ -26,7 +26,7 @@ interface Props {
   onDeleted: () => void
 }
 
-type StateFilter = 'all' | 'new' | 'learning' | 'review' | 'known'
+type StateFilter = 'all' | 'new' | 'learning' | 'review' | 'known' | 'ignored'
 type SortBy = 'default' | 'lookups'
 
 const FILTER_DEFS: { key: StateFilter; label: string }[] = [
@@ -35,7 +35,12 @@ const FILTER_DEFS: { key: StateFilter; label: string }[] = [
   { key: 'learning', label: 'Learning' },
   { key: 'review', label: 'Review' },
   { key: 'known', label: 'Known' },
+  { key: 'ignored', label: 'Ignored' },
 ]
+
+/** How many cards one example-writing request covers. Sentences are a lot more
+ *  output per word than emoji, so a big deck goes in batches. */
+const EXAMPLE_BATCH = 25
 
 export function DeckView({
   deckId,
@@ -59,6 +64,8 @@ export function DeckView({
   const [deckLang, setDeckLang] = useState('')
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [emojiLoading, setEmojiLoading] = useState(false)
+  /** How far the example backfill has got, as `done/total`; null when idle. */
+  const [exampleProgress, setExampleProgress] = useState<[number, number] | null>(null)
 
   const { deck, cards, langCode } = useDeck(deckId)
 
@@ -74,22 +81,25 @@ export function DeckView({
   }
 
   const now = Date.now()
-  const due = cards.filter((c) => c.due <= now && !c.known).length
+  const due = cards.filter((c) => c.due <= now && inRotation(c)).length
 
   const counts: Record<StateFilter, number> = {
     all: cards.length,
-    new: cards.filter((c) => !c.known && c.state === 'new').length,
-    learning: cards.filter((c) => !c.known && c.state === 'learning').length,
-    review: cards.filter((c) => !c.known && c.state === 'review').length,
-    known: cards.filter((c) => c.known).length,
+    new: cards.filter((c) => inRotation(c) && c.state === 'new').length,
+    learning: cards.filter((c) => inRotation(c) && c.state === 'learning').length,
+    review: cards.filter((c) => inRotation(c) && c.state === 'review').length,
+    known: cards.filter((c) => c.known && !c.ignored).length,
+    ignored: cards.filter((c) => c.ignored).length,
   }
 
   const byState =
     stateFilter === 'all'
       ? cards
       : stateFilter === 'known'
-        ? cards.filter((c) => c.known)
-        : cards.filter((c) => !c.known && c.state === stateFilter)
+        ? cards.filter((c) => c.known && !c.ignored)
+        : stateFilter === 'ignored'
+          ? cards.filter((c) => c.ignored)
+          : cards.filter((c) => inRotation(c) && c.state === stateFilter)
 
   const q = search.trim().toLowerCase()
   const matched = q
@@ -143,8 +153,9 @@ export function DeckView({
   }
 
   const allVisibleSelected = filtered.length > 0 && filtered.every((c) => selected.has(c.id))
-  const everySelectedKnown =
-    selected.size > 0 && cards.filter((c) => selected.has(c.id)).every((c) => c.known)
+  const selectedCards = cards.filter((c) => selected.has(c.id))
+  const everySelectedKnown = selected.size > 0 && selectedCards.every((c) => c.known)
+  const everySelectedIgnored = selected.size > 0 && selectedCards.every((c) => c.ignored)
 
   function toggleSelectAll() {
     setSelected(allVisibleSelected ? new Set() : new Set(filtered.map((c) => c.id)))
@@ -152,8 +163,13 @@ export function DeckView({
 
   const selectedIds = () => [...selected]
 
-  async function setKnown(ids: number[], known: boolean) {
-    await db.cards.where('id').anyOf(ids).modify({ known })
+  // The two out-of-study flags are always written together, so a card can never
+  // end up both known and ignored.
+  async function setStatus(ids: number[], status: 'unknown' | 'known' | 'ignored') {
+    await db.cards
+      .where('id')
+      .anyOf(ids)
+      .modify({ known: status === 'known', ignored: status === 'ignored' })
   }
 
   async function resetStats(ids: number[]) {
@@ -183,7 +199,7 @@ export function DeckView({
   }
 
   async function fillEmojis() {
-    const missing = cards!.filter((c) => !c.emoji)
+    const missing = cards!.filter((c) => !c.emoji && !c.ignored)
     if (missing.length === 0) return
     setEmojiLoading(true)
     try {
@@ -199,6 +215,36 @@ export function DeckView({
       alert((e instanceof Error && e.message) || 'Emoji generation failed. Please try again.')
     } finally {
       setEmojiLoading(false)
+    }
+  }
+
+  // Write an example sentence for every card that has none — the same idea as
+  // the emoji backfill, but batched: sentences are far more output per word.
+  async function fillExamples() {
+    const missing = cards!.filter((c) => !c.example?.trim() && !c.ignored)
+    if (missing.length === 0) return
+    setExampleProgress([0, missing.length])
+    try {
+      for (let i = 0; i < missing.length; i += EXAMPLE_BATCH) {
+        const batch = missing.slice(i, i + EXAMPLE_BATCH)
+        const map = await generateExamples(
+          deck!,
+          batch.map((c) => ({ word: c.word, meaning: c.meaning })),
+        )
+        for (const c of batch) {
+          const got = map.get(c.word.trim().toLowerCase())
+          if (got?.example)
+            await db.cards.update(c.id, {
+              example: got.example,
+              exampleTranslation: got.exampleTranslation || undefined,
+            })
+        }
+        setExampleProgress([Math.min(i + EXAMPLE_BATCH, missing.length), missing.length])
+      }
+    } catch (e) {
+      alert((e instanceof Error && e.message) || 'Example generation failed. Please try again.')
+    } finally {
+      setExampleProgress(null)
     }
   }
 
@@ -270,7 +316,7 @@ export function DeckView({
         >
           ✦ Translate
         </button>
-        {cards.some((c) => !c.emoji) && (
+        {cards.some((c) => !c.emoji && !c.ignored) && (
           <button
             className="btn"
             title="AI-pick a mnemonic emoji for every card that doesn't have one"
@@ -278,6 +324,18 @@ export function DeckView({
             disabled={emojiLoading}
           >
             {emojiLoading ? 'Picking…' : '✦ Emoji'}
+          </button>
+        )}
+        {cards.some((c) => !c.example?.trim() && !c.ignored) && (
+          <button
+            className="btn"
+            title="AI-write an example sentence for every card that doesn't have one"
+            onClick={fillExamples}
+            disabled={exampleProgress !== null}
+          >
+            {exampleProgress
+              ? `Writing ${exampleProgress[0]}/${exampleProgress[1]}…`
+              : '✦ Examples'}
           </button>
         )}
         <button className="btn" onClick={() => setImporting(true)}>
@@ -336,9 +394,16 @@ export function DeckView({
           <div className="bulk-actions">
             <button
               className="btn small"
-              onClick={() => setKnown(selectedIds(), !everySelectedKnown)}
+              onClick={() => setStatus(selectedIds(), everySelectedKnown ? 'unknown' : 'known')}
             >
               {everySelectedKnown ? 'Unmark known' : 'Mark as known'}
+            </button>
+            <button
+              className="btn small"
+              title="Not vocabulary — out of study, and counted as neither known nor learning"
+              onClick={() => setStatus(selectedIds(), everySelectedIgnored ? 'unknown' : 'ignored')}
+            >
+              {everySelectedIgnored ? 'Unignore' : 'Ignore'}
             </button>
             <button className="btn small" onClick={() => resetStats(selectedIds())}>
               Reset stats
@@ -369,7 +434,7 @@ export function DeckView({
           </label>
           {filtered.map((card, i) => (
             <div
-              className={`card-row${selected.has(card.id) ? ' selected' : ''}${card.known ? ' is-known' : ''}`}
+              className={`card-row${selected.has(card.id) ? ' selected' : ''}${card.known ? ' is-known' : ''}${card.ignored ? ' is-ignored' : ''}`}
               key={card.id}
               style={{ animationDelay: `${Math.min(i, 12) * 25}ms` }}
             >
@@ -396,7 +461,11 @@ export function DeckView({
                       <Icon name="volume" />
                     </button>
                   )}
-                  {card.known ? (
+                  {card.ignored ? (
+                    <span className="state-pill ignored" title="Not vocabulary — out of study, counted as neither known nor learning">
+                      ignored
+                    </span>
+                  ) : card.known ? (
                     <span className="state-pill known">known</span>
                   ) : (
                     <span className={`state-pill ${card.state}`}>{card.state}</span>
@@ -420,9 +489,20 @@ export function DeckView({
                 <button
                   className="btn ghost small"
                   title={card.known ? 'Include in study again' : 'Exclude from study'}
-                  onClick={() => setKnown([card.id], !card.known)}
+                  onClick={() => setStatus([card.id], card.known ? 'unknown' : 'known')}
                 >
                   {card.known ? 'Unknown' : 'Known'}
+                </button>
+                <button
+                  className="btn ghost small"
+                  title={
+                    card.ignored
+                      ? 'Treat as vocabulary again'
+                      : 'Not vocabulary — keep it in the deck, but out of study and out of the counts'
+                  }
+                  onClick={() => setStatus([card.id], card.ignored ? 'unknown' : 'ignored')}
+                >
+                  {card.ignored ? 'Unignore' : 'Ignore'}
                 </button>
                 <button
                   className="btn ghost small"

@@ -148,6 +148,59 @@ export async function generateEmojis(
   return map
 }
 
+const EXAMPLES_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    items: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          word: { type: 'STRING' },
+          example: { type: 'STRING' },
+          exampleTranslation: { type: 'STRING' },
+        },
+        required: ['word', 'example', 'exampleTranslation'],
+      },
+    },
+  },
+  required: ['items'],
+}
+
+export interface GeneratedExample {
+  example: string
+  exampleTranslation: string
+}
+
+/** Write an example sentence (plus its English translation) for each word.
+ *  Returns a lowercase word → sentence map, like `generateEmojis`. */
+export async function generateExamples(
+  deck: Deck,
+  words: { word: string; meaning: string }[],
+): Promise<Map<string, GeneratedExample>> {
+  const prompt = [
+    `For each ${deck.language} vocabulary word below, write one natural example sentence in ${deck.language} that uses the word, plus an English translation of that sentence.`,
+    `Use casual, everyday conversational ${deck.language} — the register people actually speak in daily life, not formal or literary language.`,
+    `Keep sentences short (roughly 6–12 words) and make the word's meaning clear from the context. Use the word in the exact sense given.`,
+    `Return every word exactly as given, each with its sentence.`,
+    `Words:`,
+    ...words.map((w) => `${w.word} — ${w.meaning}`),
+  ].join('\n')
+
+  const parsed = await callGeminiJson<{
+    items: { word: string; example: string; exampleTranslation: string }[]
+  }>(prompt, EXAMPLES_SCHEMA)
+  const map = new Map<string, GeneratedExample>()
+  for (const item of parsed.items) {
+    if (item.word && item.example)
+      map.set(item.word.trim().toLowerCase(), {
+        example: item.example.trim(),
+        exampleTranslation: (item.exampleTranslation ?? '').trim(),
+      })
+  }
+  return map
+}
+
 export interface GlossaryEntry {
   word: string
   meaning: string

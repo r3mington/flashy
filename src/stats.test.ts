@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { countByDay, currentStreak, longestStreak, nextMilestone, retention } from './stats'
+import {
+  buildBankSeries,
+  countByDay,
+  currentStreak,
+  dueForecast,
+  leeches,
+  longestStreak,
+  maturity,
+  nextMilestone,
+  retention,
+} from './stats'
 import { DAY, startOfDay } from './time'
-import type { Review } from './db'
+import type { Card, Review } from './db'
 
 const today = startOfDay(Date.UTC(2026, 6, 31, 12))
 
@@ -91,5 +101,47 @@ describe('nextMilestone', () => {
     for (const n of [0, 1, 9, 10, 99, 100, 4999]) {
       expect(nextMilestone(n)).toBeGreaterThan(n)
     }
+  })
+})
+
+describe('ignored cards', () => {
+  const card = (over: Partial<Card>): Card =>
+    ({
+      id: 1,
+      deckId: 1,
+      word: 'w',
+      meaning: 'm',
+      example: '',
+      createdAt: today,
+      state: 'review',
+      due: today,
+      interval: 30,
+      ease: 2.5,
+      reps: 5,
+      lapses: 0,
+      ...over,
+    }) as Card
+
+  it('counts as neither known nor learning in the bank series', () => {
+    const cards = [
+      card({ id: 1, ignored: true, state: 'new' }),
+      card({ id: 2, known: true, state: 'review' }),
+      card({ id: 3, state: 'learning' }),
+    ]
+    const [point] = buildBankSeries([], cards, today, 7)
+    expect(point.new).toBe(0)
+    expect(point.learning).toBe(1)
+    expect(point.known).toBe(1)
+  })
+
+  it('stays out of the due forecast and the maturity buckets', () => {
+    const cards = [card({ id: 1, ignored: true, due: today - DAY, interval: 30 })]
+    expect(dueForecast(cards, today, 3, today).every((d) => d.count === 0)).toBe(true)
+    expect(maturity(cards).every((b) => b.count === 0)).toBe(true)
+  })
+
+  it('is never surfaced as a leech, however badly it scores', () => {
+    const cards = [card({ id: 1, ignored: true, lapses: 9, lookups: 20 })]
+    expect(leeches(cards, [])).toEqual([])
   })
 })

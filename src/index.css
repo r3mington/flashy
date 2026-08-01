@@ -405,6 +405,8 @@ button { font-family: inherit; }
 .card-row:hover { border-color: var(--ink-3); }
 .card-row.selected { border-color: var(--accent); }
 .card-row.is-known .card-body { opacity: 0.55; }
+/* Ignored words aren't vocabulary — they recede further than known ones. */
+.card-row.is-ignored .card-body { opacity: 0.4; }
 
 .card-row .card-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .card-row .word { font-weight: 600; font-size: 15px; }
@@ -483,6 +485,11 @@ button { font-family: inherit; }
 .bulk-actions { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
 
 .state-pill.known { background: color-mix(in srgb, var(--ink-3) 18%, transparent); color: var(--ink-2); }
+.state-pill.ignored {
+  background: transparent;
+  color: var(--ink-3);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
 
 .state-pill {
   display: inline-block;
@@ -1219,6 +1226,7 @@ button { font-family: inherit; }
   transition: background 0.15s ease, color 0.15s ease;
 }
 .seg-control button.on { background: var(--ink); color: var(--bg); }
+.seg-control.small button { font-size: 12px; padding: 5px 10px; }
 /* In a full-width form field, keep the control sized to its buttons. */
 .field .seg-control { width: fit-content; }
 
@@ -1473,6 +1481,9 @@ button { font-family: inherit; }
 .story-new-words .eyebrow { margin-bottom: 10px; }
 .chip .chip-added { color: var(--green); font-weight: 700; margin-left: 2px; }
 .chip button.add-word:hover { background: var(--green); }
+/* "Not vocabulary" — sits beside the + and stays quiet until hovered. */
+.chip button.add-word.ignore { font-size: 11px; }
+.chip button.add-word.ignore:hover { background: var(--ink-3); color: var(--bg); }
 
 /* ---- Range inputs ---- */
 input[type='range'] { width: 100%; accent-color: var(--accent); }
@@ -1932,7 +1943,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .word-sheet-meaning { color: var(--ink-2); font-size: 15px; margin-bottom: 14px; }
 /* Romanization line in the tap-to-define sheet (non-Latin scripts). */
 .word-sheet-roman { color: var(--ink-2); font-size: 14px; font-style: italic; margin: -6px 0 8px; }
-.word-sheet-actions { display: flex; gap: 8px; align-items: center; }
+.word-sheet-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 /* --- Export modal ------------------------------------------------------- */
 .export-block { margin-top: 18px; }

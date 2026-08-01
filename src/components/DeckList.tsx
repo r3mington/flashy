@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db } from '../db'
+import { db, inRotation } from '../db'
 import { ContinueReading } from './ContinueReading'
 
 interface Props {
@@ -22,7 +22,7 @@ export function DeckList({ onOpen, onOpenStory }: Props) {
     for (const c of cards) {
       const s = byDeck.get(c.deckId) ?? { total: 0, due: 0 }
       s.total += 1
-      if (c.due <= now && !c.known) s.due += 1
+      if (c.due <= now && inRotation(c)) s.due += 1
       byDeck.set(c.deckId, s)
     }
     return byDeck

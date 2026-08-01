@@ -1,4 +1,4 @@
-import type { Card, Deck, Review, SavedStory, Snapshot } from './db'
+import { inRotation, type Card, type Deck, type Review, type SavedStory, type Snapshot } from './db'
 import { DAY, startOfDay } from './time'
 
 /** A run of consecutive days ending today (or yesterday, so a day that hasn't
@@ -133,7 +133,7 @@ export function leeches(cards: Card[], reviews: Review[], limit = 12): Leech[] {
   }
   const scored: Leech[] = []
   for (const card of cards) {
-    if (card.known) continue
+    if (!inRotation(card)) continue
     const againCount = againByCard.get(card.id) ?? 0
     const lookups = card.lookups ?? 0
     const easePenalty = card.ease < 2.3 ? (2.5 - card.ease) * 6 : 0
@@ -171,7 +171,7 @@ export function maturity(cards: Card[]): MaturityBucket[] {
   ]
   const buckets = edges.map(([label, , mature]) => ({ label, count: 0, mature }))
   for (const c of cards) {
-    if (c.known || c.state === 'new') continue
+    if (!inRotation(c) || c.state === 'new') continue
     const i = edges.findIndex(([, max]) => c.interval < max)
     buckets[i === -1 ? buckets.length - 1 : i].count++
   }
@@ -190,7 +190,7 @@ export function dueForecast(cards: Card[], today: number, days: number, now = Da
   const byDay = new Map<number, number>()
   let backlog = 0
   for (const c of cards) {
-    if (c.state === 'new' || c.known) continue
+    if (c.state === 'new' || !inRotation(c)) continue
     if (c.due <= now) {
       backlog++
       continue
@@ -235,8 +235,8 @@ export function deckStats(
         deck,
         cards: dc.length,
         known: dc.filter((c) => c.known).length,
-        dueNow: dc.filter((c) => !c.known && c.state !== 'new' && c.due <= now).length,
-        newCards: dc.filter((c) => !c.known && c.state === 'new').length,
+        dueNow: dc.filter((c) => inRotation(c) && c.state !== 'new' && c.due <= now).length,
+        newCards: dc.filter((c) => inRotation(c) && c.state === 'new').length,
         reviews7d: dr.filter((r) => r.ts >= since).length,
         retention:
           recent.length === 0
@@ -271,9 +271,9 @@ export function buildBankSeries(
   const live: BankPoint = {
     day: today,
     total: cards.length,
-    new: cards.filter((c) => !c.known && c.state === 'new').length,
-    learning: cards.filter((c) => !c.known && c.state === 'learning').length,
-    review: cards.filter((c) => !c.known && c.state === 'review').length,
+    new: cards.filter((c) => inRotation(c) && c.state === 'new').length,
+    learning: cards.filter((c) => inRotation(c) && c.state === 'learning').length,
+    review: cards.filter((c) => inRotation(c) && c.state === 'review').length,
     known: cards.filter((c) => c.known).length,
   }
   if (snapshots.length === 0) return [live]

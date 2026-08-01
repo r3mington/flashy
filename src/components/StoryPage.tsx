@@ -4,6 +4,7 @@ import { useDeck } from '../useDeck'
 import { useReadingTimer } from '../useReadingTimer'
 import {
   db,
+  inRotation,
   newCardDefaults,
   type Card,
   type SavedStory,
@@ -28,6 +29,24 @@ import { Icon } from './Icon'
 import { rootCandidates } from '../lemma'
 import { defKey, splitSentences, tokenizeWords } from '../text'
 import { useSettings, saveSettings } from '../useSettings'
+
+/** What a deck card is, from the reader's point of view: still being learned,
+ *  known, or ignored — a word that isn't vocabulary at all (a brand, a place)
+ *  and should count as neither. */
+type WordStatus = 'unknown' | 'known' | 'ignored'
+
+const cardStatusOf = (c: Card): WordStatus =>
+  c.ignored ? 'ignored' : c.known ? 'known' : 'unknown'
+
+const WORD_STATUSES: { key: WordStatus; label: string; title: string }[] = [
+  { key: 'unknown', label: 'Unknown', title: 'Back into the study rotation' },
+  { key: 'known', label: 'Known', title: 'Out of study, counted as a word you know' },
+  {
+    key: 'ignored',
+    label: 'Ignore',
+    title: 'Not vocabulary — out of study, and never counted as known',
+  },
+]
 
 /** What the generate button says during each pass of a story generation —
  *  writing, topping up a short draft, then glossing the result. */
@@ -333,8 +352,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
 
   if (!deck || !cards) return null
 
+  // The pool the writer can draw on — ignored words are not vocabulary.
+  const bankSize = cards.filter((c) => !c.ignored).length
+
   // "Only unlearned" needs at least one card that isn't marked known.
-  const scopeEmpty = scope === 'learning' && cards.every((c) => c.known)
+  // Ignored words are never vocabulary the writer should build on.
+  const scopeEmpty = scope === 'learning' && !cards.some(inRotation)
 
   /** Generate a story — a fresh one, or the next part of the thread being
    *  continued, optionally steered by what the reader asked for. */
@@ -361,7 +384,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         // In 'learning' mode, don't seed the story with already-known words —
         // build it only from the ones still being learned.
         knownWords: scope === 'all' ? cards!.filter((c) => c.known).map((c) => c.word) : [],
-        learningWords: cards!.filter((c) => !c.known).map((c) => c.word),
+        learningWords: cards!.filter(inRotation).map((c) => c.word),
         newWordPercent: newPercent,
         topic: from ? undefined : topic || undefined,
         lengthWords: length,
@@ -629,7 +652,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     }
   }
 
-  async function addWord(word: string, meaning: string, known = false, roman?: string) {
+  async function addWord(
+    word: string,
+    meaning: string,
+    status: WordStatus = 'unknown',
+    roman?: string,
+  ) {
     await db.cards.add({
       deckId,
       word,
@@ -637,14 +665,20 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       example: '',
       roman: roman || undefined,
       ...newCardDefaults(),
-      known,
+      known: status === 'known',
+      ignored: status === 'ignored',
     })
   }
 
-  // Toggle the known flag on the deck card matching a tapped word.
-  async function setWordKnown(word: string, known: boolean) {
+  // Move the deck card matching a tapped word between the three statuses. The
+  // two flags are set together so a card can never be both known and ignored.
+  async function setWordStatus(word: string, status: WordStatus) {
     const card = (cards ?? []).find((c) => defKey(c.word) === defKey(word))
-    if (card) await db.cards.update(card.id, { known })
+    if (card)
+      await db.cards.update(card.id, {
+        known: status === 'known',
+        ignored: status === 'ignored',
+      })
   }
 
   // Words worth surfacing under the story. The glossary now holds EVERY word
@@ -708,7 +742,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       <div className="page-head">
         <h1>Story</h1>
         <span className="sub">
-          {deck.name} · built from your {cards.length} {cards.length === 1 ? 'word' : 'words'}
+          {deck.name} · built from your {bankSize} {bankSize === 1 ? 'word' : 'words'}
         </span>
         <span className="read-timer" title="Time spent reading stories today">
           <Icon name="clock" /> {formatDuration(timer.todaySecs)} today
@@ -833,7 +867,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               <button
                 className="btn accent"
                 onClick={() => run()}
-                disabled={loading || cards.length === 0 || scopeEmpty}
+                disabled={loading || bankSize === 0 || scopeEmpty}
               >
                 {loading
                   ? PHASE_LABEL[phase]
@@ -1208,9 +1242,18 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                       <button
                         className="add-word"
                         title={`Add “${w.word}” to the deck`}
-                        onClick={() => addWord(w.word, w.meaning, false, w.roman)}
+                        onClick={() => addWord(w.word, w.meaning, 'unknown', w.roman)}
                       >
                         +
+                      </button>
+                    )}
+                    {!deckKeys.has(defKey(w.word)) && (
+                      <button
+                        className="add-word ignore"
+                        title={`Ignore “${w.word}” — not vocabulary, just stop flagging it as new`}
+                        onClick={() => addWord(w.word, w.meaning, 'ignored', w.roman)}
+                      >
+                        ⊘
                       </button>
                     )}
                   </span>
@@ -1261,20 +1304,34 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             <div className="word-sheet-actions">
               {selectedCard ? (
                 <>
-                  <span className="s-tag added">{selectedCard.known ? 'Known ✓' : 'In deck ✓'}</span>
-                  <button
-                    className="btn small"
-                    onClick={() => setWordKnown(selected.word, !selectedCard.known)}
-                  >
-                    {selectedCard.known ? 'Unmark known' : 'Mark as known'}
-                  </button>
+                  <span className="s-tag added">
+                    {selectedCard.ignored
+                      ? 'Ignored ✓'
+                      : selectedCard.known
+                        ? 'Known ✓'
+                        : 'In deck ✓'}
+                  </span>
+                  {/* All three statuses at once, so a word can always go back to
+                      unknown — not just out of whichever one it is in. */}
+                  <div className="seg-control small">
+                    {WORD_STATUSES.map((s) => (
+                      <button
+                        key={s.key}
+                        className={cardStatusOf(selectedCard) === s.key ? 'on' : ''}
+                        title={s.title}
+                        onClick={() => setWordStatus(selected.word, s.key)}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
                 </>
               ) : (
                 <>
                   <button
                     className="btn small primary"
                     disabled={!selected.meaning}
-                    onClick={() => addWord(selected.word, selected.meaning, false, selected.roman)}
+                    onClick={() => addWord(selected.word, selected.meaning, 'unknown', selected.roman)}
                   >
                     Add to deck
                   </button>
@@ -1282,9 +1339,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     className="btn small"
                     disabled={!selected.meaning}
                     title="Add to the deck already marked as known"
-                    onClick={() => addWord(selected.word, selected.meaning, true, selected.roman)}
+                    onClick={() => addWord(selected.word, selected.meaning, 'known', selected.roman)}
                   >
                     Add as known
+                  </button>
+                  <button
+                    className="btn small"
+                    disabled={!selected.meaning}
+                    title="Not vocabulary (a name, a brand…) — add it so the story stops flagging it as new, without counting it as a word you know"
+                    onClick={() => addWord(selected.word, selected.meaning, 'ignored', selected.roman)}
+                  >
+                    Ignore
                   </button>
                 </>
               )}

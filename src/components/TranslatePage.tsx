@@ -149,7 +149,7 @@ export function TranslatePage({ deckId, initialSessionId, onExit }: Props) {
   useEffect(() => () => stopSpeaking(), [])
 
   const bankCards = useMemo(
-    () => (cards ?? []).filter((c) => (scope === 'known' ? c.known : true)),
+    () => (cards ?? []).filter((c) => (scope === 'known' ? !!c.known : !c.ignored)),
     [cards, scope],
   )
 

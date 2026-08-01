@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, type Card } from '../db'
+import { db, inRotation, type Card } from '../db'
 import { Flashcard } from './Flashcard'
 import { useSettings } from '../useSettings'
 
@@ -27,7 +27,7 @@ export function StudyFlip({ deckId, onExit }: { deckId: number; onExit: () => vo
       .equals(deckId)
       .toArray()
       .then((all) => {
-        if (!cancelled) setCards(shuffle(all.filter((c) => !c.known)))
+        if (!cancelled) setCards(shuffle(all.filter(inRotation)))
       })
     return () => {
       cancelled = true

@@ -1,4 +1,4 @@
-import { db } from './db'
+import { db, inRotation } from './db'
 
 /** Set the PWA app-icon badge to the number of due cards (where supported). */
 export async function updateAppBadge() {
@@ -8,7 +8,7 @@ export async function updateAppBadge() {
     const due = await db.cards
       .where('due')
       .belowOrEqual(now)
-      .filter((c) => !c.known && c.state !== 'new')
+      .filter((c) => inRotation(c) && c.state !== 'new')
       .count()
     if (due > 0) await navigator.setAppBadge(due)
     else await navigator.clearAppBadge()

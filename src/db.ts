@@ -25,6 +25,11 @@ export interface Card {
   createdAt: number
   /** Marked as known — excluded from study modes. */
   known?: boolean
+  /** Marked as ignored — a word that shows up in stories but isn't vocabulary
+   *  (brand names, place names, loanwords). It sits in the deck only so stories
+   *  stop flagging it as new: out of study, and counted as neither known nor
+   *  learning anywhere in the stats. Mutually exclusive with `known`. */
+  ignored?: boolean
   /** How many times this word was tapped for its definition while reading a
    *  story — a "struggle" signal for sorting the deck. Plain, non-indexed. */
   lookups?: number
@@ -346,15 +351,22 @@ export function bumpReading(
 /** Record (or refresh) today's word-bank snapshot. Idempotent — one row per
  *  day, overwritten with the latest counts each time it runs. */
 export async function recordDailySnapshot(): Promise<void> {
-  const cards = await db.cards.toArray()
+  // Ignored words aren't vocabulary — they never enter the bank counts.
+  const cards = (await db.cards.toArray()).filter((c) => !c.ignored)
   await db.snapshots.put({
     day: startOfToday(),
     total: cards.length,
-    new: cards.filter((c) => !c.known && c.state === 'new').length,
-    learning: cards.filter((c) => !c.known && c.state === 'learning').length,
-    review: cards.filter((c) => !c.known && c.state === 'review').length,
+    new: cards.filter((c) => inRotation(c) && c.state === 'new').length,
+    learning: cards.filter((c) => inRotation(c) && c.state === 'learning').length,
+    review: cards.filter((c) => inRotation(c) && c.state === 'review').length,
     known: cards.filter((c) => c.known).length,
   })
+}
+
+/** Cards that take part in study: neither marked known nor ignored. Everything
+ *  that counts due cards, new cards or learning states goes through this. */
+export function inRotation(c: Card): boolean {
+  return !c.known && !c.ignored
 }
 
 export function newCardDefaults(): Pick<

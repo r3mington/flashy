@@ -18,7 +18,7 @@ interface Props {
   onClose: () => void
 }
 
-type Status = 'new' | 'learning' | 'review' | 'known'
+type Status = 'new' | 'learning' | 'review' | 'known' | 'ignored'
 type Format = 'csv' | 'json'
 
 const STATUSES: { key: Status; label: string }[] = [
@@ -26,12 +26,16 @@ const STATUSES: { key: Status; label: string }[] = [
   { key: 'learning', label: 'Learning' },
   { key: 'review', label: 'Review' },
   { key: 'known', label: 'Known' },
+  { key: 'ignored', label: 'Ignored' },
 ]
 
 const UNKNOWN: Status[] = ['new', 'learning', 'review']
+/** Everything that is actually vocabulary — the default selection. Ignored
+ *  words (brand names, place names…) are deck bookkeeping, not words to export. */
+const VOCAB: Status[] = ['new', 'learning', 'review', 'known']
 
 export function ExportCards({ deck, cards, onClose }: Props) {
-  const [statuses, setStatuses] = useState<Set<Status>>(new Set(STATUSES.map((s) => s.key)))
+  const [statuses, setStatuses] = useState<Set<Status>>(new Set(VOCAB))
   const [columns, setColumns] = useState<ExportColumn[]>(DEFAULT_COLUMNS)
   const [format, setFormat] = useState<Format>('csv')
   const [minLookups, setMinLookups] = useState(0)
@@ -41,7 +45,7 @@ export function ExportCards({ deck, cards, onClose }: Props) {
       acc[s.key] = cards.filter((c) => cardStatus(c) === s.key).length
       return acc
     },
-    { new: 0, learning: 0, review: 0, known: 0 },
+    { new: 0, learning: 0, review: 0, known: 0, ignored: 0 },
   )
 
   const selected = cards
@@ -72,7 +76,8 @@ export function ExportCards({ deck, cards, onClose }: Props) {
 
   /** A short word for the filename: what this selection actually is. */
   function scopeName(): string {
-    if (statuses.size === 4) return 'all'
+    if (statuses.size === STATUSES.length) return 'all'
+    if (sameSet(VOCAB)) return 'words'
     if (sameSet(UNKNOWN)) return 'unknown'
     if (sameSet(['known'])) return 'known'
     return [...statuses].join('-')
@@ -123,7 +128,10 @@ export function ExportCards({ deck, cards, onClose }: Props) {
               className="btn ghost small"
               onClick={() => setStatuses(new Set(STATUSES.map((s) => s.key)))}
             >
-              All
+              Everything
+            </button>
+            <button className="btn ghost small" onClick={() => setStatuses(new Set(VOCAB))}>
+              All words
             </button>
             <button className="btn ghost small" onClick={() => setStatuses(new Set(UNKNOWN))}>
               Unknown only

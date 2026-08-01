@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, type Card } from '../db'
+import { db, inRotation, type Card } from '../db'
 import { DAY, startOfDay } from '../time'
 import { schedule, previewInterval, type Grade } from '../srs'
 import { Flashcard } from './Flashcard'
@@ -55,10 +55,10 @@ export function StudySrs({
       let q: Card[]
       if (drillIds) {
         const found = await db.cards.bulkGet(drillIds)
-        q = found.filter((c): c is Card => !!c && !c.known)
+        q = found.filter((c): c is Card => !!c && inRotation(c))
       } else if (deckId !== undefined) {
         const all = (await db.cards.where('deckId').equals(deckId).toArray()).filter(
-          (c) => !c.known,
+          inRotation,
         )
         const dueCards = all.filter((c) => c.state !== 'new' && c.due <= now)
         const newCards = all.filter((c) => c.state === 'new').slice(0, newPerSession)
