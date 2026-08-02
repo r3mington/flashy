@@ -34,6 +34,11 @@ async function callGeminiJson<T>(prompt: string, schema: object): Promise<T> {
       body: JSON.stringify({ prompt, schema, thinking }),
     })
   } catch {
+    // Offline is the ordinary case here (a plane, a tunnel), and it deserves a
+    // plainer explanation than the dev-setup one.
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      throw new Error('You’re offline — this needs a connection.')
+    }
     throw new Error(
       'Could not reach the AI endpoint. If you are running locally, use `npm run dev:vercel` so the API functions are served.',
     )
@@ -564,6 +569,68 @@ export async function defineWord(opts: {
     prompt,
     DEFINE_SCHEMA,
   )
+}
+
+const DEFINE_MANY_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    items: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          word: { type: 'STRING' },
+          meaning: { type: 'STRING' },
+          isContentWord: { type: 'BOOLEAN' },
+          roman: { type: 'STRING' },
+        },
+        required: ['word', 'meaning', 'isContentWord'],
+      },
+    },
+  },
+  required: ['items'],
+}
+
+export interface WordDefinition {
+  meaning: string
+  isContentWord: boolean
+  roman?: string
+}
+
+/** Define a batch of words at once, each in the sentence it was used in — the
+ *  same job as `defineWord`, done ahead of time for every word a story's
+ *  glossary missed, so nothing is left needing the network mid-read.
+ *  Returns a lowercase word → definition map. */
+export async function defineWords(opts: {
+  deck: Deck
+  words: { word: string; sentence?: string }[]
+}): Promise<Map<string, WordDefinition>> {
+  const { deck, words } = opts
+  const prompt = [
+    `Below are ${deck.language} words a learner tapped while reading. Give each a concise English meaning, as a glossary entry.`,
+    `Each word is listed with the sentence it appears in — define the sense it carries THERE, not its most common sense in isolation. Keep the word in the exact surface form given; do not reduce it to its dictionary form.`,
+    `Also report, for each, whether it is a content word (noun, verb, adjective or adverb) rather than a function word. Personal names are not content words.`,
+    `Return every word exactly as given, each with its meaning.`,
+    ROMAN_RULE(deck.language, 'every entry'),
+    `Words:`,
+    ...words.map((w) => (w.sentence ? `${w.word} — in: "${w.sentence.trim()}"` : w.word)),
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  const parsed = await callGeminiJson<{
+    items: { word: string; meaning: string; isContentWord: boolean; roman?: string }[]
+  }>(prompt, DEFINE_MANY_SCHEMA)
+  const map = new Map<string, WordDefinition>()
+  for (const item of parsed.items ?? []) {
+    if (item.word && item.meaning)
+      map.set(item.word.trim().toLowerCase(), {
+        meaning: item.meaning.trim(),
+        isContentWord: !!item.isContentWord,
+        roman: item.roman?.trim() || undefined,
+      })
+  }
+  return map
 }
 
 // ─── Translate: English → target-language dialogue ──────────────────────────

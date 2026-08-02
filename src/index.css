@@ -1520,6 +1520,14 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 /* ---- Saved stories ---- */
 .story-saved { max-width: 560px; margin-top: 28px; }
 .story-saved .eyebrow { margin-bottom: 10px; }
+.story-offline-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.story-offline-row .note { margin: 0; }
 .story-saved-row {
   display: flex;
   align-items: center;

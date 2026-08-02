@@ -9,7 +9,8 @@ import {
   type Card,
   type SavedStory,
 } from '../db'
-import { defineWord, generateStory, pickBeat, ApiError } from '../ai'
+import { defineWord, defineWords, generateStory, pickBeat, ApiError } from '../ai'
+import { definable, missingDefinitions } from '../glossary'
 import { leeches } from '../stats'
 import { formatDuration } from '../time'
 import {
@@ -58,6 +59,9 @@ const PHASE_LABEL: Record<'writing' | 'extending' | 'glossary', string> = {
 
 const FONT_SCALE_MIN = 0.8
 const FONT_SCALE_MAX = 1.8
+
+/** How many words one glossary top-up request covers. */
+const DEFINE_BATCH = 40
 
 interface Props {
   deckId: number
@@ -122,6 +126,10 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // Scroll-through-the-story progress, shown in the (collapsible) read bar.
   const storyBodyRef = useRef<HTMLDivElement | null>(null)
   const [progress, setProgress] = useState(0)
+
+  // Glossary top-up progress, as `done/total`; null when idle.
+  const [filling, setFilling] = useState<[number, number] | null>(null)
+  const [fillError, setFillError] = useState('')
 
   // Deck words at the moment the story was opened — keeps the "new words" chip
   // list stable while words are added (added ones show a ✓ instead of vanishing).
@@ -349,6 +357,22 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       Math.max(g.root.createdAt, ...g.parts.map((p) => p.createdAt))
     return groups.sort((a, b) => latest(b) - latest(a))
   }, [savedStories])
+
+  // Words a tap couldn't answer from the story's glossary or the deck — the
+  // ones that would need the network mid-read. Counted for the open story, and
+  // across every saved story so a whole deck can be made offline-ready at once.
+  const missing = useMemo(
+    () => (story ? missingDefinitions(story, cards ?? [], langCode) : []),
+    [story, cards, langCode],
+  )
+  const missingAll = useMemo(
+    () =>
+      (savedStories ?? []).reduce(
+        (n, s) => n + missingDefinitions(s, cards ?? [], langCode).length,
+        0,
+      ),
+    [savedStories, cards, langCode],
+  )
 
   if (!deck || !cards) return null
 
@@ -578,7 +602,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       return
     }
     const key = defKey(token)
-    if (!key) return
+    // Bare numerals and symbols are tappable but have nothing to define —
+    // never worth a round trip, least of all one that can't be made offline.
+    if (!key || !definable(key)) return
     const display = token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
     // The deck word this token belongs to (itself or a morphological root).
     const deckKey = resolveDeckKey(key)
@@ -649,6 +675,56 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       setSelected((sel) =>
         sel?.loading && defKey(sel.word) === key ? { ...sel, loading: false, failed: true } : sel,
       )
+    }
+  }
+
+  // Fetch, in bulk, every definition a story is still missing and write them
+  // into its saved glossary — the "make this readable on a plane" button. Same
+  // work `lookupMissing` does one tap at a time, done while there's a network.
+  async function fillGlossary(targets: SavedStory[]) {
+    const jobs = targets
+      .map((s) => ({ story: s, words: missingDefinitions(s, cards ?? [], langCode) }))
+      .filter((j) => j.words.length > 0)
+    const total = jobs.reduce((n, j) => n + j.words.length, 0)
+    if (total === 0) return
+    setFillError('')
+    setFilling([0, total])
+    let done = 0
+    try {
+      for (const job of jobs) {
+        const added: SavedStory['glossary'] = []
+        for (let i = 0; i < job.words.length; i += DEFINE_BATCH) {
+          const batch = job.words.slice(i, i + DEFINE_BATCH)
+          const map = await defineWords({
+            deck: deck!,
+            words: batch.map(({ word, sentence }) => ({ word, sentence })),
+          })
+          for (const m of batch) {
+            const got = map.get(m.word.trim().toLowerCase())
+            if (got)
+              added.push({
+                word: m.word,
+                meaning: got.meaning,
+                isNew: got.isContentWord,
+                roman: got.roman,
+              })
+          }
+          done += batch.length
+          setFilling([done, total])
+        }
+        if (added.length === 0) continue
+        // Re-read before writing: the reader may have tapped words into this
+        // same glossary while the batches were in flight.
+        const rec = await db.stories.get(job.story.id)
+        if (!rec) continue
+        const glossary = [...(rec.glossary ?? []), ...added]
+        await db.stories.update(job.story.id, { glossary })
+        setStory((cur) => (cur && cur.id === job.story.id ? { ...cur, glossary } : cur))
+      }
+    } catch (e) {
+      setFillError((e instanceof Error && e.message) || 'Lookup failed — please try again.')
+    } finally {
+      setFilling(null)
     }
   }
 
@@ -881,6 +957,29 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
           {threads.length > 0 && (
             <div className="story-saved">
               <div className="eyebrow">Saved stories</div>
+              {/* Every saved story, made tap-anywhere readable without a
+                  network. Always on show, so it can be found before the flight
+                  rather than discovered mid-air; it just goes quiet once every
+                  word of every story already has a meaning stored. */}
+              <div className="story-offline-row">
+                <button
+                  className="btn small"
+                  onClick={() => fillGlossary(savedStories ?? [])}
+                  disabled={filling !== null || missingAll === 0}
+                  title={
+                    missingAll > 0
+                      ? `Fetch the ${missingAll} word meanings these stories don't have stored yet, so every word can be tapped offline`
+                      : 'Every word of every saved story already has its meaning stored — nothing needs the network'
+                  }
+                >
+                  {filling
+                    ? `Downloading ${filling[0]}/${filling[1]}…`
+                    : missingAll > 0
+                      ? `✦ Save for offline (${missingAll})`
+                      : '✓ Ready to read offline'}
+                </button>
+                {fillError && <span className="note error-note">{fillError}</span>}
+              </div>
               {threads.map(({ root, parts }) => (
                 <div className="story-thread" key={root.id}>
                   <div className="story-saved-row">
@@ -1203,6 +1302,22 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
           )}
 
           <div className="story-toolbar">
+            <button
+              className="btn ghost small"
+              onClick={() => fillGlossary([story])}
+              disabled={filling !== null || missing.length === 0}
+              title={
+                missing.length > 0
+                  ? `${missing.length} of this story's words have no meaning stored — tapping them needs a connection. Fetch them now.`
+                  : 'Every word of this story can be tapped offline'
+              }
+            >
+              {filling
+                ? `Downloading ${filling[0]}/${filling[1]}…`
+                : missing.length > 0
+                  ? `✦ Save for offline (${missing.length})`
+                  : '✓ Ready offline'}
+            </button>
             <button className="btn ghost small" onClick={() => setShowTranslation((s) => !s)}>
               {showTranslation ? 'Hide translation' : 'Show translation'}
             </button>
@@ -1226,6 +1341,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               ← All stories
             </button>
           </div>
+          {fillError && <p className="note error-note">{fillError}</p>}
 
           {newWords.length > 0 && (
             <div className="story-new-words">

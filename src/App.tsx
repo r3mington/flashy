@@ -131,6 +131,10 @@ export default function App() {
     checkAuth().then(setAuthed)
     // Capture today's word-bank size so growth can be charted over time.
     recordDailySnapshot()
+    // Ask the browser not to evict the database. Everything — decks, review
+    // history, saved stories — lives in IndexedDB, and Safari clears storage
+    // for sites left unused for a week unless it is marked persistent.
+    void navigator.storage?.persist?.().catch(() => {})
   }, [])
 
   // Force light/dark, or clear the override to follow the OS (the default CSS
