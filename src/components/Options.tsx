@@ -1,6 +1,19 @@
+import { useEffect, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db'
 import { useSettings, saveSettings } from '../useSettings'
+import { downloadFile } from '../export'
+import {
+  BackupError,
+  backupFilename,
+  parseBackup,
+  readBackup,
+  restoreBackup,
+  spanDays,
+  summarise,
+  type RestoreMode,
+  type TableSummary,
+} from '../backup'
 
 async function exportJson() {
   const [decks, cards] = await Promise.all([db.decks.toArray(), db.cards.toArray()])
@@ -18,6 +31,203 @@ async function exportJson() {
   a.download = `flashy-export-${new Date().toISOString().slice(0, 10)}.json`
   a.click()
   URL.revokeObjectURL(url)
+}
+
+const TABLE_LABELS: Record<string, string> = {
+  decks: 'Decks',
+  cards: 'Cards',
+  reviews: 'Review answers',
+  blacklist: 'Blacklisted words',
+  settings: 'Settings',
+  stories: 'Stories',
+  snapshots: 'Daily snapshots',
+  reading: 'Reading log',
+  listening: 'Listening log',
+  translations: 'Translation sessions',
+}
+
+function shortDay(ts: number): string {
+  return new Date(ts).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+}
+
+/** Rows, and — where the table has a time dimension — how many distinct days
+ *  those rows cover against how many days they span. "5 days across 87" is the
+ *  shape of a history with holes in it; the raw row count hides that. */
+function TableRows({ summary }: { summary: TableSummary[] }) {
+  return (
+    <div className="backup-tables">
+      {summary.map((t) => {
+        const span = spanDays(t)
+        return (
+          <div key={t.name} className="backup-table-row">
+            <span className="backup-table-name">{TABLE_LABELS[t.name] ?? t.name}</span>
+            <span className="backup-table-count">{t.rows.toLocaleString()}</span>
+            <span className="backup-table-span">
+              {t.days !== undefined && span !== null
+                ? `${t.days} ${t.days === 1 ? 'day' : 'days'} across ${span}` +
+                  ` · ${shortDay(t.first!)} – ${shortDay(t.last!)}`
+                : ''}
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function BackupSection() {
+  const [summary, setSummary] = useState<TableSummary[] | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  // A parsed, validated file waiting for the user to choose how to apply it.
+  const [pending, setPending] = useState<{
+    backup: Awaited<ReturnType<typeof readBackup>>
+    summary: TableSummary[]
+    name: string
+  } | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  // Summarise on mount so the numbers are visible without having to download
+  // anything — this is the screen you come to when you suspect data is missing.
+  useEffect(() => {
+    readBackup().then((b) => setSummary(summarise(b)))
+  }, [])
+
+  async function download() {
+    setBusy(true)
+    setError(null)
+    setNote(null)
+    try {
+      const backup = await readBackup()
+      setSummary(summarise(backup))
+      downloadFile(backupFilename(), JSON.stringify(backup), 'application/json')
+      setNote('Backup downloaded. Keep it somewhere off this device.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not read the database.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function pickFile(file: File) {
+    setError(null)
+    setNote(null)
+    try {
+      const backup = parseBackup(await file.text())
+      setPending({ backup, summary: summarise(backup), name: file.name })
+    } catch (e) {
+      setPending(null)
+      setError(e instanceof BackupError ? e.message : 'Could not read that file.')
+    }
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  async function apply(mode: RestoreMode) {
+    if (!pending) return
+    const warning =
+      mode === 'replace'
+        ? `Replace the whole database with “${pending.name}”? Everything currently on this device — including anything added since the backup — is deleted first. This cannot be undone.`
+        : `Merge “${pending.name}” into this device? Rows from the backup overwrite any row with the same id; anything else is left alone. Only do this with a backup taken from this same device.`
+    if (!confirm(warning)) return
+    setBusy(true)
+    setError(null)
+    try {
+      await restoreBackup(pending.backup, mode)
+      const fresh = await readBackup()
+      setSummary(summarise(fresh))
+      setPending(null)
+      setNote('Restored. Reload the app to see it everywhere.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'The restore failed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="dash-section">
+      <div className="eyebrow">Backup</div>
+
+      <p className="note">
+        Everything Flashy knows — your decks, every review answer, reading and listening time,
+        saved stories — lives only in this browser’s storage on this one device. Nothing is on a
+        server. Clearing site data, reinstalling, or a browser evicting storage takes all of it.
+        A backup is the only copy.
+      </p>
+
+      {summary && (
+        <>
+          <div className="eyebrow" style={{ marginTop: '1.25rem' }}>
+            In the database now
+          </div>
+          <TableRows summary={summary} />
+        </>
+      )}
+
+      <div className="option-row">
+        <div>
+          <div className="option-name">Download a full backup</div>
+          <div className="option-desc">
+            Every table, as one JSON file. Unlike the card export on the deck screen, this
+            includes your review history, reading log and daily snapshots — the things nothing
+            else can rebuild.
+          </div>
+        </div>
+        <button className="btn small primary" disabled={busy} onClick={download}>
+          {busy ? 'Working…' : 'Download'}
+        </button>
+      </div>
+
+      <div className="option-row">
+        <div>
+          <div className="option-name">Restore from a backup</div>
+          <div className="option-desc">
+            Reads the file and shows you what’s in it before anything is written.
+          </div>
+        </div>
+        <>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="application/json,.json"
+            hidden
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) void pickFile(f)
+            }}
+          />
+          <button className="btn small" disabled={busy} onClick={() => fileRef.current?.click()}>
+            Choose file
+          </button>
+        </>
+      </div>
+
+      {error && <p className="note error">{error}</p>}
+      {note && <p className="note">{note}</p>}
+
+      {pending && (
+        <div className="backup-pending">
+          <div className="option-name">{pending.name}</div>
+          <div className="option-desc">
+            Taken {pending.backup.exportedAt ? new Date(pending.backup.exportedAt).toLocaleString() : 'at an unknown time'}. Nothing has been written yet.
+          </div>
+          <TableRows summary={pending.summary} />
+          <div className="backup-actions">
+            <button className="btn small" disabled={busy} onClick={() => apply('merge')}>
+              Merge into this device
+            </button>
+            <button className="btn small danger" disabled={busy} onClick={() => apply('replace')}>
+              Replace everything
+            </button>
+            <button className="btn small ghost" disabled={busy} onClick={() => setPending(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  )
 }
 
 export function Options() {
@@ -216,6 +426,8 @@ export function Options() {
           </button>
         </div>
       </section>
+
+      <BackupSection />
 
       <section className="dash-section">
         <div className="eyebrow">Data</div>
