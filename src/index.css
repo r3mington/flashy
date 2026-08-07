@@ -30,6 +30,7 @@
     --accent: #ff7a2f;
     --accent-soft: #33241b;
     --violet: #9775fa;
+    --green: #51cf66;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.3);
     --shadow-lg: 0 2px 4px rgb(0 0 0 / 0.4), 0 16px 48px rgb(0 0 0 / 0.5);
   }
@@ -44,6 +45,7 @@
   --accent: #ff7a2f;
   --accent-soft: #33241b;
   --violet: #9775fa;
+  --green: #51cf66;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.3);
   --shadow-lg: 0 2px 4px rgb(0 0 0 / 0.4), 0 16px 48px rgb(0 0 0 / 0.5);
 }
@@ -1776,6 +1778,18 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .story-word.new-word:hover, .story-word.new-word:focus-visible {
   background: color-mix(in srgb, var(--amber) 28%, transparent);
   text-decoration-color: var(--amber);
+}
+/* Words in your deck that are still in study — green, so a story shows at a
+   glance what you're mid-way through learning. No background wash: these are
+   the majority of the text, and tinting all of it would make the amber new
+   words stop standing out. */
+.story-word.study-word {
+  color: var(--green);
+  text-decoration-color: color-mix(in srgb, var(--green) 45%, transparent);
+}
+.story-word.study-word:hover, .story-word.study-word:focus-visible {
+  background: color-mix(in srgb, var(--green) 14%, transparent);
+  text-decoration-color: var(--green);
 }
 /* Character names — their own colour so who's-who reads at a glance. */
 .story-word.story-name {

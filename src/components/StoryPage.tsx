@@ -36,11 +36,10 @@ import { defKey, splitSentences, tokenizeWords } from '../text'
 import { useSettings, saveSettings } from '../useSettings'
 
 const WORD_STATUSES: { key: WordStatus; label: string; title: string }[] = [
-  { key: 'unknown', label: 'In study', title: 'In the rotation, scheduled as normal' },
   {
-    key: 'learning',
-    label: 'Learning',
-    title: 'A word you’re actively working on — back to the front of the queue',
+    key: 'inStudy',
+    label: 'In study',
+    title: 'A word you’re still working on — in the rotation, scheduled as normal',
   },
   { key: 'known', label: 'Known', title: 'Out of study, counted as a word you know' },
   {
@@ -193,6 +192,19 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // A word is "new" (highlighted) when neither it nor its root is in the deck —
   // ground truth from the word bank, not the model's unreliable isNew flag.
   const isNewWord = (key: string) => !!key && !resolveDeckKey(key)
+
+  // Deck words still in the study rotation. These get their own colour in the
+  // text: seeing which words you're mid-way through learning is the whole
+  // reason to read a story built from your own bank. Known and ignored words
+  // are deliberately excluded — they read as ordinary prose.
+  const inStudyKeys = useMemo(
+    () => new Set((cards ?? []).filter(inRotation).map((c) => defKey(c.word))),
+    [cards],
+  )
+  const isInStudy = (key: string) => {
+    const deckKey = resolveDeckKey(key)
+    return deckKey !== null && inStudyKeys.has(deckKey)
+  }
 
   // Character names (every word of multi-word names) — rendered in their own
   // colour and kept out of the new-word highlighting and chips.
@@ -740,7 +752,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   async function addWord(
     word: string,
     meaning: string,
-    status: WordStatus = 'unknown',
+    status: WordStatus = 'inStudy',
     roman?: string,
   ) {
     await db.cards.add({
@@ -1282,11 +1294,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   const key = defKey(t.tok)
                   // Highlight straight from deck membership so ANY word not in
                   // the bank is orange — even ones the glossary missed. Deck
-                  // words (known or learning) read as plain, tappable text.
-                  // Character names get their own colour instead.
+                  // words still in study are green; known and ignored ones read
+                  // as plain prose. Character names get their own colour.
                   const isName = nameKeys.has(key)
                   const isNew = !isName && isNewWord(key)
-                  const cls = isName ? ' story-name' : isNew ? ' new-word' : ' plain'
+                  const cls = isName
+                    ? ' story-name'
+                    : isNew
+                      ? ' new-word'
+                      : isInStudy(key)
+                        ? ' study-word'
+                        : ' plain'
                   // Ruby romanization above the word, per the setting.
                   const roman =
                     romanMode === 'all' || (romanMode === 'new' && isNew)
@@ -1404,7 +1422,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                       <button
                         className="add-word"
                         title={`Add “${w.word}” to the deck`}
-                        onClick={() => addWord(w.word, w.meaning, 'unknown', w.roman)}
+                        onClick={() => addWord(w.word, w.meaning, 'inStudy', w.roman)}
                       >
                         +
                       </button>
@@ -1471,11 +1489,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                       ? 'Ignored ✓'
                       : selectedCard.known
                         ? 'Known ✓'
-                        : selectedCard.state === 'learning'
-                          ? 'Learning ✓'
-                          : 'In deck ✓'}
+                        : 'In study ✓'}
                   </span>
-                  {/* All four statuses at once, so a word can always go back to
+                  {/* All three statuses at once, so a word can always go back to
                       any of them — not just out of whichever one it is in. */}
                   <div className="seg-control small">
                     {WORD_STATUSES.map((s) => (
@@ -1495,22 +1511,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   <button
                     className="btn small primary"
                     disabled={!selected.meaning}
-                    onClick={() => addWord(selected.word, selected.meaning, 'unknown', selected.roman)}
+                    onClick={() => addWord(selected.word, selected.meaning, 'inStudy', selected.roman)}
                   >
                     Add to deck
-                  </button>
-                  {/* The whole point of tapping an unfamiliar word mid-story:
-                      claim it, and have it come up in study straight away
-                      rather than queued behind everything already new. */}
-                  <button
-                    className="btn small"
-                    disabled={!selected.meaning}
-                    title="Add it as a word you’re actively working on — due for study right away"
-                    onClick={() =>
-                      addWord(selected.word, selected.meaning, 'learning', selected.roman)
-                    }
-                  >
-                    Add as learning
                   </button>
                   <button
                     className="btn small"

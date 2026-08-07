@@ -375,52 +375,27 @@ export function inRotation(c: Card): boolean {
 
 /** Where a word sits, from the learner's point of view — the one vocabulary of
  *  status shared by the deck list, the story reader and the export filters.
- *  'unknown' is the default in-study bucket (a card the scheduler is driving);
- *  'learning' is that same rotation, but claimed deliberately: "I'm working on
- *  this one." */
-export type WordStatus = 'unknown' | 'learning' | 'known' | 'ignored'
+ *  'inStudy' is every card the scheduler is driving, whatever SRS state it
+ *  happens to be in: new, learning and review are the scheduler's business,
+ *  not a label the reader has to choose between. */
+export type WordStatus = 'inStudy' | 'known' | 'ignored'
 
 export function statusOf(c: Card): WordStatus {
   if (c.ignored) return 'ignored'
   if (c.known) return 'known'
-  return c.state === 'learning' ? 'learning' : 'unknown'
+  return 'inStudy'
 }
 
-/** The fields that move a card to `status`. `known` and `ignored` are always
- *  written together, so a card can never end up as both. */
-export function statusPatch(status: WordStatus, card?: Card): Partial<Card> {
-  const patch: Partial<Card> = {
-    known: status === 'known',
-    ignored: status === 'ignored',
-  }
-  // Claiming a word as "learning" is a statement that you do NOT know it, so
-  // it goes back to the front of the queue: a review card with a six-month
-  // interval would otherwise sit in the learning bucket and never be seen.
-  // A card already learning is left alone — re-tapping it shouldn't reshuffle.
-  if (status === 'learning' && card?.state !== 'learning') {
-    patch.state = 'learning'
-    patch.due = Date.now()
-    patch.interval = 0
-  }
-  // Releasing the claim. Only a card that has never been graded can be handed
-  // back to 'new': past that, 'learning' is a state the scheduler earned and
-  // owns, and the way out of it is to answer the card, not to relabel it.
-  if (status === 'unknown' && card?.state === 'learning' && card.reps === 0) {
-    patch.state = 'new'
-    patch.due = Date.now()
-    patch.interval = 0
-  }
-  return patch
+/** The fields that move a card to `status`. The two out-of-study flags are
+ *  always written together, so a card can never end up as both. The scheduler
+ *  state is never touched: the way out of a state is to answer the card. */
+export function statusPatch(status: WordStatus): Partial<Card> {
+  return { known: status === 'known', ignored: status === 'ignored' }
 }
 
 /** Move cards between statuses. The one writer for the whole app. */
 export async function setCardStatus(ids: number[], status: WordStatus): Promise<void> {
-  await db.cards
-    .where('id')
-    .anyOf(ids)
-    .modify((c) => {
-      Object.assign(c, statusPatch(status, c))
-    })
+  await db.cards.where('id').anyOf(ids).modify(statusPatch(status))
 }
 
 export function newCardDefaults(): Pick<
