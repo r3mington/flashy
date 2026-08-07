@@ -813,6 +813,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const prevPart = chainIdx > 0 ? chain[chainIdx - 1] : null
   const nextPart = chainIdx >= 0 && chainIdx < chain.length - 1 ? chain[chainIdx + 1] : null
 
+  // The English cast briefing shown above a continuation. Read off the
+  // previous part's bible — that is the cast as the reader last left it, with
+  // nothing from this part given away. First parts get none: on a first part
+  // everyone is meant to be a stranger.
+  const cast = (prevPart?.bible?.cast ?? []).filter((c) => c.name?.trim())
+
   return (
     <>
       <div className="page-head">
@@ -1048,6 +1054,25 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               <b>Previously</b> {prevPart.bible.logline}
               {story.chosen && <em> You chose: {story.chosen}.</em>}
             </p>
+          )}
+          {/* Who's who, in English. A part picked up days later starts with a
+              cast the reader has half-forgotten — and names in an unfamiliar
+              script are the hardest thing to reconstruct from context. Taken
+              from the PREVIOUS part's bible, so it says who you already know
+              rather than spoiling who this part turns them into. */}
+          {cast.length > 0 && (
+            <div className="story-cast">
+              <div className="eyebrow">Who’s who</div>
+              <ul>
+                {cast.map((c) => (
+                  <li key={c.name}>
+                    <b>{c.name}</b>
+                    <span> — {c.role}</span>
+                    {c.wants && <em>. Wants {c.wants}.</em>}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
           <div className="story-stats">
             <span title="Words in the story">{stats.words} words</span>

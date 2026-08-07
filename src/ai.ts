@@ -289,6 +289,10 @@ const STORY_SCHEMA = {
 /** The prose half of a story — what the writing call returns. */
 type StoryProse = Omit<Story, 'glossary'>
 
+/** Most named characters a first part may introduce. Reading in a second
+ *  language is slow enough that a fourth name costs more than it adds. */
+const MAX_CAST = 4
+
 /** Dramatic turns a story can be built around. A genre is only a setting —
  *  what makes a short piece land is the turn inside it, so one of these is
  *  drawn at random for every part instead of leaving the shape to chance. */
@@ -395,6 +399,9 @@ async function extendStory(opts: {
     `Write ONLY the continuation: the text that follows on directly from the last line, in the same voice, tense and register, with the same characters. Do not repeat, recap or rewrite any of the above, and do not start a new story.`,
     lengthSpec(missingWords),
     `The continuation must carry the story forward with real events — a new turn, a complication, an arrival — not filler description or small talk stretched out.`,
+    // This is a top-up of one part, not a new part: length is the only thing
+    // missing, so it has no licence to grow the cast.
+    `Do NOT introduce any new named character. Work with the people already in the story above.`,
     `IMPORTANT — register: casual, everyday spoken ${deck.language}, matching the story above. Keep dialogue inside quotation marks “…”.`,
     `At most ${newWordPercent}% of the content words may be new words the learner has not met; prefer the vocabulary already used above.`,
     `ENDING — the continuation must end on a hook, unresolved: an interruption, a reveal, an arrival, or a question the reader cannot answer. Never wrap the story up.`,
@@ -487,6 +494,12 @@ export async function generateStory(opts: {
     `STYLE — dialogue-first: tell the story mainly through conversation. At least half of the words should be inside spoken lines, as short, natural back-and-forth exchanges between the characters; keep narration to brief connective sentences. Always wrap spoken lines in quotation marks “…” (never dashes), so dialogue is machine-detectable.`,
     `TEXTURE: each scene gets exactly ONE concrete physical detail — a smell, a sound, a texture, a temperature, something someone is holding — in a single short sentence. One per scene, never a descriptive paragraph, and make it specific ("the rice was still too hot to hold") rather than general ("it was a nice day").`,
     `CHARACTERS: give every character a personal name that is natural and common for a native ${deck.language} speaker — never refer to anyone only as "the man", "my friend", "the seller" and so on.${continueFrom ? ' Keep the names already used in the previous part.' : ''} Return every personal name used in the story in the characterNames array.`,
+    // A learner reading in a second language cannot hold a large cast in their
+    // head: every extra name is another thing to decode. Keep the cast small,
+    // and make a continuation earn any addition to it.
+    continueFrom
+      ? `CAST SIZE — hard limit: this part may introduce AT MOST ONE new named character, and only if the plot genuinely needs them. Prefer introducing none and giving the existing cast more to do. Never bring in a crowd of new names to create movement.`
+      : `CAST SIZE — hard limit: ${MAX_CAST} named characters in the whole story, ideally two or three. A learner reading in a second language loses the thread when there are more names than they can hold. Everyone else stays unnamed and off-stage (mentioned in passing at most). Do not name walk-on parts.`,
     `The learner's word bank is below. Build the story primarily from these words (plus basic function words like articles, pronouns and common connectives, which are always allowed).`,
     knownWords.length > 0
       ? `Known words — use these freely and often: ${knownWords.join(', ')}`

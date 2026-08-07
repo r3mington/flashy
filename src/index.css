@@ -1439,6 +1439,22 @@ button { font-family: inherit; }
 }
 .story-previously em { font-style: normal; opacity: 0.75; }
 
+/* The English "who's who" above a continuation — same left-rule treatment as
+   "Previously", so the two read as one block of orientation before the text. */
+.story-cast {
+  margin: -6px 0 16px;
+  padding-left: 12px;
+  border-left: 3px solid var(--accent-soft);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+.story-cast .eyebrow { margin-bottom: 4px; }
+.story-cast ul { margin: 0; padding: 0; list-style: none; }
+.story-cast li + li { margin-top: 2px; }
+.story-cast b { color: var(--ink); }
+.story-cast em { font-style: normal; opacity: 0.75; }
+
 /* The two branches offered at the end of a part. */
 .story-next { margin: 22px 0 6px; }
 .story-next .eyebrow { margin-bottom: 10px; }
