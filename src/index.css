@@ -1576,6 +1576,15 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .story-thread .story-saved-row + .story-saved-row { border-top: none; }
 .story-part-row { margin-left: 22px; }
 .story-part-row .story-saved-open { padding-top: 4px; padding-bottom: 4px; }
+/* A finished story stays legible but stops competing for attention with the
+   ones still open. The tick carries the meaning; the fade is the reinforcement. */
+.story-saved-row.is-finished .story-saved-open { opacity: 0.55; }
+.story-done {
+  color: var(--accent);
+  font-weight: 700;
+  margin-right: 6px;
+}
+
 .story-part-label {
   font-size: 11px;
   font-weight: 700;

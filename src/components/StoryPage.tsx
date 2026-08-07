@@ -6,8 +6,12 @@ import {
   db,
   inRotation,
   newCardDefaults,
+  setCardStatus,
+  statusOf,
+  statusPatch,
   type Card,
   type SavedStory,
+  type WordStatus,
 } from '../db'
 import { defineWord, defineWords, generateStory, pickBeat, ApiError } from '../ai'
 import { definable, missingDefinitions } from '../glossary'
@@ -31,16 +35,13 @@ import { rootCandidates } from '../lemma'
 import { defKey, splitSentences, tokenizeWords } from '../text'
 import { useSettings, saveSettings } from '../useSettings'
 
-/** What a deck card is, from the reader's point of view: still being learned,
- *  known, or ignored — a word that isn't vocabulary at all (a brand, a place)
- *  and should count as neither. */
-type WordStatus = 'unknown' | 'known' | 'ignored'
-
-const cardStatusOf = (c: Card): WordStatus =>
-  c.ignored ? 'ignored' : c.known ? 'known' : 'unknown'
-
 const WORD_STATUSES: { key: WordStatus; label: string; title: string }[] = [
-  { key: 'unknown', label: 'Unknown', title: 'Back into the study rotation' },
+  { key: 'unknown', label: 'In study', title: 'In the rotation, scheduled as normal' },
+  {
+    key: 'learning',
+    label: 'Learning',
+    title: 'A word you’re actively working on — back to the front of the queue',
+  },
   { key: 'known', label: 'Known', title: 'Out of study, counted as a word you know' },
   {
     key: 'ignored',
@@ -480,6 +481,14 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     await db.stories.delete(id)
   }
 
+  /** Flip a story between finished and unfinished. `setStory` keeps the open
+   *  reader in step — it holds its own copy of the row, not a live query. */
+  async function toggleFinished(s: SavedStory) {
+    const finishedAt = s.finishedAt ? undefined : Date.now()
+    await db.stories.update(s.id, { finishedAt })
+    setStory((cur) => (cur && cur.id === s.id ? { ...cur, finishedAt } : cur))
+  }
+
   // Continue a thread: new parts always pick up from its latest part.
   function continueThread(root: SavedStory, parts: SavedStory[]) {
     setContinuing(parts.length > 0 ? parts[parts.length - 1] : root)
@@ -741,20 +750,14 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       example: '',
       roman: roman || undefined,
       ...newCardDefaults(),
-      known: status === 'known',
-      ignored: status === 'ignored',
+      ...statusPatch(status),
     })
   }
 
-  // Move the deck card matching a tapped word between the three statuses. The
-  // two flags are set together so a card can never be both known and ignored.
+  // Move the deck card matching a tapped word between the four statuses.
   async function setWordStatus(word: string, status: WordStatus) {
     const card = (cards ?? []).find((c) => defKey(c.word) === defKey(word))
-    if (card)
-      await db.cards.update(card.id, {
-        known: status === 'known',
-        ignored: status === 'ignored',
-      })
+    if (card) await setCardStatus([card.id], status)
   }
 
   // Words worth surfacing under the story. The glossary now holds EVERY word
@@ -988,9 +991,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               </div>
               {threads.map(({ root, parts }) => (
                 <div className="story-thread" key={root.id}>
-                  <div className="story-saved-row">
+                  <div className={`story-saved-row${root.finishedAt ? ' is-finished' : ''}`}>
                     <button className="story-saved-open" onClick={() => openStory(root)}>
-                      <span className="story-saved-title">{root.title}</span>
+                      <span className="story-saved-title">
+                        {root.finishedAt && <span className="story-done" title="Finished">✓</span>}
+                        {root.title}
+                      </span>
                       <span className="story-saved-meta">
                         {root.topic ? `${root.topic} · ` : ''}
                         {new Date(root.createdAt).toLocaleDateString()}
@@ -1022,9 +1028,13 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     .map((p, i) => ({ part: p, number: i + 2 }))
                     .reverse()
                     .map(({ part: p, number }) => (
-                      <div className="story-saved-row story-part-row" key={p.id}>
+                      <div
+                        className={`story-saved-row story-part-row${p.finishedAt ? ' is-finished' : ''}`}
+                        key={p.id}
+                      >
                         <button className="story-saved-open" onClick={() => openStory(p)}>
                           <span className="story-saved-title">
+                            {p.finishedAt && <span className="story-done" title="Finished">✓</span>}
                             <span className="story-part-label">Part {number}</span> {p.title}
                           </span>
                           <span className="story-saved-meta">
@@ -1357,6 +1367,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               ✦ Continue story
             </button>
             <button
+              className={`btn ghost small${story.finishedAt ? ' accent' : ''}`}
+              title={
+                story.finishedAt
+                  ? `Finished ${new Date(story.finishedAt).toLocaleDateString()} — tap to reopen it`
+                  : 'Done with this one — it stops being offered as “continue reading”'
+              }
+              onClick={() => toggleFinished(story)}
+            >
+              {story.finishedAt ? '✓ Finished' : 'Mark as finished'}
+            </button>
+            <button
               className="btn ghost small"
               onClick={() => {
                 setStory(null)
@@ -1450,15 +1471,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                       ? 'Ignored ✓'
                       : selectedCard.known
                         ? 'Known ✓'
-                        : 'In deck ✓'}
+                        : selectedCard.state === 'learning'
+                          ? 'Learning ✓'
+                          : 'In deck ✓'}
                   </span>
-                  {/* All three statuses at once, so a word can always go back to
-                      unknown — not just out of whichever one it is in. */}
+                  {/* All four statuses at once, so a word can always go back to
+                      any of them — not just out of whichever one it is in. */}
                   <div className="seg-control small">
                     {WORD_STATUSES.map((s) => (
                       <button
                         key={s.key}
-                        className={cardStatusOf(selectedCard) === s.key ? 'on' : ''}
+                        className={statusOf(selectedCard) === s.key ? 'on' : ''}
                         title={s.title}
                         onClick={() => setWordStatus(selected.word, s.key)}
                       >
@@ -1475,6 +1498,19 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     onClick={() => addWord(selected.word, selected.meaning, 'unknown', selected.roman)}
                   >
                     Add to deck
+                  </button>
+                  {/* The whole point of tapping an unfamiliar word mid-story:
+                      claim it, and have it come up in study straight away
+                      rather than queued behind everything already new. */}
+                  <button
+                    className="btn small"
+                    disabled={!selected.meaning}
+                    title="Add it as a word you’re actively working on — due for study right away"
+                    onClick={() =>
+                      addWord(selected.word, selected.meaning, 'learning', selected.roman)
+                    }
+                  >
+                    Add as learning
                   </button>
                   <button
                     className="btn small"

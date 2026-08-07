@@ -14,10 +14,14 @@ interface Props {
  *  reading marker. Renders nothing when there are no stories in scope. */
 export function ContinueReading({ deckId, onOpen }: Props) {
   const latest = useLiveQuery(async () => {
-    const stories =
+    const all =
       deckId != null
         ? await db.stories.where('deckId').equals(deckId).toArray()
         : await db.stories.toArray()
+    // A story you marked finished is not one you want handed back. When every
+    // story is finished the shortcut disappears rather than offering the least
+    // stale of them.
+    const stories = all.filter((s) => !s.finishedAt)
     if (stories.length === 0) return null
     // Generating a story opens it, so "last opened" also covers "last written".
     const recency = (s: SavedStory) => s.lastOpenedAt ?? s.createdAt

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useDeck } from '../useDeck'
-import { db, inRotation, type Card } from '../db'
+import { db, inRotation, setCardStatus, type Card } from '../db'
 import { CardEditor } from './CardEditor'
 import { ContinueReading } from './ContinueReading'
 import { Icon } from './Icon'
@@ -37,6 +37,10 @@ const FILTER_DEFS: { key: StateFilter; label: string }[] = [
   { key: 'known', label: 'Known' },
   { key: 'ignored', label: 'Ignored' },
 ]
+
+/** In the learning bucket: in the rotation, and in the scheduler's learning
+ *  state. Out-of-study cards keep a stale `state`, so both halves matter. */
+const isLearning = (c: Card) => inRotation(c) && c.state === 'learning'
 
 /** How many cards one example-writing request covers. Sentences are a lot more
  *  output per word than emoji, so a big deck goes in batches. */
@@ -159,6 +163,7 @@ export function DeckView({
   const selectedCards = cards.filter((c) => selected.has(c.id))
   const everySelectedKnown = selected.size > 0 && selectedCards.every((c) => c.known)
   const everySelectedIgnored = selected.size > 0 && selectedCards.every((c) => c.ignored)
+  const everySelectedLearning = selected.size > 0 && selectedCards.every(isLearning)
 
   function toggleSelectAll() {
     setSelected(allVisibleSelected ? new Set() : new Set(filtered.map((c) => c.id)))
@@ -166,14 +171,6 @@ export function DeckView({
 
   const selectedIds = () => [...selected]
 
-  // The two out-of-study flags are always written together, so a card can never
-  // end up both known and ignored.
-  async function setStatus(ids: number[], status: 'unknown' | 'known' | 'ignored') {
-    await db.cards
-      .where('id')
-      .anyOf(ids)
-      .modify({ known: status === 'known', ignored: status === 'ignored' })
-  }
 
   async function resetStats(ids: number[]) {
     if (
@@ -403,14 +400,23 @@ export function DeckView({
           <div className="bulk-actions">
             <button
               className="btn small"
-              onClick={() => setStatus(selectedIds(), everySelectedKnown ? 'unknown' : 'known')}
+              title="Words you're actively working on — back into study, due right away"
+              onClick={() =>
+                setCardStatus(selectedIds(), everySelectedLearning ? 'unknown' : 'learning')
+              }
+            >
+              {everySelectedLearning ? 'Unmark learning' : 'Mark as learning'}
+            </button>
+            <button
+              className="btn small"
+              onClick={() => setCardStatus(selectedIds(), everySelectedKnown ? 'unknown' : 'known')}
             >
               {everySelectedKnown ? 'Unmark known' : 'Mark as known'}
             </button>
             <button
               className="btn small"
               title="Not vocabulary — out of study, and counted as neither known nor learning"
-              onClick={() => setStatus(selectedIds(), everySelectedIgnored ? 'unknown' : 'ignored')}
+              onClick={() => setCardStatus(selectedIds(), everySelectedIgnored ? 'unknown' : 'ignored')}
             >
               {everySelectedIgnored ? 'Unignore' : 'Ignore'}
             </button>
@@ -497,8 +503,21 @@ export function DeckView({
                 </button>
                 <button
                   className="btn ghost small"
+                  title={
+                    isLearning(card)
+                      ? 'Stop treating this as a word you’re working on'
+                      : 'A word you’re actively working on — back into study, due right away'
+                  }
+                  onClick={() =>
+                    setCardStatus([card.id], isLearning(card) ? 'unknown' : 'learning')
+                  }
+                >
+                  {isLearning(card) ? 'Not learning' : 'Learning'}
+                </button>
+                <button
+                  className="btn ghost small"
                   title={card.known ? 'Include in study again' : 'Exclude from study'}
-                  onClick={() => setStatus([card.id], card.known ? 'unknown' : 'known')}
+                  onClick={() => setCardStatus([card.id], card.known ? 'unknown' : 'known')}
                 >
                   {card.known ? 'Unknown' : 'Known'}
                 </button>
@@ -509,7 +528,7 @@ export function DeckView({
                       ? 'Treat as vocabulary again'
                       : 'Not vocabulary — keep it in the deck, but out of study and out of the counts'
                   }
-                  onClick={() => setStatus([card.id], card.ignored ? 'unknown' : 'ignored')}
+                  onClick={() => setCardStatus([card.id], card.ignored ? 'unknown' : 'ignored')}
                 >
                   {card.ignored ? 'Unignore' : 'Ignore'}
                 </button>
