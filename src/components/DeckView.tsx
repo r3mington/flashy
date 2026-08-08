@@ -256,8 +256,13 @@ export function DeckView({
     <>
       <div className="page-head">
         <h1>{deck.name}</h1>
+        {/* Spell out the vocabulary count whenever ignored words make it differ
+            from the card count — that gap is what makes this screen and the
+            dashboard's "words" look like they disagree. */}
         <span className="sub">
-          {deck.language} · {cards.length} cards{due > 0 ? ` · ${due} due` : ''}
+          {deck.language} · {cards.length} cards
+          {counts.ignored > 0 ? ` · ${cards.length - counts.ignored} words` : ''}
+          {due > 0 ? ` · ${due} due` : ''}
         </span>
         <div className="actions">
           <button

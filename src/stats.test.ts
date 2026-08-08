@@ -134,6 +134,21 @@ describe('ignored cards', () => {
     expect(point.known).toBe(1)
   })
 
+  it('is out of the bank total too, so the bands still add up to it', () => {
+    // The regression: `total` counted every row while the four bands counted
+    // only vocabulary, so today's column stood taller than its own stack — and
+    // taller than every snapshot behind it, which had dropped ignored words.
+    const cards = [
+      card({ id: 1, ignored: true, state: 'new' }),
+      card({ id: 2, ignored: true, state: 'review' }),
+      card({ id: 3, known: true, state: 'review' }),
+      card({ id: 4, state: 'learning' }),
+    ]
+    const [point] = buildBankSeries([], cards, today, 7)
+    expect(point.total).toBe(2)
+    expect(point.new + point.learning + point.review + point.known).toBe(point.total)
+  })
+
   it('stays out of the due forecast and the maturity buckets', () => {
     const cards = [card({ id: 1, ignored: true, due: today - DAY, interval: 30 })]
     expect(dueForecast(cards, today, 3, today).every((d) => d.count === 0)).toBe(true)
@@ -143,5 +158,49 @@ describe('ignored cards', () => {
   it('is never surfaced as a leech, however badly it scores', () => {
     const cards = [card({ id: 1, ignored: true, lapses: 9, lookups: 20 })]
     expect(leeches(cards, [])).toEqual([])
+  })
+})
+
+describe('buildBankSeries', () => {
+  const card = (over: Partial<Card>): Card =>
+    ({
+      id: 1,
+      deckId: 1,
+      word: 'w',
+      meaning: 'm',
+      example: '',
+      createdAt: today,
+      state: 'new',
+      due: today,
+      interval: 0,
+      ease: 2.5,
+      reps: 0,
+      lapses: 0,
+      ...over,
+    }) as Card
+
+  const snap = (day: number, total: number) => ({
+    day,
+    total,
+    new: total,
+    learning: 0,
+    review: 0,
+    known: 0,
+  })
+
+  it('ends on live counts, not on the newest snapshot', () => {
+    // Snapshots are written per day; the day is only over once it is over. The
+    // last column has to be what the bank is right now, or a day spent adding
+    // words looks flat until tomorrow.
+    const cards = Array.from({ length: 40 }, (_, i) => card({ id: i + 1 }))
+    const series = buildBankSeries([snap(today - DAY, 12)], cards, today, 14)
+    const last = series[series.length - 1]
+    expect(last.day).toBe(today)
+    expect(last.total).toBe(40)
+  })
+
+  it('carries the last snapshot forward across days that never got one', () => {
+    const series = buildBankSeries([snap(today - 3 * DAY, 12)], [], today, 4)
+    expect(series.map((p) => p.total)).toEqual([12, 12, 12, 0])
   })
 })

@@ -38,6 +38,12 @@ export function compute(rawInput: RawData, rangeDays: number, deckFilter: number
   const windowStart = today - (rangeDays - 1) * DAY
 
   const cards = deckFilter === 'all' ? raw.cards : raw.cards.filter((c) => c.deckId === deckFilter)
+  // Kept so the dashboard can say where the gap went. The deck screen counts
+  // cards and the dashboard counts words; without this the two totals differ
+  // by the ignored count and nothing on either screen says why.
+  const ignoredCount = rawInput.cards.filter(
+    (c) => c.ignored && (deckFilter === 'all' || c.deckId === deckFilter),
+  ).length
   const allReviews =
     deckFilter === 'all' ? raw.reviews : raw.reviews.filter((r) => r.deckId === deckFilter)
   const stories =
@@ -194,6 +200,7 @@ export function compute(rawInput: RawData, rangeDays: number, deckFilter: number
     today,
     days,
     cards,
+    ignoredCount,
     allReviews,
     stories,
     states: {

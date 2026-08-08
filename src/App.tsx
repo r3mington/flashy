@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { updateAppBadge } from './badge'
 import { checkAuth } from './auth'
-import { recordDailySnapshot } from './db'
+import { liveQuery } from 'dexie'
+import { db, recordDailySnapshot } from './db'
 import { useSettings } from './useSettings'
 import { DeckList } from './components/DeckList'
 import { DeckView } from './components/DeckView'
@@ -129,12 +130,40 @@ export default function App() {
 
   useEffect(() => {
     checkAuth().then(setAuthed)
-    // Capture today's word-bank size so growth can be charted over time.
-    recordDailySnapshot()
     // Ask the browser not to evict the database. Everything — decks, review
     // history, saved stories — lives in IndexedDB, and Safari clears storage
     // for sites left unused for a week unless it is marked persistent.
     void navigator.storage?.persist?.().catch(() => {})
+  }, [])
+
+  // Today's word-bank snapshot. Taken at open, then kept current: it used to
+  // be written once per launch, which froze the day's row at whatever the bank
+  // was that morning. Every word added afterwards missed it, and once the day
+  // turned, that lowball became the permanent history for the day — so the
+  // growth chart read consistently under the real bank. The row is keyed by
+  // day and overwritten, so re-recording only ever corrects it.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // Debounced, because a CSV import or a bulk status change fires this once
+    // per write and each run reads the whole card table.
+    const schedule = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => void recordDailySnapshot(), 3000)
+    }
+    void recordDailySnapshot()
+    // Any card mutation re-runs the observed count, which covers adds and
+    // deletes; leaving the tab catches a study session that only moved cards
+    // between states, where the count never changed.
+    const sub = liveQuery(() => db.cards.count()).subscribe({ next: schedule, error: () => {} })
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') void recordDailySnapshot()
+    }
+    document.addEventListener('visibilitychange', onHide)
+    return () => {
+      clearTimeout(timer)
+      sub.unsubscribe()
+      document.removeEventListener('visibilitychange', onHide)
+    }
   }, [])
 
   // Force light/dark, or clear the override to follow the OS (the default CSS

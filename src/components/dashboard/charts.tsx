@@ -292,6 +292,14 @@ export function PipelineChart({ series, today }: { series: BankPoint[]; today: n
             {point[key]} {label}
           </span>
         ))}
+        {/* Reading a past day looks exactly like reading the current one, and
+            the axis underneath still says "today" — so say plainly that these
+            are historical numbers, and give the way back. */}
+        {cur !== n - 1 && (
+          <button className="line-readout-reset" onClick={() => setSel(null)}>
+            back to today
+          </button>
+        )}
       </div>
       <svg
         ref={svgRef}

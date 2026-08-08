@@ -268,13 +268,19 @@ export function buildBankSeries(
   today: number,
   windowDays: number,
 ): BankPoint[] {
+  // Ignored words are not vocabulary, and `recordDailySnapshot` drops them
+  // before writing a row. Today's point has to drop them too: counting them in
+  // `total` alone made the last day of the chart step up by the ignored count
+  // against every day behind it, and left the total disagreeing with the four
+  // bands that are supposed to add up to it.
+  const bank = cards.filter((c) => !c.ignored)
   const live: BankPoint = {
     day: today,
-    total: cards.length,
-    new: cards.filter((c) => inRotation(c) && c.state === 'new').length,
-    learning: cards.filter((c) => inRotation(c) && c.state === 'learning').length,
-    review: cards.filter((c) => inRotation(c) && c.state === 'review').length,
-    known: cards.filter((c) => c.known).length,
+    total: bank.length,
+    new: bank.filter((c) => inRotation(c) && c.state === 'new').length,
+    learning: bank.filter((c) => inRotation(c) && c.state === 'learning').length,
+    review: bank.filter((c) => inRotation(c) && c.state === 'review').length,
+    known: bank.filter((c) => c.known).length,
   }
   if (snapshots.length === 0) return [live]
   const sorted = [...snapshots].sort((a, b) => a.day - b.day)

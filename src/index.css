@@ -916,6 +916,17 @@ button { font-family: inherit; }
   .line-readout { min-height: 42px; align-content: start; }
 }
 .line-readout-day { font-weight: 600; color: var(--ink); min-width: 84px; }
+.line-readout-reset {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .line-readout .dot {
   display: inline-block;
   width: 8px;

@@ -97,7 +97,18 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
       />
 
       <div className="stat-grid">
-        <Stat label="Words" value={stats.cards.length} hint={`${stats.states.known} known`} />
+        {/* "Words" is vocabulary, not rows in the deck: the deck screen's card
+            count includes ignored words, so name them here or the two screens
+            look like they disagree. */}
+        <Stat
+          label="Words"
+          value={stats.cards.length}
+          hint={
+            stats.ignoredCount > 0
+              ? `${stats.states.known} known · ${stats.ignoredCount} ignored`
+              : `${stats.states.known} known`
+          }
+        />
         <Stat
           label="Reviews today"
           value={stats.reviewsToday}
