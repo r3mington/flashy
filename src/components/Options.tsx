@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db } from '../db'
+import {
+  db,
+  DEFAULT_STORY_COLORS,
+  STORY_HUES,
+  type StoryColors,
+  type StoryHue,
+} from '../db'
 import { useSettings, saveSettings } from '../useSettings'
+import { storyColorVars } from '../storyColors'
 import { downloadFile } from '../export'
 import {
   BackupError,
@@ -230,6 +237,68 @@ function BackupSection() {
   )
 }
 
+/** The four word kinds, in the order they matter while reading: what you don't
+ *  know yet, what you're working on, who's in it, what you're done with. */
+const COLOR_ROLES: { key: keyof StoryColors; label: string; sample: string }[] = [
+  { key: 'new', label: 'New', sample: 'hilang' },
+  { key: 'study', label: 'In study', sample: 'pasar' },
+  { key: 'name', label: 'Names', sample: 'Dewi' },
+  { key: 'known', label: 'Known', sample: 'kunci' },
+]
+
+/** Pick a colour per kind of word in a story. The preview above the swatches
+ *  is the actual story markup under the actual CSS, so what you see is what
+ *  the reader renders — no second implementation to keep in step. */
+function StoryColorPicker({ colors }: { colors: StoryColors }) {
+  const set = (key: keyof StoryColors, hue: StoryHue) =>
+    saveSettings({ storyColors: { ...colors, [key]: hue } })
+
+  return (
+    <div className="option-row stacked">
+      <div>
+        <div className="option-name">Story word colours</div>
+        <div className="option-desc">
+          How each kind of word is coloured while reading. New words also get a soft background —
+          they're the ones worth stopping for.
+        </div>
+      </div>
+      <div className="story-colors">
+        <p className="story-body story-colors-preview" style={storyColorVars(colors)}>
+          <span className="story-word story-name">Dewi</span> tidak menemukan{' '}
+          <span className="story-word plain">kunci</span> di{' '}
+          <span className="story-word study-word">pasar</span> — sudah{' '}
+          <span className="story-word new-word">hilang</span>.
+        </p>
+        {COLOR_ROLES.map((role) => (
+          <div className="story-color-row" key={role.key}>
+            <span className="story-color-label">{role.label}</span>
+            <div className="swatches">
+              {STORY_HUES.map((hue) => (
+                <button
+                  key={hue}
+                  className={`swatch${colors[role.key] === hue ? ' on' : ''}`}
+                  style={{ background: `var(--hue-${hue})` }}
+                  title={hue === 'plain' ? 'Plain — same as the body text' : hue}
+                  aria-label={`${role.label} words: ${hue}`}
+                  aria-pressed={colors[role.key] === hue}
+                  onClick={() => set(role.key, hue)}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+        <button
+          className="btn ghost small"
+          disabled={COLOR_ROLES.every((r) => colors[r.key] === DEFAULT_STORY_COLORS[r.key])}
+          onClick={() => saveSettings({ storyColors: DEFAULT_STORY_COLORS })}
+        >
+          Reset to defaults
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function Options() {
   const settings = useSettings()
   const decks = useLiveQuery(() => db.decks.toArray())
@@ -263,6 +332,8 @@ export function Options() {
             ))}
           </div>
         </div>
+
+        <StoryColorPicker colors={settings.storyColors} />
       </section>
 
       <section className="dash-section">

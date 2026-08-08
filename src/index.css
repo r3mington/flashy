@@ -11,6 +11,17 @@
   --amber: #e8930c;
   --red: #e03131;
   --violet: #7048e8;
+  /* Story word palette. Its own scale, separate from the semantic colours
+     above, because these are a user choice rather than a meaning — and
+     repainting a story must never repaint a Delete button. */
+  --hue-plain: var(--ink);
+  --hue-amber: #e8930c;
+  --hue-green: #2f9e44;
+  --hue-teal: #0c8599;
+  --hue-blue: #1c7ed6;
+  --hue-violet: #7048e8;
+  --hue-pink: #c2255c;
+  --hue-red: #e03131;
   --radius: 14px;
   --shadow: 0 1px 2px rgb(26 26 24 / 0.04), 0 8px 24px rgb(26 26 24 / 0.06);
   --shadow-lg: 0 2px 4px rgb(26 26 24 / 0.06), 0 16px 48px rgb(26 26 24 / 0.12);
@@ -31,6 +42,14 @@
     --accent-soft: #33241b;
     --violet: #9775fa;
     --green: #51cf66;
+    /* Lifted for the night palette — the daylight values go muddy on #171715. */
+    --hue-amber: #f0a53a;
+    --hue-green: #51cf66;
+    --hue-teal: #38d9a9;
+    --hue-blue: #4dabf7;
+    --hue-violet: #9775fa;
+    --hue-pink: #f06595;
+    --hue-red: #ff6b6b;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.3);
     --shadow-lg: 0 2px 4px rgb(0 0 0 / 0.4), 0 16px 48px rgb(0 0 0 / 0.5);
   }
@@ -46,6 +65,14 @@
   --accent-soft: #33241b;
   --violet: #9775fa;
   --green: #51cf66;
+  /* Lifted for the night palette — the daylight values go muddy on #171715. */
+  --hue-amber: #f0a53a;
+  --hue-green: #51cf66;
+  --hue-teal: #38d9a9;
+  --hue-blue: #4dabf7;
+  --hue-violet: #9775fa;
+  --hue-pink: #f06595;
+  --hue-red: #ff6b6b;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.3);
   --shadow-lg: 0 2px 4px rgb(0 0 0 / 0.4), 0 16px 48px rgb(0 0 0 / 0.5);
 }
@@ -1207,8 +1234,54 @@ button { font-family: inherit; }
 }
 .dash-section .option-row:last-child { border-bottom: none; }
 
+/* A row whose control is too tall to sit beside its label. */
+.option-row.stacked { flex-direction: column; align-items: stretch; gap: 14px; }
+
 .option-name { font-weight: 600; font-size: 15px; }
 .option-desc { color: var(--ink-2); font-size: 13px; margin-top: 2px; max-width: 420px; }
+
+/* ---- Story word colours ---- */
+.story-colors { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+/* Real story markup under the real rules — the preview can't lie about what
+   the reader will look like. Sits on the surface tone so the swatch grid below
+   reads as belonging to it. */
+.story-colors-preview {
+  margin: 0;
+  align-self: stretch;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 16px;
+  line-height: 1.8;
+}
+/* The preview's words aren't tappable — kill the pointer affordances. */
+.story-colors-preview .story-word { cursor: default; pointer-events: none; }
+
+.story-color-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.story-color-label {
+  width: 74px;
+  flex: none;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+.swatch {
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
+  cursor: pointer;
+  /* The ring is drawn outside the circle so selecting doesn't resize it. */
+  outline-offset: 2px;
+}
+.swatch:hover { transform: scale(1.12); }
+.swatch.on {
+  outline: 2px solid var(--ink);
+  border-color: transparent;
+}
 
 .seg-control {
   display: flex;
@@ -1761,44 +1834,48 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   background: var(--accent-soft);
   text-decoration-color: var(--accent);
 }
-/* Words not in the glossary/deck: tappable, but no standing underline so the
-   glossary words still stand out. Underline appears on hover/focus. */
-.story-word.plain { text-decoration-color: transparent; }
+/* The four word kinds. Each reads its colour from a --c-* variable the story
+   body sets from the reader's palette choice, so one rule covers every hue.
+   Defaults live in DEFAULT_STORY_COLORS, not here. */
+.story-word.plain {
+  color: var(--c-known, inherit);
+  text-decoration-color: transparent;
+}
 .story-word.plain:hover, .story-word.plain:focus-visible {
-  text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--c-known, var(--ink)) 12%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--c-known, var(--ink)) 40%, transparent);
 }
 /* Dialogue — italicised so conversation stands apart from narration. */
 .story-quoted { font-style: italic; }
-/* New vocabulary — highlighted so it's easy to spot what's worth learning. */
+/* New vocabulary — the only kind with a background wash. It's the smallest
+   group on the page and the one worth stopping for, so it gets the loudest
+   treatment; colouring the rest is enough to tell them apart. */
 .story-word.new-word {
-  color: var(--amber);
-  background: color-mix(in srgb, var(--amber) 15%, transparent);
-  text-decoration-color: color-mix(in srgb, var(--amber) 55%, transparent);
+  color: var(--c-new);
+  background: color-mix(in srgb, var(--c-new) 15%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--c-new) 55%, transparent);
 }
 .story-word.new-word:hover, .story-word.new-word:focus-visible {
-  background: color-mix(in srgb, var(--amber) 28%, transparent);
-  text-decoration-color: var(--amber);
+  background: color-mix(in srgb, var(--c-new) 28%, transparent);
+  text-decoration-color: var(--c-new);
 }
-/* Words in your deck that are still in study — green, so a story shows at a
-   glance what you're mid-way through learning. No background wash: these are
-   the majority of the text, and tinting all of it would make the amber new
-   words stop standing out. */
+/* Deck words still in study — so a page shows what you're mid-way through. */
 .story-word.study-word {
-  color: var(--green);
-  text-decoration-color: color-mix(in srgb, var(--green) 45%, transparent);
+  color: var(--c-study);
+  text-decoration-color: color-mix(in srgb, var(--c-study) 45%, transparent);
 }
 .story-word.study-word:hover, .story-word.study-word:focus-visible {
-  background: color-mix(in srgb, var(--green) 14%, transparent);
-  text-decoration-color: var(--green);
+  background: color-mix(in srgb, var(--c-study) 14%, transparent);
+  text-decoration-color: var(--c-study);
 }
-/* Character names — their own colour so who's-who reads at a glance. */
+/* Character names — so who's-who reads at a glance. */
 .story-word.story-name {
-  color: var(--violet);
-  text-decoration-color: color-mix(in srgb, var(--violet) 45%, transparent);
+  color: var(--c-name);
+  text-decoration-color: color-mix(in srgb, var(--c-name) 45%, transparent);
 }
 .story-word.story-name:hover, .story-word.story-name:focus-visible {
-  background: color-mix(in srgb, var(--violet) 14%, transparent);
-  text-decoration-color: var(--violet);
+  background: color-mix(in srgb, var(--c-name) 14%, transparent);
+  text-decoration-color: var(--c-name);
 }
 
 /* Ruby romanization above story words (Thai, Chinese…). The story body's 1.9
@@ -1951,7 +2028,9 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   font-size: 13px;
   color: var(--ink-2);
 }
-.story-stats .story-stat-new { color: var(--amber); font-weight: 600; }
+/* Painted in whatever the reader chose for new words, so the count and the
+   words it counts are visibly the same thing. */
+.story-stats .story-stat-new { color: var(--c-new, var(--hue-amber)); font-weight: 600; }
 
 /* ---- Word definition sheet ---- */
 .word-sheet-backdrop {

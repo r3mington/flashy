@@ -221,6 +221,43 @@ export interface BlacklistEntry {
 
 export type Scheduler = 'sm2' | 'fsrs'
 
+/** The palette story word colours are picked from. Names, not hex codes — each
+ *  one resolves to a `--hue-*` CSS variable carrying its own light and dark
+ *  value, so a choice made in daylight still reads at night. 'plain' is the
+ *  body text colour: the way to say "don't colour this kind of word at all". */
+export const STORY_HUES = [
+  'plain',
+  'amber',
+  'green',
+  'teal',
+  'blue',
+  'violet',
+  'pink',
+  'red',
+] as const
+export type StoryHue = (typeof STORY_HUES)[number]
+
+/** What each kind of word in a story is coloured. The four kinds are the only
+ *  distinctions the reader can act on: a word is outside your bank, inside it
+ *  and still being studied, a character's name, or finished with. */
+export interface StoryColors {
+  /** Not in your word bank at all. Also the only kind to get a background wash. */
+  new: StoryHue
+  /** In the bank and still in the study rotation. */
+  study: StoryHue
+  /** A character's personal name — not vocabulary. */
+  name: StoryHue
+  /** Marked known or ignored: nothing left to do with it. */
+  known: StoryHue
+}
+
+export const DEFAULT_STORY_COLORS: StoryColors = {
+  new: 'amber',
+  study: 'green',
+  name: 'violet',
+  known: 'plain',
+}
+
 export interface AppSettings {
   key: 'app'
   apiKey: string
@@ -246,6 +283,8 @@ export interface AppSettings {
   /** Whether the reader's control bar is expanded (it collapses to a slim
    *  play + progress strip so the story gets the screen). */
   storyControlsOpen: boolean
+  /** Colour per kind of word in a story. */
+  storyColors: StoryColors
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -263,6 +302,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   storyFontScale: 1,
   storyRoman: 'new',
   storyControlsOpen: true,
+  storyColors: DEFAULT_STORY_COLORS,
 }
 
 export const db = new Dexie('flashy') as Dexie & {

@@ -32,7 +32,8 @@ import {
 } from '../speech'
 import { Icon } from './Icon'
 import { rootCandidates } from '../lemma'
-import { defKey, splitSentences, tokenizeWords } from '../text'
+import { defKey, splitSentences, tokenizeWords, countWords } from '../text'
+import { storyColorVars } from '../storyColors'
 import { useSettings, saveSettings } from '../useSettings'
 
 const WORD_STATUSES: { key: WordStatus; label: string; title: string }[] = [
@@ -199,6 +200,14 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // are deliberately excluded — they read as ordinary prose.
   const inStudyKeys = useMemo(
     () => new Set((cards ?? []).filter(inRotation).map((c) => defKey(c.word))),
+    [cards],
+  )
+
+  // The word bank proper: everything you're carrying as vocabulary, known and
+  // unknown alike. Ignored words sit in the deck only to stop stories flagging
+  // them, so they're no part of it. This is the denominator for coverage.
+  const bankKeys = useMemo(
+    () => new Set((cards ?? []).filter((c) => !c.ignored).map((c) => defKey(c.word))),
     [cards],
   )
   const isInStudy = (key: string) => {
@@ -792,11 +801,29 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const uniqueKeys = new Set(
     layout.rows.flatMap((row) => row.filter((t) => t.wordIdx >= 0).map((t) => defKey(t.tok))),
   )
+  // How much of the word bank this story actually put in front of you. Counted
+  // through resolveDeckKey, so an inflected form in the text ("menjawab")
+  // credits the card it belongs to ("jawab") rather than missing it. Ignored
+  // words aren't vocabulary and are out of both halves of the fraction.
+  const bankUsed = new Set(
+    [...uniqueKeys]
+      .map((k) => resolveDeckKey(k))
+      .filter((k): k is string => k !== null && bankKeys.has(k)),
+  ).size
   const stats = {
     words: layout.wordCount,
     unique: uniqueKeys.size,
     newWords: [...uniqueKeys].filter((k) => isNewWord(k) && !nameKeys.has(k)).length,
     readMin: Math.max(1, Math.round(layout.wordCount / 130)),
+    bankUsed,
+    bankTotal: bankKeys.size,
+    // Rounded to a whole percent, but never down to a bare "0%" when the story
+    // did cover something — on a big bank that reads as "none of it", which is
+    // a lie. Floors at 1% instead.
+    bankPct:
+      bankUsed === 0
+        ? 0
+        : Math.max(1, Math.round((bankUsed / Math.max(1, bankKeys.size)) * 100)),
   }
 
   // Ruby romanization: available when the glossary carries romanizations
@@ -1011,7 +1038,8 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                       </span>
                       <span className="story-saved-meta">
                         {root.topic ? `${root.topic} · ` : ''}
-                        {new Date(root.createdAt).toLocaleDateString()}
+                        {new Date(root.createdAt).toLocaleDateString()} ·{' '}
+                        {countWords(root.story, langCode)} words
                       </span>
                     </button>
                     <button
@@ -1050,7 +1078,8 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                             <span className="story-part-label">Part {number}</span> {p.title}
                           </span>
                           <span className="story-saved-meta">
-                            {new Date(p.createdAt).toLocaleDateString()}
+                            {new Date(p.createdAt).toLocaleDateString()} ·{' '}
+                            {countWords(p.story, langCode)} words
                           </span>
                         </button>
                         <button
@@ -1068,7 +1097,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
           )}
         </>
       ) : (
-        <div className="story-page">
+        // The palette lives on the page, not the body, so the "N new" stat in
+        // the header is painted the same colour as the words it counts.
+        <div className="story-page" style={storyColorVars(settings.storyColors)}>
           {chainIdx > 0 && <div className="story-part-badge">Part {chainIdx + 1}</div>}
           <h2 className="story-title">{story.title}</h2>
           {prevPart?.bible?.logline && (
@@ -1102,6 +1133,14 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             {stats.newWords > 0 && (
               <span className="story-stat-new" title="Words not in your deck, highlighted below">
                 {stats.newWords} new
+              </span>
+            )}
+            {stats.bankTotal > 0 && (
+              <span
+                className="story-stat-bank"
+                title={`${stats.bankUsed} of the ${stats.bankTotal} words in your bank appear in this story`}
+              >
+                {stats.bankPct}% of your bank
               </span>
             )}
             <span title="Estimated time to read">~{stats.readMin} min read</span>
