@@ -163,6 +163,17 @@ function useListeningTimer(playing: boolean) {
     if (sessRef.current > 0) {
       db.listening.put({ day: dayRef.current, seconds: baseRef.current + sessRef.current })
     }
+    // Same midnight rollover as the reading timer: the mounted day goes stale
+    // once the clock passes midnight, and everything after would pile onto it.
+    const today = startOfToday()
+    if (today !== dayRef.current) {
+      dayRef.current = today
+      sessRef.current = 0
+      baseRef.current = 0
+      void db.listening.get(today).then((r) => {
+        baseRef.current = r?.seconds ?? 0
+      })
+    }
   })
 }
 

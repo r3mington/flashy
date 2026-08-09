@@ -203,4 +203,38 @@ describe('buildBankSeries', () => {
     const series = buildBankSeries([snap(today - 3 * DAY, 12)], [], today, 4)
     expect(series.map((p) => p.total)).toEqual([12, 12, 12, 0])
   })
+
+  it('still matches snapshots whose keys were written under another UTC offset', () => {
+    // The regression: after a timezone change (travel, a backup restored from
+    // another device) every stored key sat hours off the current midnight
+    // grid. Exact-key lookups missed them all, and — worse — the walk from the
+    // first snapshot never landed exactly on `today`, so the live point fell
+    // off the end: the chart topped out at a stale snapshot while the header
+    // counted the live table.
+    const offset = 5 * 3600_000 // keys written five timezones east
+    const cards = Array.from({ length: 40 }, (_, i) => card({ id: i + 1 }))
+    const series = buildBankSeries(
+      [snap(today - 3 * DAY - offset, 12), snap(today - DAY - offset, 20)],
+      cards,
+      today,
+      7,
+    )
+    expect(series.map((p) => p.total)).toEqual([12, 12, 20, 40])
+    const last = series[series.length - 1]
+    expect(last.day).toBe(today)
+    expect(last.total).toBe(40)
+  })
+
+  it('lets the later row win when two keys collapse onto one calendar day', () => {
+    // The day the offset changes can hold two rows for the same calendar day:
+    // one written under each offset. The later one has the fresher counts.
+    const offset = 5 * 3600_000
+    const series = buildBankSeries(
+      [snap(today - DAY - offset, 12), snap(today - DAY, 20)],
+      [],
+      today,
+      7,
+    )
+    expect(series[0].total).toBe(20)
+  })
 })

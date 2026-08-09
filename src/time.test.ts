@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { DAY, formatAgo, formatDuration, startOfDay, startOfToday } from './time'
+import {
+  DAY,
+  formatAgo,
+  formatDuration,
+  nextDay,
+  normalizeDay,
+  prevDay,
+  startOfDay,
+  startOfToday,
+} from './time'
 
 describe('startOfDay', () => {
   it('zeroes the clock and is idempotent', () => {
@@ -24,6 +33,46 @@ describe('startOfDay', () => {
 describe('startOfToday', () => {
   it('agrees with startOfDay(now)', () => {
     expect(startOfToday()).toBe(startOfDay(Date.now()))
+  })
+})
+
+describe('normalizeDay', () => {
+  const midnight = startOfDay(new Date(2026, 6, 31, 12).getTime())
+
+  it('leaves a key already on the grid alone', () => {
+    expect(normalizeDay(midnight)).toBe(midnight)
+  })
+
+  it('pulls a key written under another UTC offset back onto the grid', () => {
+    // A row written at UTC+7 and read at UTC+2 sits 5h before today's
+    // midnight; one written the other way round sits hours after. Both still
+    // belong to the same calendar day.
+    expect(normalizeDay(midnight - 5 * 3600_000)).toBe(midnight)
+    expect(normalizeDay(midnight + 7 * 3600_000)).toBe(midnight)
+  })
+})
+
+describe('prevDay / nextDay', () => {
+  const d = startOfDay(new Date(2026, 6, 31, 12).getTime())
+
+  it('walk one calendar day at a time', () => {
+    expect(prevDay(d)).toBe(startOfDay(new Date(2026, 6, 30, 12).getTime()))
+    expect(nextDay(d)).toBe(startOfDay(new Date(2026, 7, 1, 12).getTime()))
+    expect(nextDay(prevDay(d))).toBe(d)
+  })
+
+  it('stays on midnights across a DST transition', () => {
+    // Harmless in fixed-offset zones (a plain 24h step); in a DST zone the
+    // last Sunday of October 2026 is 25h long and `+ DAY` would land at 23:00.
+    let cursor = startOfDay(new Date(2026, 9, 20, 12).getTime())
+    for (let i = 0; i < 14; i++) {
+      cursor = nextDay(cursor)
+      expect(new Date(cursor).getHours()).toBe(0)
+    }
+    for (let i = 0; i < 14; i++) {
+      cursor = prevDay(cursor)
+      expect(new Date(cursor).getHours()).toBe(0)
+    }
   })
 })
 

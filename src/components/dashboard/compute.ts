@@ -1,5 +1,5 @@
 import type { Card, Deck, ListeningLog, ReadingLog, Review, SavedStory, Snapshot } from '../../db'
-import { DAY, startOfDay } from '../../time'
+import { DAY, nextDay, normalizeDay, prevDay, startOfDay } from '../../time'
 import {
   buildBankSeries,
   countByDay,
@@ -35,7 +35,11 @@ export function compute(rawInput: RawData, rangeDays: number, deckFilter: number
   const raw: RawData = { ...rawInput, cards: rawInput.cards.filter((c) => !c.ignored) }
   const now = Date.now()
   const today = startOfDay(now)
-  const windowStart = today - (rangeDays - 1) * DAY
+  // The day axis is walked midnight to midnight rather than stepped by 24h,
+  // so it stays on real midnights across DST.
+  const days: number[] = [today]
+  for (let i = 1; i < rangeDays; i++) days.unshift(prevDay(days[0]))
+  const windowStart = days[0]
 
   const cards = deckFilter === 'all' ? raw.cards : raw.cards.filter((c) => c.deckId === deckFilter)
   // Kept so the dashboard can say where the gap went. The deck screen counts
@@ -50,9 +54,7 @@ export function compute(rawInput: RawData, rangeDays: number, deckFilter: number
     deckFilter === 'all' ? raw.stories : raw.stories.filter((s) => s.deckId === deckFilter)
   const rangeReviews = allReviews.filter((r) => r.ts >= windowStart)
 
-  const days = Array.from({ length: rangeDays }, (_, i) => windowStart + i * DAY)
   const reviewsPerDay = countByDay(allReviews, (r) => r.ts)
-  const activeDaySet = new Set(reviewsPerDay.keys())
 
   // --- grades per day, stacked
   const gradeSeries = days.map((day) => ({
@@ -73,16 +75,37 @@ export function compute(rawInput: RawData, rangeDays: number, deckFilter: number
   // --- time: study inferred from review gaps, reading/listening logged directly
   const sessions = inferSessions(allReviews)
   const studyByDay = studySecondsByDay(allReviews)
-  const readByDay = new Map(raw.reading.map((r) => [r.day, r.seconds]))
-  const listenByDay = new Map(raw.listening.map((r) => [r.day, r.seconds]))
+  // Stored day keys are re-keyed onto the current midnight grid (they carry the
+  // local midnight of wherever they were written — see `normalizeDay`), and
+  // summed rather than overwritten: an offset change can leave two rows on the
+  // same calendar day.
+  const readByDay = new Map<number, number>()
+  const readWordsByDay = new Map<number, number>()
+  for (const r of raw.reading) {
+    const day = normalizeDay(r.day)
+    readByDay.set(day, (readByDay.get(day) ?? 0) + r.seconds)
+    // Story words scrolled through — logged app-wide, so not split per deck.
+    readWordsByDay.set(day, (readWordsByDay.get(day) ?? 0) + (r.words ?? 0))
+  }
+  const listenByDay = new Map<number, number>()
+  for (const r of raw.listening) {
+    const day = normalizeDay(r.day)
+    listenByDay.set(day, (listenByDay.get(day) ?? 0) + r.seconds)
+  }
+  // A day counts as active for any kind of practice — the streak used to count
+  // review days alone, telling a learner who reads every day that their streak
+  // was 0 while the heatmap right underneath showed the same days as active.
+  const activeDaySet = new Set(reviewsPerDay.keys())
+  for (const [day, secs] of readByDay) {
+    if (secs > 0 || (readWordsByDay.get(day) ?? 0) > 0) activeDaySet.add(day)
+  }
+  for (const [day, secs] of listenByDay) if (secs > 0) activeDaySet.add(day)
   const timeSeries = days.map((day) => ({
     day,
     study: studyByDay.get(day) ?? 0,
     read: readByDay.get(day) ?? 0,
     listen: listenByDay.get(day) ?? 0,
   }))
-  // Story words scrolled through — logged app-wide, so not split per deck.
-  const readWordsByDay = new Map(raw.reading.map((r) => [r.day, r.words ?? 0]))
   const readWordsSeries = days.map((day) => readWordsByDay.get(day) ?? 0)
   const readWordsInRange = readWordsSeries.reduce((a, b) => a + b, 0)
   const readingDaysInRange = readWordsSeries.filter((w) => w > 0).length
@@ -97,8 +120,10 @@ export function compute(rawInput: RawData, rangeDays: number, deckFilter: number
 
   // --- 12-week heatmap, aligned so each column is a calendar week
   const heatDays: { day: number; reviews: number; seconds: number }[] = []
-  const heatStart = today - (83 + new Date(today - 83 * DAY).getDay()) * DAY
-  for (let d = heatStart; d <= today; d += DAY) {
+  let heatStart = today
+  for (let i = 0; i < 83; i++) heatStart = prevDay(heatStart)
+  for (let dow = new Date(heatStart).getDay(); dow > 0; dow--) heatStart = prevDay(heatStart)
+  for (let d = heatStart; d <= today; d = nextDay(d)) {
     heatDays.push({
       day: d,
       reviews: reviewsPerDay.get(d) ?? 0,
@@ -223,7 +248,7 @@ export function compute(rawInput: RawData, rangeDays: number, deckFilter: number
     byHour,
     bestHour,
     bankSeries: buildBankSeries(raw.snapshots, raw.cards, today, Math.max(rangeDays, 14)),
-    historyDays: new Set(raw.snapshots.map((s) => s.day)).size,
+    historyDays: new Set(raw.snapshots.map((s) => normalizeDay(s.day))).size,
     addedSeries,
     addedInRange,
     addedPerWeek,

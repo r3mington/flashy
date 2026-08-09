@@ -17,6 +17,29 @@ export function startOfToday(): number {
   return startOfDay(Date.now())
 }
 
+/** Re-key a stored start-of-day timestamp onto the current midnight grid.
+ *  The per-day tables key rows by the local midnight in force when the row was
+ *  written; once the UTC offset changes — travel, DST, a backup restored from a
+ *  device in another timezone — those keys sit hours off today's midnights and
+ *  every exact-key join silently drops them. Reading a key as "the calendar day
+ *  whose midnight this was" (tolerant of offsets up to ±12h) puts it back on
+ *  the grid. */
+export function normalizeDay(day: number): number {
+  return startOfDay(day + DAY / 2)
+}
+
+/** The local midnight before a start-of-day timestamp. Walking days this way
+ *  rather than by `- DAY` keeps the walk on real midnights across DST, where
+ *  a calendar day is 23 or 25 hours long. */
+export function prevDay(day: number): number {
+  return startOfDay(day - DAY / 2)
+}
+
+/** The local midnight after a start-of-day timestamp. */
+export function nextDay(day: number): number {
+  return startOfDay(day + DAY * 1.5)
+}
+
 /** Compact duration for headers and stat tiles: 45s, 2m, 1h 5m. */
 export function formatDuration(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`

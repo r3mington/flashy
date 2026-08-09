@@ -1,7 +1,7 @@
 /** Non-component helpers for the dashboard charts. Kept out of charts.tsx so
  *  that file exports only components and Fast Refresh keeps working. */
 import { useRef, useState } from 'react'
-import { DAY } from '../../time'
+import { prevDay } from '../../time'
 
 /** Bar charts are too narrow to tap a single bar on a phone, so the whole
  *  plot area is the target: whichever column the x position lands in wins. */
@@ -20,7 +20,7 @@ export function useColumnPick(n: number) {
 
 export function formatBankDay(day: number, today: number): string {
   if (day === today) return 'Today'
-  if (day === today - DAY) return 'Yesterday'
+  if (day === prevDay(today)) return 'Yesterday'
   return new Date(day).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 

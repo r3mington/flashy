@@ -50,8 +50,30 @@ export function useReadingTimer(active: boolean): ReadingTimer {
     return () => clearInterval(id)
   }, [active])
 
+  // The app can live across midnight for days — a PWA is rarely relaunched —
+  // and the day this timer writes to was fixed once at mount. Every session
+  // after the first midnight then piled its seconds and words onto that stale
+  // day: whole weeks of reading recorded as a handful of giant days, and the
+  // days actually read on left empty. Checked before every write instead:
+  // settle what has been counted onto the day it belongs to, then restart the
+  // counters for the new day.
+  const rollDay = () => {
+    const today = startOfToday()
+    if (today === dayRef.current) return
+    if (sessRef.current > 0) {
+      bumpReading(dayRef.current, { seconds: baseRef.current + sessRef.current })
+    }
+    dayRef.current = today
+    baseRef.current = 0
+    sessRef.current = 0
+    setBaseSecs(0)
+    setSessionSecs(0)
+    void db.reading.get(today).then((r) => setBaseSecs(r?.seconds ?? 0))
+  }
+
   // Only refs are read, so this closure's identity never matters to callers.
   const flush = () => {
+    rollDay()
     const id = storyRef.current
     const gained = seenRef.current - highRef.current
     // The 5s floor keeps a story opened and immediately closed — which reads as

@@ -1,14 +1,14 @@
 import { inRotation, type Card, type Deck, type Review, type SavedStory, type Snapshot } from './db'
-import { DAY, startOfDay } from './time'
+import { DAY, nextDay, normalizeDay, prevDay, startOfDay } from './time'
 
 /** A run of consecutive days ending today (or yesterday, so a day that hasn't
  *  been studied yet doesn't break the chain). */
 export function currentStreak(days: Set<number>, today: number): number {
   let streak = 0
-  let cursor = days.has(today) ? today : today - DAY
+  let cursor = days.has(today) ? today : prevDay(today)
   while (days.has(cursor)) {
     streak++
-    cursor -= DAY
+    cursor = prevDay(cursor)
   }
   return streak
 }
@@ -20,7 +20,7 @@ export function longestStreak(days: Set<number>): number {
   let run = 0
   let prev: number | null = null
   for (const d of sorted) {
-    run = prev !== null && d - prev === DAY ? run + 1 : 1
+    run = prev !== null && prevDay(d) === prev ? run + 1 : 1
     prev = d
     if (run > best) best = run
   }
@@ -198,10 +198,11 @@ export function dueForecast(cards: Card[], today: number, days: number, now = Da
     const day = startOfDay(c.due)
     byDay.set(day, (byDay.get(day) ?? 0) + 1)
   }
-  return Array.from({ length: days }, (_, i) => ({
-    day: today + i * DAY,
-    count: (byDay.get(today + i * DAY) ?? 0) + (i === 0 ? backlog : 0),
-  }))
+  const out: ForecastDay[] = []
+  for (let d = today, i = 0; i < days; d = nextDay(d), i++) {
+    out.push({ day: d, count: (byDay.get(d) ?? 0) + (i === 0 ? backlog : 0) })
+  }
+  return out
 }
 
 // ---------- per-deck rollup ----------
@@ -283,17 +284,31 @@ export function buildBankSeries(
     known: bank.filter((c) => c.known).length,
   }
   if (snapshots.length === 0) return [live]
-  const sorted = [...snapshots].sort((a, b) => a.day - b.day)
+  // Snapshot keys are re-keyed onto the current midnight grid: rows written
+  // under another UTC offset (travel, a restored backup) would otherwise never
+  // match the day walk below — the chart then silently drops them AND never
+  // reaches `today`, so the live point fell off and the whole series flatlined
+  // at the last matching snapshot, disagreeing with the header count.
+  // Sorting by the raw key first keeps recency: when two rows collapse onto
+  // one calendar day, the later-written one wins in the map.
+  const sorted = [...snapshots]
+    .sort((a, b) => a.day - b.day)
+    .map((s) => ({ ...s, day: normalizeDay(s.day) }))
   const byDay = new Map(sorted.map((s) => [s.day, s]))
-  const start = Math.max(sorted[0].day, today - (windowDays - 1) * DAY)
+  let start = today
+  for (let i = 1; i < windowDays; i++) start = prevDay(start)
+  if (sorted[0].day > start) start = sorted[0].day
   let last: Snapshot = sorted[0]
   for (const s of sorted) if (s.day <= start) last = s
   const out: BankPoint[] = []
-  for (let d = start; d <= today; d += DAY) {
+  for (let d = start; d < today; d = nextDay(d)) {
     const s = byDay.get(d)
     if (s) last = s
-    out.push(d === today ? live : { ...last, day: d })
+    out.push({ ...last, day: d })
   }
+  // Today is always the live table, never a snapshot — pushed unconditionally
+  // so the series is guaranteed to end on what the bank is right now.
+  out.push(live)
   return out
 }
 
