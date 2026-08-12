@@ -1,4 +1,7 @@
 {
+  "functions": {
+    "api/generate.ts": { "maxDuration": 60 }
+  },
   "headers": [
     {
       "source": "/(.*)",

@@ -13,7 +13,7 @@ import {
   type SavedStory,
   type WordStatus,
 } from '../db'
-import { defineWord, defineWords, generateStory, pickBeat, ApiError } from '../ai'
+import { defineWord, defineWords, generateStory, pickBeat, pickEnding, ApiError } from '../ai'
 import { definable, missingDefinitions } from '../glossary'
 import { leeches } from '../stats'
 import { formatDuration } from '../time'
@@ -51,12 +51,15 @@ const WORD_STATUSES: { key: WordStatus; label: string; title: string }[] = [
 ]
 
 /** What the generate button says during each pass of a story generation —
- *  writing, topping up a short draft, then glossing the result. */
-const PHASE_LABEL: Record<'writing' | 'extending' | 'glossary', string> = {
+ *  plotting, writing, topping up a short draft, then glossing the result. */
+const PHASE_LABEL: Record<StoryPhase, string> = {
+  planning: 'Working out the plot…',
   writing: 'Writing…',
   extending: 'Making it longer…',
   glossary: 'Looking up the words…',
 }
+
+type StoryPhase = 'planning' | 'writing' | 'extending' | 'glossary'
 
 const FONT_SCALE_MIN = 0.8
 const FONT_SCALE_MAX = 1.8
@@ -98,7 +101,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const [loading, setLoading] = useState(false)
   /** Which generation pass is running, so the wait has a visible reason
    *  rather than just a spinner that won't stop. */
-  const [phase, setPhase] = useState<'writing' | 'extending' | 'glossary'>('writing')
+  const [phase, setPhase] = useState<StoryPhase>('planning')
   const [error, setError] = useState('')
   const [story, setStory] = useState<SavedStory | null>(null)
   const [showTranslation, setShowTranslation] = useState(false)
@@ -411,20 +414,22 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     const from = continuing
     const steer = direction.trim()
     setLoading(true)
-    setPhase('writing')
+    setPhase('planning')
     setError('')
     try {
-      // Don't replay a dramatic turn this thread has already used.
-      const usedBeats = from
-        ? (savedStories ?? [])
-            .filter(
-              (s) =>
-                s.id === (from.parentId ?? from.id) || s.parentId === (from.parentId ?? from.id),
-            )
-            .map((s) => s.beat)
-            .filter((b): b is string => !!b)
+      // Every part of the thread being continued — its own beats shouldn't be
+      // replayed, and how many parts there are decides whether this one pays a
+      // running question off instead of leaving everything open.
+      const thread = from
+        ? (savedStories ?? []).filter(
+            (s) => s.id === (from.parentId ?? from.id) || s.parentId === (from.parentId ?? from.id),
+          )
         : []
-      const beat = pickBeat(usedBeats)
+      const beat = pickBeat(thread.map((s) => s.beat).filter((b): b is string => !!b))
+      const ending = pickEnding({
+        partsSoFar: thread.length,
+        openThreads: from?.bible?.openThreads?.length ?? 0,
+      })
       const result = await generateStory({
         deck: deck!,
         // In 'learning' mode, don't seed the story with already-known words —
@@ -436,6 +441,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         lengthWords: length,
         onProgress: (info) => setPhase(info.phase),
         beat,
+        ending,
         focusWords,
         // Steer fresh stories away from themes already covered (recent first).
         avoidThemes: from
@@ -481,7 +487,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       }
     } finally {
       setLoading(false)
-      setPhase('writing')
+      setPhase('planning')
     }
   }
 

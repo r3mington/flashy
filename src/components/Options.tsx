@@ -483,8 +483,10 @@ export function Options() {
           <div>
             <div className="option-name">Extended thinking</div>
             <div className="option-desc">
-              Lets the model reason before answering when suggesting cards, writing stories, and
-              picking emoji. Higher quality, but noticeably slower. Off favours speed.
+              Lets the model reason before answering when suggesting cards, picking emoji and
+              grading translations. Higher quality, but noticeably slower. Off favours speed.
+              Stories always reason, whatever this is set to — it is what makes the plot hold
+              together.
             </div>
           </div>
           <button

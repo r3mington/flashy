@@ -23,15 +23,21 @@ async function thinkingEnabled(): Promise<boolean> {
   }
 }
 
-/** All AI calls go through our /api/generate proxy — the Gemini key lives server-side. */
-async function callGeminiJson<T>(prompt: string, schema: object): Promise<T> {
+/** All AI calls go through our /api/generate proxy — the Gemini key lives server-side.
+ *  `tier` picks the class of model: everything defaults to the fast one, and the
+ *  calls that have to plan rather than transcribe ask for 'pro' explicitly. */
+async function callGeminiJson<T>(
+  prompt: string,
+  schema: object,
+  opts: { tier?: 'fast' | 'pro' } = {},
+): Promise<T> {
   const thinking = await thinkingEnabled()
   let res: Response
   try {
     res = await fetch('/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, schema, thinking }),
+      body: JSON.stringify({ prompt, schema, thinking, tier: opts.tier ?? 'fast' }),
     })
   } catch {
     // Offline is the ordinary case here (a plane, a tunnel), and it deserves a
@@ -323,6 +329,20 @@ export function pickBeat(used: string[] = []): string {
   return pool[Math.floor(Math.random() * pool.length)]
 }
 
+/** How a part ends. 'hook' leaves everything open; 'payoff' closes one running
+ *  question before opening another. */
+export type StoryEnding = 'hook' | 'payoff'
+
+/** Every part ending on a cliffhanger teaches the reader that nothing will ever
+ *  be answered, and the hooks stop counting for anything. So every third part of
+ *  a thread pays one thread off — provided there are at least two open, since
+ *  closing the only one would end the story. */
+export function pickEnding(opts: { partsSoFar: number; openThreads: number }): StoryEnding {
+  const { partsSoFar, openThreads } = opts
+  if (partsSoFar < 2 || openThreads < 2) return 'hook'
+  return (partsSoFar + 1) % 3 === 0 ? 'payoff' : 'hook'
+}
+
 /** Roughly how many words a sentence of dialogue-led prose runs to. Used to
  *  turn a word target into a sentence count, which models hit far more
  *  reliably than a word count they can't actually compute. */
@@ -391,8 +411,11 @@ async function extendStory(opts: {
   story: StoryProse
   missingWords: number
   newWordPercent: number
+  /** The ending the part was planned for — the continuation becomes the new
+   *  ending, so it has to land the same way. */
+  ending: StoryEnding
 }): Promise<StoryProse> {
-  const { deck, story, missingWords, newWordPercent } = opts
+  const { deck, story, missingWords, newWordPercent, ending } = opts
   const prompt = [
     `Below is a story in ${deck.language} written for a language learner. It stopped too early — it needs about ${missingWords} more words.`,
     `Story so far, titled "${story.title}":\n${story.story}`,
@@ -404,7 +427,9 @@ async function extendStory(opts: {
     `Do NOT introduce any new named character. Work with the people already in the story above.`,
     `IMPORTANT — register: casual, everyday spoken ${deck.language}, matching the story above. Keep dialogue inside quotation marks “…”.`,
     `At most ${newWordPercent}% of the content words may be new words the learner has not met; prefer the vocabulary already used above.`,
-    `ENDING — the continuation must end on a hook, unresolved: an interruption, a reveal, an arrival, or a question the reader cannot answer. Never wrap the story up.`,
+    ending === 'payoff'
+      ? `ENDING — the continuation must answer ONE of the questions the story has been carrying, shown as a scene rather than explained, and then raise a new one in its last line. Never wrap the story up.`
+      : `ENDING — the continuation must end on a hook, unresolved: an interruption, a reveal, an arrival, or a question the reader cannot answer. Never wrap the story up.`,
     `Return: "story" (the continuation text only), "translation" (an English translation of the continuation only), "characterNames" (any personal names appearing in the continuation), and "bible" (the world state after the continuation: logline, cast, places, facts, openThreads).`,
   ].join('\n')
 
@@ -418,6 +443,119 @@ async function extendStory(opts: {
     ],
     bible: more.bible ?? story.bible,
   }
+}
+
+/** The plot, decided before a word of the story is written. */
+export interface StoryPlan {
+  /** The situation, in one English sentence. */
+  premise: string
+  cast: { name: string; role: string; wants: string }[]
+  /** The ordinary-looking detail that carries the turn, planted early. */
+  plant: string
+  /** What happens, in order — the events the prose has to render. */
+  spine: string[]
+  /** The final image, and what it leaves the reader wanting. */
+  ending: string
+}
+
+const PLAN_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    premise: { type: 'STRING' },
+    cast: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          name: { type: 'STRING' },
+          role: { type: 'STRING' },
+          wants: { type: 'STRING' },
+        },
+        required: ['name', 'role', 'wants'],
+      },
+    },
+    plant: { type: 'STRING' },
+    spine: { type: 'ARRAY', items: { type: 'STRING' } },
+    ending: { type: 'STRING' },
+  },
+  required: ['premise', 'cast', 'plant', 'spine', 'ending'],
+}
+
+/** Plot the story before writing it. Two things make this worth a separate
+ *  round-trip. A model composing under this many constraints at once — a word
+ *  bank, a cast cap, a register, a length, a dialogue ratio — has nothing left
+ *  over for plot, and spends it on satisfying the constraints instead. And a
+ *  planted twist requires knowing the ending before writing the first line,
+ *  which a single forward pass cannot do.
+ *
+ *  The plan is made in ENGLISH and deliberately ignores the learner's
+ *  vocabulary: the word bank is a ceiling on what the story can SAY, and left
+ *  in place at this stage it silently becomes a ceiling on what can HAPPEN.
+ *  Invent freely here; the writing pass renders it under constraint. */
+async function planStory(opts: {
+  deck: Deck
+  lengthWords: number
+  topic?: string
+  avoidThemes: string[]
+  beat?: string
+  ending: StoryEnding
+  continueFrom?: { title: string; story: string; direction?: string; bible?: StoryBible }
+}): Promise<StoryPlan> {
+  const { deck, lengthWords, topic, avoidThemes, beat, ending, continueFrom } = opts
+  const bible = continueFrom?.bible
+  // Enough beats to fill the length with events rather than with padding.
+  const beats = Math.max(4, Math.min(7, Math.round(lengthWords / 150)))
+
+  const prompt = [
+    `Plan a short story that will afterwards be written in ${deck.language} for a language learner. PLAN ONLY — do not write any prose.`,
+    `Plan in English, and plan freely: this stage is NOT limited by the learner's vocabulary. Decide what would make the best story; rendering it in simple ${deck.language} is a later problem.`,
+    continueFrom
+      ? `This is the NEXT PART of a story already under way. Plan what happens next — do not re-plan what already happened.`
+      : '',
+    continueFrom ? `Previous part, titled "${continueFrom.title}":\n${continueFrom.story}` : '',
+    bible
+      ? [
+          `THE WORLD SO FAR — all of it is already true and must not be contradicted.`,
+          `Cast: ${bible.cast.map((c) => `${c.name} (${c.role}; wants ${c.wants})`).join('; ')}`,
+          bible.places.length > 0 ? `Places: ${bible.places.join('; ')}` : '',
+          bible.facts.length > 0 ? `Established facts: ${bible.facts.join('; ')}` : '',
+          bible.openThreads.length > 0
+            ? `Unanswered questions: ${bible.openThreads.join('; ')}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : '',
+    continueFrom?.direction?.trim()
+      ? `THE READER CHOSE THIS — the plan must follow it, and it must start happening in the first beat, not the last: "${continueFrom.direction.trim()}"`
+      : '',
+    beat
+      ? `THE TURN — build the plot around exactly this: ${beat}. Do NOT take the first, most obvious instantiation of it that comes to mind; find the version with a specific situation and a specific reason behind it. The turn must be something the reader works out, never something the story announces.`
+      : '',
+    continueFrom
+      ? ''
+      : topic?.trim()
+        ? `Topic: "${topic.trim()}".`
+        : `Invent a fresh premise: an unexpected combination of setting, characters and situation. Vary widely across genres — a mystery, a trip gone wrong, an animal's point of view, a storm, a market, a game, a misunderstanding, a small adventure. Do NOT default to everyday hangout scenes.`,
+    !continueFrom && avoidThemes.length > 0
+      ? `The learner's previous stories were about the following — pick a clearly DIFFERENT theme, setting and cast: ${avoidThemes.join('; ')}`
+      : '',
+    `Return:`,
+    `• "premise" — the situation in ONE English sentence.`,
+    continueFrom
+      ? `• "cast" — the people in this part, carrying forward the names already established above. You may add AT MOST ONE new named character, and only if the plot genuinely needs them.`
+      : `• "cast" — at most ${MAX_CAST} named characters, ideally two or three, each with their role and what they want. Give every one a personal name that is natural and common for a native ${deck.language} speaker. A learner reading in a second language cannot hold more names than that.`,
+    `• "plant" — the ordinary-looking detail that carries the turn: something mentioned early that looks like scenery and later turns out to matter. Say what it is and where it goes.`,
+    `• "spine" — exactly ${beats} beats, in order, each one sentence: what actually HAPPENS. Events, not moods — someone does something, someone finds something out, something arrives. Each beat must change the situation the one before it left behind. No beat may be two characters discussing how they feel.`,
+    ending === 'payoff'
+      ? `• "ending" — this part answers ONE of the unanswered questions above. Say which one, and describe the final image that shows the answer happening (shown as a scene, never explained in summary). Then say which question is left open, and what NEW question the last line raises.`
+      : `• "ending" — the final image, landing on a hook: an interruption, a reveal, an arrival, or a decision whose outcome cannot be guessed. Do NOT resolve the story: nobody goes home, nothing turns out fine, nobody learns a lesson.`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  const plan = await callGeminiJson<StoryPlan>(prompt, PLAN_SCHEMA, { tier: 'pro' })
+  return { ...plan, cast: plan.cast ?? [], spine: plan.spine ?? [] }
 }
 
 /** How close to the requested length is close enough to stop topping up. */
@@ -441,22 +579,38 @@ export async function generateStory(opts: {
   continueFrom?: { title: string; story: string; direction?: string; bible?: StoryBible }
   /** The dramatic turn to build this part around (see `pickBeat`). */
   beat?: string
+  /** Whether this part lands on a hook or pays one thread off (see `pickEnding`). */
+  ending?: StoryEnding
   /** Words the learner keeps forgetting — worked into the plot on purpose so
    *  they're met repeatedly, in context, instead of only on a flashcard. */
   focusWords?: string[]
-  /** Progress across the writing passes, so the UI can say what each wait is
-   *  for: extending a short draft, then glossing the finished text. */
+  /** Progress across the passes, so the UI can say what each wait is for:
+   *  plotting, writing, extending a short draft, then glossing the text. */
   onProgress?: (info: {
-    phase: 'extending' | 'glossary'
+    phase: 'planning' | 'writing' | 'extending' | 'glossary'
     words?: number
     target?: number
     pass?: number
   }) => void
 }): Promise<Story> {
   const { deck, knownWords, learningWords, newWordPercent, topic, lengthWords } = opts
-  const { avoidThemes = [], continueFrom, beat, focusWords = [] } = opts
+  const { avoidThemes = [], continueFrom, beat, focusWords = [], ending = 'hook' } = opts
 
   const bible = continueFrom?.bible
+
+  // Plot first, in English and unconstrained — then write to the plan.
+  opts.onProgress?.({ phase: 'planning' })
+  const plan = await planStory({
+    deck,
+    lengthWords,
+    topic,
+    avoidThemes,
+    beat,
+    ending,
+    continueFrom,
+  })
+
+  opts.onProgress?.({ phase: 'writing' })
   const prompt = [
     continueFrom
       ? `Below is a story in ${deck.language} that a language learner has been reading. Write the NEXT PART of it: continue seamlessly from where it ends, keeping the same characters, setting, tone and register. Advance the plot — don't recap or repeat what already happened.`
@@ -469,37 +623,36 @@ export async function generateStory(opts: {
           bible.places.length > 0 ? `Places: ${bible.places.join('; ')}` : '',
           bible.facts.length > 0 ? `Established facts: ${bible.facts.join('; ')}` : '',
           bible.openThreads.length > 0
-            ? `Unanswered questions so far — answer ONE of these in this part, and leave at least one still open: ${bible.openThreads.join('; ')}`
+            ? ending === 'payoff'
+              ? `Unanswered questions so far — this part answers ONE of them (the plan says which) and leaves at least one still open: ${bible.openThreads.join('; ')}`
+              : `Unanswered questions so far — keep them alive. You may edge closer to one, but do not answer any outright: ${bible.openThreads.join('; ')}`
             : '',
         ]
           .filter(Boolean)
           .join('\n')
       : '',
-    continueFrom?.direction?.trim()
-      ? `THE READER CHOSE THIS — the next part must follow it, and it must start happening within the first few lines, not at the end: "${continueFrom.direction.trim()}"`
+    // The plot was decided in a separate pass — premise, cast, turn, ending and
+    // the reader's steer are all already settled inside it. This call's whole
+    // job is to render it as prose the learner can read.
+    `THE PLAN — follow it. It was made for this story: do not invent a different premise, a different cast or a different ending.`,
+    `Premise: ${plan.premise}`,
+    plan.cast.length > 0
+      ? `Cast — use exactly these people, with exactly these names, and name nobody else: ${plan.cast.map((c) => `${c.name} (${c.role}; wants ${c.wants})`).join('; ')}`
       : '',
-    beat
-      ? `THE TURN — build this part around exactly this dramatic turn: ${beat}. Plant it early inside an ordinary-looking detail, then let it land. Never announce or explain the turn; let the reader notice it.`
+    plan.spine.length > 0
+      ? `What happens — work through these beats IN ORDER, giving each roughly equal space, and make sure every one of them actually reaches the page:\n${plan.spine.map((b, i) => `${i + 1}. ${b}`).join('\n')}`
       : '',
-    continueFrom
-      ? ''
-      : topic?.trim()
-        ? `Topic: "${topic.trim()}".`
-        : `Invent a FRESH premise. Before writing, pick an unexpected combination of setting, characters and situation — vary widely across genres (a mystery, a trip gone wrong, an animal's point of view, a storm, a market, a game, a misunderstanding, a small adventure…). Do NOT default to everyday hangout scenes.`,
-    !continueFrom && avoidThemes.length > 0
-      ? `The learner's previous stories were about the following — choose a clearly DIFFERENT theme, setting and cast: ${avoidThemes.join('; ')}`
+    plan.plant
+      ? `PLANT: ${plan.plant} Put it in early, inside an ordinary-looking detail, and never draw attention to it — the reader should walk past it and only realise later.`
       : '',
     lengthSpec(lengthWords),
     `IMPORTANT — register: use casual, everyday conversational ${deck.language}, the way people actually talk in daily life. Prefer informal forms over formal ones (for example, in Indonesian say "aku", not "saya"). No formal, literary, or textbook language.`,
     `STYLE — dialogue-first: tell the story mainly through conversation. At least half of the words should be inside spoken lines, as short, natural back-and-forth exchanges between the characters; keep narration to brief connective sentences. Always wrap spoken lines in quotation marks “…” (never dashes), so dialogue is machine-detectable.`,
     `TEXTURE: each scene gets exactly ONE concrete physical detail — a smell, a sound, a texture, a temperature, something someone is holding — in a single short sentence. One per scene, never a descriptive paragraph, and make it specific ("the rice was still too hot to hold") rather than general ("it was a nice day").`,
-    `CHARACTERS: give every character a personal name that is natural and common for a native ${deck.language} speaker — never refer to anyone only as "the man", "my friend", "the seller" and so on.${continueFrom ? ' Keep the names already used in the previous part.' : ''} Return every personal name used in the story in the characterNames array.`,
     // A learner reading in a second language cannot hold a large cast in their
-    // head: every extra name is another thing to decode. Keep the cast small,
-    // and make a continuation earn any addition to it.
-    continueFrom
-      ? `CAST SIZE — hard limit: this part may introduce AT MOST ONE new named character, and only if the plot genuinely needs them. Prefer introducing none and giving the existing cast more to do. Never bring in a crowd of new names to create movement.`
-      : `CAST SIZE — hard limit: ${MAX_CAST} named characters in the whole story, ideally two or three. A learner reading in a second language loses the thread when there are more names than they can hold. Everyone else stays unnamed and off-stage (mentioned in passing at most). Do not name walk-on parts.`,
+    // head: every extra name is another thing to decode. The plan already caps
+    // it; this keeps the writing pass from quietly adding walk-on names.
+    `CHARACTERS: refer to the people above by the names the plan gives them — never as "the man", "my friend", "the seller" and so on. Do NOT name anyone the plan does not name: everyone else stays unnamed and off-stage, mentioned in passing at most. Return every personal name used in the story in the characterNames array.`,
     `The learner's word bank is below. Build the story primarily from these words (plus basic function words like articles, pronouns and common connectives, which are always allowed).`,
     knownWords.length > 0
       ? `Known words — use these freely and often: ${knownWords.join(', ')}`
@@ -511,14 +664,16 @@ export async function generateStory(opts: {
     focusWords.length > 0
       ? `PLOT-CRITICAL VOCABULARY: these are words the learner keeps forgetting — ${focusWords.join(', ')}. Each one must appear at least three times, in different sentences and different situations, and at least one of them must matter to the plot (it names the thing that goes missing, the place they must reach, the thing someone wants). Never draw attention to them or define them in the text; just make the story impossible to follow without them.`
       : '',
-    `ENDING — do NOT resolve the story. The last line must land on a hook: an interruption, a reveal, an arrival, an unanswered question, or a decision whose outcome the reader cannot guess. Never end with everyone going home, everything turning out fine, a lesson learned, or a summary of what happened. Stop at the moment of maximum "wait, what?" — mid-scene is good, mid-sentence is not.`,
+    ending === 'payoff'
+      ? `ENDING — this part pays something off: ${plan.ending} Show the answer HAPPENING, as a scene the reader watches — never as a character explaining it or a narrator summarising it. Then let the very last line raise a new question. Do not wrap the whole story up: nobody goes home, nothing turns out fine, nobody learns a lesson.`
+      : `ENDING — do NOT resolve the story. Land it here: ${plan.ending} The last line must be a hook — an interruption, a reveal, an arrival, an unanswered question, or a decision whose outcome the reader cannot guess. Never end with everyone going home, everything turning out fine, a lesson learned, or a summary of what happened. Stop at the moment of maximum "wait, what?" — mid-scene is good, mid-sentence is not.`,
     `THE BIBLE: also return "bible" — the state of the story world after this part${continueFrom ? ', updated from the bible above (carry forward everything still true, add what this part established, and drop questions this part answered)' : ''}. "logline" is ONE English sentence recapping what happened, written so it can be shown to the reader as "Previously…" before the next part. "cast" lists every named character with their role and what they want; "places" the locations used; "facts" the concrete details a later part must stay consistent with; "openThreads" the questions this part leaves unanswered — including the one your ending hook just raised.`,
     `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story, a full English translation and the bible. Spend your effort on the story itself — the words will be glossed separately afterwards, so you do not need to define anything here.`,
   ]
     .filter(Boolean)
     .join('\n')
 
-  let prose = await callGeminiJson<StoryProse>(prompt, STORY_SCHEMA)
+  let prose = await callGeminiJson<StoryProse>(prompt, STORY_SCHEMA, { tier: 'pro' })
 
   // Models can't count their own words, so a draft routinely lands well under
   // the requested length. Measure it the same way the reader does and, while
@@ -534,6 +689,7 @@ export async function generateStory(opts: {
         story: prose,
         missingWords: Math.max(40, lengthWords - have),
         newWordPercent,
+        ending,
       })
     } catch {
       // A failed top-up shouldn't cost the reader the story they already have.

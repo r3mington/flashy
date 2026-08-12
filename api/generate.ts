@@ -2,12 +2,22 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { isAuthed } from './_lib/auth.js'
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta'
-const PREFERRED_MODEL = 'gemini-flash-latest'
 
-// Resolved lazily per warm instance; falls back to whatever flash model the key can access.
-let resolvedModel: string | null = null
+/** Which class of model a request wants. Nearly everything runs on `fast` —
+ *  it is cheap and the job is mechanical. `pro` is for the two calls where the
+ *  model has to actually plan: inventing a story's plot, and writing it. */
+type Tier = 'fast' | 'pro'
 
-async function pickAvailableModel(apiKey: string): Promise<string> {
+const PREFERRED_MODEL: Record<Tier, string> = {
+  fast: 'gemini-flash-latest',
+  pro: 'gemini-pro-latest',
+}
+
+// Resolved lazily per warm instance; falls back to whatever model of that class
+// the key can actually access.
+const resolvedModel: Record<Tier, string | null> = { fast: null, pro: null }
+
+async function pickAvailableModel(apiKey: string, tier: Tier): Promise<string> {
   const res = await fetch(`${BASE}/models?pageSize=200`, {
     headers: { 'x-goog-api-key': apiKey },
   })
@@ -17,8 +27,12 @@ async function pickAvailableModel(apiKey: string): Promise<string> {
   const usable = models
     .filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
     .map((m) => m.name.replace(/^models\//, ''))
+  const want = tier === 'pro' ? /pro/ : /flash/
   const pick =
-    usable.find((n) => /flash/.test(n) && !/lite|preview|image|tts|live|exp/.test(n)) ??
+    usable.find((n) => want.test(n) && !/lite|preview|image|tts|live|exp/.test(n)) ??
+    usable.find((n) => want.test(n)) ??
+    // A key with no pro access still gets a story — a flash one is better than
+    // an error the reader can do nothing about.
     usable.find((n) => /flash/.test(n)) ??
     usable[0]
   if (!pick) throw new UpstreamError(500, 'No usable Gemini model found for this API key.')
@@ -87,12 +101,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) return res.status(500).json({ error: 'Server is missing GEMINI_API_KEY.' })
 
-  const { prompt, schema, thinking } = req.body ?? {}
+  const { prompt, schema, thinking, tier: rawTier } = req.body ?? {}
   if (typeof prompt !== 'string' || !prompt || typeof schema !== 'object' || !schema) {
     return res.status(400).json({ error: 'Expected { prompt, schema }.' })
   }
-  // Default fast: only "think" when the client explicitly opts in.
-  const mode: 'fast' | 'quality' = thinking === true ? 'quality' : 'fast'
+  const tier: Tier = rawTier === 'pro' ? 'pro' : 'fast'
+  // Default fast: only "think" when the client explicitly opts in. A pro-tier
+  // request is one that asked for reasoning by asking for that tier at all —
+  // plotting is the job thinking exists for, so it never runs without it.
+  const mode: 'fast' | 'quality' = thinking === true || tier === 'pro' ? 'quality' : 'fast'
   const configs = THINKING_CONFIGS[mode]
 
   try {
@@ -102,7 +119,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     for (let attempt = 0; ; attempt++) {
       const i = Math.min(workingConfig[mode], configs.length - 1)
       try {
-        data = await callModel(apiKey, resolvedModel ?? PREFERRED_MODEL, prompt, schema, configs[i])
+        const model = resolvedModel[tier] ?? PREFERRED_MODEL[tier]
+        data = await callModel(apiKey, model, prompt, schema, configs[i])
         break
       } catch (e) {
         const badArgument = e instanceof UpstreamError && e.status === 400 && i < configs.length - 1
@@ -112,7 +130,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           workingConfig[mode] = i + 1
         } else if (modelProblem && attempt < configs.length + 1) {
           // Model not available for this account? Discover one that is and retry.
-          resolvedModel = await pickAvailableModel(apiKey)
+          resolvedModel[tier] = await pickAvailableModel(apiKey, tier)
         } else {
           throw e
         }
