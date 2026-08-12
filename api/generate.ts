@@ -52,12 +52,22 @@ class UpstreamError extends Error {
  *  take thinkingLevel (and reject thinkingBudget), 2.5-era models take
  *  thinkingBudget (and reject thinkingLevel). Each mode lists configs to try in
  *  order; on a 400 the handler advances down the chain and remembers what stuck
- *  for the rest of the warm instance. */
+ *  for the rest of the warm instance.
+ *
+ *  'fast' tries LOW before giving up on the level: not every model accepts
+ *  MINIMAL, and the end of this chain is `null` — no thinking config at all,
+ *  which means the model's DEFAULT thinking. On the pro model that default is
+ *  slow enough to time the function out, so falling all the way through is the
+ *  one outcome worth spending an extra rung to avoid. */
 const THINKING_CONFIGS: Record<'fast' | 'quality', (object | null)[]> = {
-  fast: [{ thinkingLevel: 'MINIMAL' }, { thinkingBudget: 0 }, null],
+  fast: [{ thinkingLevel: 'MINIMAL' }, { thinkingLevel: 'LOW' }, { thinkingBudget: 0 }, null],
   quality: [{ thinkingLevel: 'HIGH' }, null],
 }
-const workingConfig: Record<'fast' | 'quality', number> = { fast: 0, quality: 0 }
+
+/** Which rung of the chain currently works, per model class — the tiers are
+ *  different model generations and don't necessarily accept the same configs,
+ *  so one tier's 400 must not push the other down its chain. */
+const workingConfig: Record<string, number> = {}
 
 async function callModel(
   apiKey: string,
@@ -101,23 +111,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) return res.status(500).json({ error: 'Server is missing GEMINI_API_KEY.' })
 
-  const { prompt, schema, thinking, tier: rawTier } = req.body ?? {}
+  const { prompt, schema, thinking, tier: rawTier, effort } = req.body ?? {}
   if (typeof prompt !== 'string' || !prompt || typeof schema !== 'object' || !schema) {
     return res.status(400).json({ error: 'Expected { prompt, schema }.' })
   }
   const tier: Tier = rawTier === 'pro' ? 'pro' : 'fast'
-  // Default fast: only "think" when the client explicitly opts in. A pro-tier
-  // request is one that asked for reasoning by asking for that tier at all —
-  // plotting is the job thinking exists for, so it never runs without it.
-  const mode: 'fast' | 'quality' = thinking === true || tier === 'pro' ? 'quality' : 'fast'
+  // Model class and reasoning effort are independent. The story is written in
+  // two pro-tier passes that want opposite things: plotting needs to think and
+  // returns almost nothing, while writing returns a whole story and has already
+  // been told what happens. Thinking through the second one only buys a
+  // timeout. Callers that say nothing keep the old behaviour — think only when
+  // the user's toggle asks for it.
+  const mode: 'fast' | 'quality' =
+    effort === 'high' ? 'quality' : effort === 'minimal' ? 'fast' : thinking === true ? 'quality' : 'fast'
   const configs = THINKING_CONFIGS[mode]
+  const chain = `${tier}:${mode}`
 
   try {
     let data
     // Walk the thinking-config chain: a 400 usually means this model generation
     // doesn't accept that config shape, so advance to the next and remember it.
     for (let attempt = 0; ; attempt++) {
-      const i = Math.min(workingConfig[mode], configs.length - 1)
+      const i = Math.min(workingConfig[chain] ?? 0, configs.length - 1)
       try {
         const model = resolvedModel[tier] ?? PREFERRED_MODEL[tier]
         data = await callModel(apiKey, model, prompt, schema, configs[i])
@@ -127,7 +142,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const modelProblem =
           e instanceof UpstreamError && (e.status === 404 || /model/i.test(e.message))
         if (badArgument && attempt < configs.length) {
-          workingConfig[mode] = i + 1
+          workingConfig[chain] = i + 1
         } else if (modelProblem && attempt < configs.length + 1) {
           // Model not available for this account? Discover one that is and retry.
           resolvedModel[tier] = await pickAvailableModel(apiKey, tier)

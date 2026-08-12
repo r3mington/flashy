@@ -29,7 +29,7 @@ async function thinkingEnabled(): Promise<boolean> {
 async function callGeminiJson<T>(
   prompt: string,
   schema: object,
-  opts: { tier?: 'fast' | 'pro' } = {},
+  opts: { tier?: 'fast' | 'pro'; effort?: 'minimal' | 'high' } = {},
 ): Promise<T> {
   const thinking = await thinkingEnabled()
   let res: Response
@@ -37,7 +37,13 @@ async function callGeminiJson<T>(
     res = await fetch('/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, schema, thinking, tier: opts.tier ?? 'fast' }),
+      body: JSON.stringify({
+        prompt,
+        schema,
+        thinking,
+        tier: opts.tier ?? 'fast',
+        effort: opts.effort,
+      }),
     })
   } catch {
     // Offline is the ordinary case here (a plane, a tunnel), and it deserves a
@@ -255,16 +261,18 @@ const GLOSSARY_SCHEMA = {
   required: ['glossary'],
 }
 
-/** The prose call's shape — no glossary. Glossing every word of a story is
- *  several times more output than the story itself, and asking for both at
- *  once makes the two compete: the model that has to gloss what it writes
- *  writes less. The glossary is a separate pass over the finished text. */
+/** The prose call's shape — no glossary, and no translation. Glossing every
+ *  word of a story is several times more output than the story itself, and
+ *  asking for both at once makes the two compete: the model that has to gloss
+ *  what it writes writes less. The translation was split out for a blunter
+ *  reason — it doubles the longest call's output, and on a 60-second function
+ *  that is the difference between a story and a timeout. Both are separate
+ *  passes over the finished text. */
 const STORY_SCHEMA = {
   type: 'OBJECT',
   properties: {
     title: { type: 'STRING' },
     story: { type: 'STRING' },
-    translation: { type: 'STRING' },
     characterNames: { type: 'ARRAY', items: { type: 'STRING' } },
     bible: {
       type: 'OBJECT',
@@ -289,11 +297,12 @@ const STORY_SCHEMA = {
       required: ['logline', 'cast', 'places', 'facts', 'openThreads'],
     },
   },
-  required: ['title', 'story', 'translation', 'characterNames', 'bible'],
+  required: ['title', 'story', 'characterNames', 'bible'],
 }
 
-/** The prose half of a story — what the writing call returns. */
-type StoryProse = Omit<Story, 'glossary'>
+/** The prose half of a story — what the writing call returns. Translation and
+ *  glossary are added afterwards, each by its own pass. */
+type StoryProse = Omit<Story, 'glossary' | 'translation'>
 
 /** Most named characters a first part may introduce. Reading in a second
  *  language is slow enough that a fourth name costs more than it adds. */
@@ -368,11 +377,32 @@ const EXTEND_SCHEMA = {
   type: 'OBJECT',
   properties: {
     story: { type: 'STRING' },
-    translation: { type: 'STRING' },
     characterNames: STORY_SCHEMA.properties.characterNames,
     bible: STORY_SCHEMA.properties.bible,
   },
-  required: ['story', 'translation', 'bible'],
+  required: ['story', 'bible'],
+}
+
+const TRANSLATION_SCHEMA = {
+  type: 'OBJECT',
+  properties: { translation: { type: 'STRING' } },
+  required: ['translation'],
+}
+
+/** Translate the finished story into English, in one pass over the final text.
+ *  Split out of the writing call because it doubled that call's output for
+ *  something mechanical — and doing it last means extensions cost nothing here
+ *  and the English reads as one piece rather than as spliced fragments. */
+async function translateStory(deck: Deck, story: string): Promise<string> {
+  const prompt = [
+    `Translate this ${deck.language} story into natural English. Return the whole translation as one string in "translation".`,
+    `Keep the paragraph breaks of the original, keep dialogue inside quotation marks “…”, and translate every line — do not summarise, abridge or add anything.`,
+    `Write English a person would actually write: idiomatic, not a word-for-word calque of the ${deck.language}.`,
+    `Story:\n${story}`,
+  ].join('\n')
+
+  const parsed = await callGeminiJson<{ translation: string }>(prompt, TRANSLATION_SCHEMA)
+  return parsed.translation ?? ''
 }
 
 /** Gloss a finished story: every word of it, in the surface form it appears
@@ -419,7 +449,7 @@ async function extendStory(opts: {
   const prompt = [
     `Below is a story in ${deck.language} written for a language learner. It stopped too early — it needs about ${missingWords} more words.`,
     `Story so far, titled "${story.title}":\n${story.story}`,
-    `Write ONLY the continuation: the text that follows on directly from the last line, in the same voice, tense and register, with the same characters. Do not repeat, recap or rewrite any of the above, and do not start a new story.`,
+    `Write ONLY the continuation: the text that follows on directly from the last line, in the same voice, tense and register, with the same characters. Do not repeat, recap or rewrite any of the above, and do not start a new story. Write it in ${deck.language} only — no English.`,
     lengthSpec(missingWords),
     `The continuation must carry the story forward with real events — a new turn, a complication, an arrival — not filler description or small talk stretched out.`,
     // This is a top-up of one part, not a new part: length is the only thing
@@ -430,14 +460,16 @@ async function extendStory(opts: {
     ending === 'payoff'
       ? `ENDING — the continuation must answer ONE of the questions the story has been carrying, shown as a scene rather than explained, and then raise a new one in its last line. Never wrap the story up.`
       : `ENDING — the continuation must end on a hook, unresolved: an interruption, a reveal, an arrival, or a question the reader cannot answer. Never wrap the story up.`,
-    `Return: "story" (the continuation text only), "translation" (an English translation of the continuation only), "characterNames" (any personal names appearing in the continuation), and "bible" (the world state after the continuation: logline, cast, places, facts, openThreads).`,
+    `Return: "story" (the continuation text only), "characterNames" (any personal names appearing in the continuation), and "bible" (the world state after the continuation: logline, cast, places, facts, openThreads).`,
   ].join('\n')
 
-  const more = await callGeminiJson<Omit<StoryProse, 'title'>>(prompt, EXTEND_SCHEMA)
+  const more = await callGeminiJson<Omit<StoryProse, 'title'>>(prompt, EXTEND_SCHEMA, {
+    tier: 'pro',
+    effort: 'minimal',
+  })
   return {
     ...story,
     story: `${story.story.trimEnd()}\n\n${more.story.trim()}`,
-    translation: `${story.translation.trimEnd()}\n\n${more.translation.trim()}`,
     characterNames: [
       ...new Set([...(story.characterNames ?? []), ...(more.characterNames ?? [])]),
     ],
@@ -554,7 +586,12 @@ async function planStory(opts: {
     .filter(Boolean)
     .join('\n')
 
-  const plan = await callGeminiJson<StoryPlan>(prompt, PLAN_SCHEMA, { tier: 'pro' })
+  // The one call worth thinking through: it returns a few hundred words and
+  // decides everything the writing pass then only has to render.
+  const plan = await callGeminiJson<StoryPlan>(prompt, PLAN_SCHEMA, {
+    tier: 'pro',
+    effort: 'high',
+  })
   return { ...plan, cast: plan.cast ?? [], spine: plan.spine ?? [] }
 }
 
@@ -585,9 +622,9 @@ export async function generateStory(opts: {
    *  they're met repeatedly, in context, instead of only on a flashcard. */
   focusWords?: string[]
   /** Progress across the passes, so the UI can say what each wait is for:
-   *  plotting, writing, extending a short draft, then glossing the text. */
+   *  plotting, writing, extending a short draft, then translating and glossing. */
   onProgress?: (info: {
-    phase: 'planning' | 'writing' | 'extending' | 'glossary'
+    phase: 'planning' | 'writing' | 'extending' | 'translating' | 'glossary'
     words?: number
     target?: number
     pass?: number
@@ -668,12 +705,17 @@ export async function generateStory(opts: {
       ? `ENDING — this part pays something off: ${plan.ending} Show the answer HAPPENING, as a scene the reader watches — never as a character explaining it or a narrator summarising it. Then let the very last line raise a new question. Do not wrap the whole story up: nobody goes home, nothing turns out fine, nobody learns a lesson.`
       : `ENDING — do NOT resolve the story. Land it here: ${plan.ending} The last line must be a hook — an interruption, a reveal, an arrival, an unanswered question, or a decision whose outcome the reader cannot guess. Never end with everyone going home, everything turning out fine, a lesson learned, or a summary of what happened. Stop at the moment of maximum "wait, what?" — mid-scene is good, mid-sentence is not.`,
     `THE BIBLE: also return "bible" — the state of the story world after this part${continueFrom ? ', updated from the bible above (carry forward everything still true, add what this part established, and drop questions this part answered)' : ''}. "logline" is ONE English sentence recapping what happened, written so it can be shown to the reader as "Previously…" before the next part. "cast" lists every named character with their role and what they want; "places" the locations used; "facts" the concrete details a later part must stay consistent with; "openThreads" the questions this part leaves unanswered — including the one your ending hook just raised.`,
-    `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story, a full English translation and the bible. Spend your effort on the story itself — the words will be glossed separately afterwards, so you do not need to define anything here.`,
+    `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story and the bible. Write the story in ${deck.language} only — it is translated and glossed separately afterwards, so do not include any English or define anything here. Spend everything on the story itself.`,
   ]
     .filter(Boolean)
     .join('\n')
 
-  let prose = await callGeminiJson<StoryProse>(prompt, STORY_SCHEMA, { tier: 'pro' })
+  // The plot is already settled, so this pass renders rather than invents —
+  // and it is the longest output in the chain, which is what has to fit.
+  let prose = await callGeminiJson<StoryProse>(prompt, STORY_SCHEMA, {
+    tier: 'pro',
+    effort: 'minimal',
+  })
 
   // Models can't count their own words, so a draft routinely lands well under
   // the requested length. Measure it the same way the reader does and, while
@@ -697,15 +739,19 @@ export async function generateStory(opts: {
     }
   }
 
-  // Gloss last, once, over the text as it finally stands — so extensions cost
-  // nothing extra here and no word of the story goes unglossed.
+  // Translate and gloss last, once each, over the text as it finally stands —
+  // so extensions cost nothing extra here, the English reads as one piece, and
+  // no word of the story goes unglossed.
+  opts.onProgress?.({ phase: 'translating' })
+  const translation = await translateStory(deck, prose.story)
+
   opts.onProgress?.({ phase: 'glossary' })
   const glossary = await glossaryFor({
     deck,
     story: prose,
     bankWords: [...knownWords, ...learningWords],
   })
-  return { ...prose, glossary }
+  return { ...prose, translation, glossary }
 }
 
 const DEFINE_SCHEMA = {

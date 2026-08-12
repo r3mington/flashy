@@ -51,15 +51,16 @@ const WORD_STATUSES: { key: WordStatus; label: string; title: string }[] = [
 ]
 
 /** What the generate button says during each pass of a story generation —
- *  plotting, writing, topping up a short draft, then glossing the result. */
+ *  plotting, writing, topping up a short draft, then translating and glossing. */
 const PHASE_LABEL: Record<StoryPhase, string> = {
   planning: 'Working out the plot…',
   writing: 'Writing…',
   extending: 'Making it longer…',
+  translating: 'Translating…',
   glossary: 'Looking up the words…',
 }
 
-type StoryPhase = 'planning' | 'writing' | 'extending' | 'glossary'
+type StoryPhase = 'planning' | 'writing' | 'extending' | 'translating' | 'glossary'
 
 const FONT_SCALE_MIN = 0.8
 const FONT_SCALE_MAX = 1.8
