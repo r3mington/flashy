@@ -26,10 +26,31 @@ async function thinkingEnabled(): Promise<boolean> {
 /** All AI calls go through our /api/generate proxy — the Gemini key lives server-side.
  *  `tier` picks the class of model: everything defaults to the fast one, and the
  *  calls that have to plan rather than transcribe ask for 'pro' explicitly. */
+/** What one model call actually did, as reported by the server. Attached to the
+ *  trace so a slow or failed generation can be read after the fact. */
+export interface CallMeta {
+  model?: string
+  thinking?: object | string
+  /** Time the server spent on the upstream call, excluding our own network hop. */
+  ms?: number
+  promptTokens?: number
+  outputTokens?: number
+  /** Reasoning tokens burned before any output — usually why a call was slow. */
+  thoughtTokens?: number
+  finishReason?: string
+  retries?: number
+}
+
 async function callGeminiJson<T>(
   prompt: string,
   schema: object,
-  opts: { tier?: 'fast' | 'pro'; effort?: 'minimal' | 'high' } = {},
+  opts: {
+    tier?: 'fast' | 'pro'
+    effort?: 'minimal' | 'high'
+    /** Name for this call in the server log and the on-screen trace. */
+    label?: string
+    onMeta?: (meta: CallMeta) => void
+  } = {},
 ): Promise<T> {
   const thinking = await thinkingEnabled()
   let res: Response
@@ -43,6 +64,7 @@ async function callGeminiJson<T>(
         thinking,
         tier: opts.tier ?? 'fast',
         effort: opts.effort,
+        label: opts.label,
       }),
     })
   } catch {
@@ -66,7 +88,24 @@ async function callGeminiJson<T>(
     throw new ApiError(res.status, message)
   }
   const body = await res.json()
+  if (body.meta) opts.onMeta?.(body.meta as CallMeta)
   return body.data as T
+}
+
+/** One pass of a story generation, as it happens. The UI renders these live and
+ *  they are logged to the console when each finishes, so a generation that is
+ *  slow or dies partway can be read rather than guessed at. */
+export interface StoryStep {
+  key: string
+  label: string
+  startedAt: number
+  /** Wall-clock for the step, set when it finishes. */
+  ms?: number
+  ok?: boolean
+  /** What the step produced, in the terms that matter — words, beats, entries. */
+  detail?: string
+  error?: string
+  meta?: CallMeta
 }
 
 const CARDS_SCHEMA = {
@@ -393,7 +432,11 @@ const TRANSLATION_SCHEMA = {
  *  Split out of the writing call because it doubled that call's output for
  *  something mechanical — and doing it last means extensions cost nothing here
  *  and the English reads as one piece rather than as spliced fragments. */
-async function translateStory(deck: Deck, story: string): Promise<string> {
+async function translateStory(
+  deck: Deck,
+  story: string,
+  onMeta?: (m: CallMeta) => void,
+): Promise<string> {
   const prompt = [
     `Translate this ${deck.language} story into natural English. Return the whole translation as one string in "translation".`,
     `Keep the paragraph breaks of the original, keep dialogue inside quotation marks “…”, and translate every line — do not summarise, abridge or add anything.`,
@@ -401,7 +444,10 @@ async function translateStory(deck: Deck, story: string): Promise<string> {
     `Story:\n${story}`,
   ].join('\n')
 
-  const parsed = await callGeminiJson<{ translation: string }>(prompt, TRANSLATION_SCHEMA)
+  const parsed = await callGeminiJson<{ translation: string }>(prompt, TRANSLATION_SCHEMA, {
+    label: 'translate',
+    onMeta,
+  })
   return parsed.translation ?? ''
 }
 
@@ -414,8 +460,9 @@ async function glossaryFor(opts: {
   deck: Deck
   story: StoryProse
   bankWords: string[]
+  onMeta?: (m: CallMeta) => void
 }): Promise<GlossaryEntry[]> {
-  const { deck, story, bankWords } = opts
+  const { deck, story, bankWords, onMeta } = opts
   const prompt = [
     `Below is a finished story in ${deck.language}, written for a language learner who reads it by tapping words for their meanings. Build the lookup glossary for it.`,
     `Story:\n${story.story}`,
@@ -429,7 +476,10 @@ async function glossaryFor(opts: {
     .filter(Boolean)
     .join('\n')
 
-  const parsed = await callGeminiJson<{ glossary: GlossaryEntry[] }>(prompt, GLOSSARY_SCHEMA)
+  const parsed = await callGeminiJson<{ glossary: GlossaryEntry[] }>(prompt, GLOSSARY_SCHEMA, {
+    label: 'glossary',
+    onMeta,
+  })
   return parsed.glossary ?? []
 }
 
@@ -444,8 +494,9 @@ async function extendStory(opts: {
   /** The ending the part was planned for — the continuation becomes the new
    *  ending, so it has to land the same way. */
   ending: StoryEnding
+  onMeta?: (m: CallMeta) => void
 }): Promise<StoryProse> {
-  const { deck, story, missingWords, newWordPercent, ending } = opts
+  const { deck, story, missingWords, newWordPercent, ending, onMeta } = opts
   const prompt = [
     `Below is a story in ${deck.language} written for a language learner. It stopped too early — it needs about ${missingWords} more words.`,
     `Story so far, titled "${story.title}":\n${story.story}`,
@@ -466,6 +517,8 @@ async function extendStory(opts: {
   const more = await callGeminiJson<Omit<StoryProse, 'title'>>(prompt, EXTEND_SCHEMA, {
     tier: 'pro',
     effort: 'minimal',
+    label: 'extend',
+    onMeta,
   })
   return {
     ...story,
@@ -532,8 +585,9 @@ async function planStory(opts: {
   beat?: string
   ending: StoryEnding
   continueFrom?: { title: string; story: string; direction?: string; bible?: StoryBible }
+  onMeta?: (m: CallMeta) => void
 }): Promise<StoryPlan> {
-  const { deck, lengthWords, topic, avoidThemes, beat, ending, continueFrom } = opts
+  const { deck, lengthWords, topic, avoidThemes, beat, ending, continueFrom, onMeta } = opts
   const bible = continueFrom?.bible
   // Enough beats to fill the length with events rather than with padding.
   const beats = Math.max(4, Math.min(7, Math.round(lengthWords / 150)))
@@ -591,6 +645,8 @@ async function planStory(opts: {
   const plan = await callGeminiJson<StoryPlan>(prompt, PLAN_SCHEMA, {
     tier: 'pro',
     effort: 'high',
+    label: 'plan',
+    onMeta,
   })
   return { ...plan, cast: plan.cast ?? [], spine: plan.spine ?? [] }
 }
@@ -621,33 +677,63 @@ export async function generateStory(opts: {
   /** Words the learner keeps forgetting — worked into the plot on purpose so
    *  they're met repeatedly, in context, instead of only on a flashcard. */
   focusWords?: string[]
-  /** Progress across the passes, so the UI can say what each wait is for:
-   *  plotting, writing, extending a short draft, then translating and glossing. */
-  onProgress?: (info: {
-    phase: 'planning' | 'writing' | 'extending' | 'translating' | 'glossary'
-    words?: number
-    target?: number
-    pass?: number
-  }) => void
+  /** Called with the running trace whenever a pass starts or finishes, so the
+   *  UI can show what the wait is for and what each pass cost. */
+  onProgress?: (steps: StoryStep[]) => void
 }): Promise<Story> {
   const { deck, knownWords, learningWords, newWordPercent, topic, lengthWords } = opts
   const { avoidThemes = [], continueFrom, beat, focusWords = [], ending = 'hook' } = opts
 
   const bible = continueFrom?.bible
+  const langCode = langCodeFor(deck.language)
+
+  const steps: StoryStep[] = []
+  const emit = () => opts.onProgress?.(steps.map((s) => ({ ...s })))
+
+  /** Run one pass inside the trace: time it, record what it produced, and log
+   *  it. A pass that throws is recorded before the error propagates, so a
+   *  failed generation still says which pass died and how long it took. */
+  async function step<T>(
+    key: string,
+    label: string,
+    run: (onMeta: (m: CallMeta) => void) => Promise<T>,
+    detail?: (result: T) => string,
+  ): Promise<T> {
+    const s: StoryStep = { key, label, startedAt: Date.now() }
+    steps.push(s)
+    emit()
+    try {
+      const result = await run((m) => {
+        s.meta = m
+      })
+      s.ms = Date.now() - s.startedAt
+      s.ok = true
+      s.detail = detail?.(result)
+      emit()
+      console.log(`[story] ${key} ${(s.ms / 1000).toFixed(1)}s`, {
+        detail: s.detail,
+        ...s.meta,
+      })
+      return result
+    } catch (e) {
+      s.ms = Date.now() - s.startedAt
+      s.ok = false
+      s.error = e instanceof Error ? e.message : String(e)
+      emit()
+      console.error(`[story] ${key} failed after ${(s.ms / 1000).toFixed(1)}s`, s.error)
+      throw e
+    }
+  }
 
   // Plot first, in English and unconstrained — then write to the plan.
-  opts.onProgress?.({ phase: 'planning' })
-  const plan = await planStory({
-    deck,
-    lengthWords,
-    topic,
-    avoidThemes,
-    beat,
-    ending,
-    continueFrom,
-  })
+  const plan = await step(
+    'plan',
+    'Working out the plot',
+    (onMeta) =>
+      planStory({ deck, lengthWords, topic, avoidThemes, beat, ending, continueFrom, onMeta }),
+    (p) => `${p.spine.length} beats · ${p.cast.length} characters`,
+  )
 
-  opts.onProgress?.({ phase: 'writing' })
   const prompt = [
     continueFrom
       ? `Below is a story in ${deck.language} that a language learner has been reading. Write the NEXT PART of it: continue seamlessly from where it ends, keeping the same characters, setting, tone and register. Advance the plot — don't recap or repeat what already happened.`
@@ -712,27 +798,40 @@ export async function generateStory(opts: {
 
   // The plot is already settled, so this pass renders rather than invents —
   // and it is the longest output in the chain, which is what has to fit.
-  let prose = await callGeminiJson<StoryProse>(prompt, STORY_SCHEMA, {
-    tier: 'pro',
-    effort: 'minimal',
-  })
+  let prose = await step(
+    'write',
+    'Writing',
+    (onMeta) =>
+      callGeminiJson<StoryProse>(prompt, STORY_SCHEMA, {
+        tier: 'pro',
+        effort: 'minimal',
+        label: 'write',
+        onMeta,
+      }),
+    (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
+  )
 
   // Models can't count their own words, so a draft routinely lands well under
   // the requested length. Measure it the same way the reader does and, while
   // it's short, ask for the missing stretch and splice it on.
-  const langCode = langCodeFor(deck.language)
   for (let pass = 0; pass < MAX_EXTENSIONS; pass++) {
     const have = countWords(prose.story, langCode)
     if (have >= lengthWords * LENGTH_TOLERANCE) break
-    opts.onProgress?.({ phase: 'extending', words: have, target: lengthWords, pass: pass + 1 })
     try {
-      prose = await extendStory({
-        deck,
-        story: prose,
-        missingWords: Math.max(40, lengthWords - have),
-        newWordPercent,
-        ending,
-      })
+      prose = await step(
+        `extend-${pass + 1}`,
+        `Making it longer (${have} of ${lengthWords} words)`,
+        (onMeta) =>
+          extendStory({
+            deck,
+            story: prose,
+            missingWords: Math.max(40, lengthWords - have),
+            newWordPercent,
+            ending,
+            onMeta,
+          }),
+        (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
+      )
     } catch {
       // A failed top-up shouldn't cost the reader the story they already have.
       break
@@ -742,15 +841,23 @@ export async function generateStory(opts: {
   // Translate and gloss last, once each, over the text as it finally stands —
   // so extensions cost nothing extra here, the English reads as one piece, and
   // no word of the story goes unglossed.
-  opts.onProgress?.({ phase: 'translating' })
-  const translation = await translateStory(deck, prose.story)
+  const translation = await step(
+    'translate',
+    'Translating',
+    (onMeta) => translateStory(deck, prose.story, onMeta),
+    (t) => `${countWords(t, 'en')} words`,
+  )
 
-  opts.onProgress?.({ phase: 'glossary' })
-  const glossary = await glossaryFor({
-    deck,
-    story: prose,
-    bankWords: [...knownWords, ...learningWords],
-  })
+  const glossary = await step(
+    'glossary',
+    'Looking up the words',
+    (onMeta) =>
+      glossaryFor({ deck, story: prose, bankWords: [...knownWords, ...learningWords], onMeta }),
+    (g) => `${g.length} entries`,
+  )
+
+  const total = steps.reduce((sum, s) => sum + (s.ms ?? 0), 0)
+  console.log(`[story] done in ${(total / 1000).toFixed(1)}s`, steps)
   return { ...prose, translation, glossary }
 }
 

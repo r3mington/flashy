@@ -13,7 +13,15 @@ import {
   type SavedStory,
   type WordStatus,
 } from '../db'
-import { defineWord, defineWords, generateStory, pickBeat, pickEnding, ApiError } from '../ai'
+import {
+  defineWord,
+  defineWords,
+  generateStory,
+  pickBeat,
+  pickEnding,
+  ApiError,
+  type StoryStep,
+} from '../ai'
 import { definable, missingDefinitions } from '../glossary'
 import { leeches } from '../stats'
 import { formatDuration } from '../time'
@@ -50,17 +58,16 @@ const WORD_STATUSES: { key: WordStatus; label: string; title: string }[] = [
   },
 ]
 
-/** What the generate button says during each pass of a story generation —
- *  plotting, writing, topping up a short draft, then translating and glossing. */
-const PHASE_LABEL: Record<StoryPhase, string> = {
-  planning: 'Working out the plot…',
-  writing: 'Writing…',
-  extending: 'Making it longer…',
-  translating: 'Translating…',
-  glossary: 'Looking up the words…',
+/** One decimal second, the unit the trace is read in. */
+function secs(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`
 }
 
-type StoryPhase = 'planning' | 'writing' | 'extending' | 'translating' | 'glossary'
+/** A token count, short enough to sit on one line next to everything else. */
+function tokens(n: number | undefined, what: string): string | null {
+  if (!n) return null
+  return `${n >= 1000 ? `${(n / 1000).toFixed(1)}k` : n} ${what}`
+}
 
 const FONT_SCALE_MIN = 0.8
 const FONT_SCALE_MAX = 1.8
@@ -102,8 +109,21 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const [loading, setLoading] = useState(false)
   /** Which generation pass is running, so the wait has a visible reason
    *  rather than just a spinner that won't stop. */
-  const [phase, setPhase] = useState<StoryPhase>('planning')
+  // The passes of the generation under way, with what each one cost. Kept after
+  // it finishes (and after it fails) so the last run can still be read.
+  const [steps, setSteps] = useState<StoryStep[]>([])
+  // Ticks while a pass is in flight so its elapsed time counts up on screen.
+  const [now, setNow] = useState(() => Date.now())
   const [error, setError] = useState('')
+
+  // Only ticks while a generation is running — a story takes long enough that a
+  // frozen number reads as a hang.
+  useEffect(() => {
+    if (!loading) return
+    const id = setInterval(() => setNow(Date.now()), 250)
+    return () => clearInterval(id)
+  }, [loading])
+
   const [story, setStory] = useState<SavedStory | null>(null)
   const [showTranslation, setShowTranslation] = useState(false)
   const [selected, setSelected] = useState<Definition | null>(null)
@@ -415,7 +435,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     const from = continuing
     const steer = direction.trim()
     setLoading(true)
-    setPhase('planning')
+    setSteps([])
     setError('')
     try {
       // Every part of the thread being continued — its own beats shouldn't be
@@ -440,7 +460,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         newWordPercent: newPercent,
         topic: from ? undefined : topic || undefined,
         lengthWords: length,
-        onProgress: (info) => setPhase(info.phase),
+        onProgress: setSteps,
         beat,
         ending,
         focusWords,
@@ -488,7 +508,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       }
     } finally {
       setLoading(false)
-      setPhase('planning')
     }
   }
 
@@ -990,6 +1009,43 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 words”, or unmark some cards.
               </p>
             )}
+            {steps.length > 0 && (
+              <ul className="story-trace">
+                {steps.map((s) => {
+                  const running = s.ms == null
+                  const detail = [
+                    s.error ?? s.detail,
+                    tokens(s.meta?.outputTokens, 'out'),
+                    tokens(s.meta?.thoughtTokens, 'thought'),
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')
+                  return (
+                    <li
+                      key={s.key}
+                      className={s.ok === false ? 'failed' : running ? 'active' : 'done'}
+                      title={s.meta?.model ? `${s.meta.model} · ${JSON.stringify(s.meta.thinking)}` : undefined}
+                    >
+                      <span className="trace-mark" aria-hidden="true">
+                        {s.ok === false ? '×' : running ? '›' : '✓'}
+                      </span>
+                      <span className="trace-label">{s.label}</span>
+                      <span className="trace-time">{secs(running ? now - s.startedAt : s.ms!)}</span>
+                      {detail && <span className="trace-detail">{detail}</span>}
+                    </li>
+                  )
+                })}
+                {!loading && (
+                  <li className="total">
+                    <span className="trace-mark" aria-hidden="true" />
+                    <span className="trace-label">Total</span>
+                    <span className="trace-time">
+                      {secs(steps.reduce((n, s) => n + (s.ms ?? 0), 0))}
+                    </span>
+                  </li>
+                )}
+              </ul>
+            )}
             {error && <p className="note error-note">{error}</p>}
             <div className="story-form-actions">
               <button className="btn ghost" onClick={onExit}>
@@ -1001,7 +1057,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 disabled={loading || bankSize === 0 || scopeEmpty}
               >
                 {loading
-                  ? PHASE_LABEL[phase]
+                  ? `${steps.find((s) => s.ms == null)?.label ?? 'Starting'}…`
                   : continuing
                     ? 'Continue story'
                     : 'Generate story'}

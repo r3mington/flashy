@@ -126,15 +126,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     effort === 'high' ? 'quality' : effort === 'minimal' ? 'fast' : thinking === true ? 'quality' : 'fast'
   const configs = THINKING_CONFIGS[mode]
   const chain = `${tier}:${mode}`
+  const label = typeof req.body?.label === 'string' ? req.body.label : 'call'
+  const started = Date.now()
+  // Logged before the work starts, so a request that times out still leaves a
+  // record of what it was attempting — the completion line never gets to run.
+  console.log(
+    JSON.stringify({ at: 'generate/start', label, tier, mode, promptChars: prompt.length }),
+  )
 
   try {
     let data
+    let model = resolvedModel[tier] ?? PREFERRED_MODEL[tier]
+    let thinkingUsed: object | null = null
+    let retries = 0
     // Walk the thinking-config chain: a 400 usually means this model generation
     // doesn't accept that config shape, so advance to the next and remember it.
     for (let attempt = 0; ; attempt++) {
       const i = Math.min(workingConfig[chain] ?? 0, configs.length - 1)
       try {
-        const model = resolvedModel[tier] ?? PREFERRED_MODEL[tier]
+        model = resolvedModel[tier] ?? PREFERRED_MODEL[tier]
+        thinkingUsed = configs[i]
+        retries = attempt
         data = await callModel(apiKey, model, prompt, schema, configs[i])
         break
       } catch (e) {
@@ -153,13 +165,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text
     if (!text) return res.status(502).json({ error: 'The model returned no usable output.' })
-    return res.status(200).json({ data: JSON.parse(text) })
+
+    const usage = data?.usageMetadata ?? {}
+    // What the call actually cost and how it was configured. `thoughtTokens` is
+    // the one that explains a slow call: it is the reasoning the model did
+    // before writing anything, and it is invisible in the output.
+    const meta = {
+      model,
+      thinking: thinkingUsed ?? 'model default',
+      ms: Date.now() - started,
+      promptTokens: usage.promptTokenCount,
+      outputTokens: usage.candidatesTokenCount,
+      thoughtTokens: usage.thoughtsTokenCount,
+      finishReason: data?.candidates?.[0]?.finishReason,
+      retries,
+    }
+    console.log(JSON.stringify({ at: 'generate/done', label, tier, ...meta }))
+    return res.status(200).json({ data: JSON.parse(text), meta })
   } catch (e) {
+    const ms = Date.now() - started
     if (e instanceof UpstreamError) {
       // Don't leak upstream auth details; map key problems to a server error.
       const status = e.status === 401 || e.status === 403 ? 500 : e.status
+      console.error(JSON.stringify({ at: 'generate/fail', label, tier, ms, status, message: e.message }))
       return res.status(status).json({ error: e.message })
     }
+    console.error(
+      JSON.stringify({
+        at: 'generate/fail',
+        label,
+        tier,
+        ms,
+        message: e instanceof Error ? e.message : String(e),
+      }),
+    )
     return res.status(500).json({ error: 'Generation failed.' })
   }
 }

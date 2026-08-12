@@ -1615,6 +1615,42 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 
 /* ---- Story page ---- */
 .story-form { max-width: 560px; }
+/* ---- Generation trace ----
+   What each pass of a story generation is doing and what it cost. A story is a
+   long enough wait that a single spinner reads as a hang, and long enough to
+   time out, so the passes are named and timed rather than hidden. */
+.story-trace {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.story-trace li {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  gap: 0 8px;
+  align-items: baseline;
+  padding: 3px 0;
+  color: var(--ink-2);
+}
+.story-trace .trace-mark { text-align: center; opacity: 0.7; }
+.story-trace li.active { color: var(--ink); }
+.story-trace li.active .trace-mark { color: var(--accent); }
+.story-trace li.done .trace-mark { color: var(--accent); }
+.story-trace li.failed { color: var(--red); }
+.story-trace li.failed .trace-mark { color: inherit; }
+.story-trace li.total { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 8px; color: var(--ink); }
+.story-trace .trace-time { text-align: right; }
+/* Detail sits under the label, in the same column, so rows stay one line wide
+   on a phone however long the counts get. */
+.story-trace .trace-detail {
+  grid-column: 2 / -1;
+  font-size: 11px;
+  opacity: 0.75;
+}
+
 .story-form-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
 .story-page { max-width: 640px; }
 .story-page .story-body { font-size: 17px; line-height: 1.9; }
