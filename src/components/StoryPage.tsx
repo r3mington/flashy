@@ -1015,6 +1015,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   const running = s.ms == null
                   const detail = [
                     s.error ?? s.detail,
+                    (s.meta?.passes ?? 1) > 1 ? `${s.meta!.passes} passes` : null,
                     tokens(s.meta?.outputTokens, 'out'),
                     tokens(s.meta?.thoughtTokens, 'thought'),
                   ]

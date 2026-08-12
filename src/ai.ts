@@ -39,6 +39,8 @@ export interface CallMeta {
   thoughtTokens?: number
   finishReason?: string
   retries?: number
+  /** How many calls the pass took, when it was split into parallel pieces. */
+  passes?: number
 }
 
 async function callGeminiJson<T>(
@@ -478,11 +480,63 @@ async function translateStory(
   return parsed.translation ?? ''
 }
 
+/** Roughly how much story one glossary call can cover inside the function's
+ *  time budget. The glossary is by far the largest output in the pipeline —
+ *  every distinct word of the story paired with a meaning runs to several times
+ *  the token count of the story itself — so this is the call that reaches the
+ *  60-second limit first, and the only thing that shrinks it is covering less
+ *  text per call. */
+export const GLOSSARY_CHUNK_WORDS = 300
+
+/** Break a story into pieces small enough to gloss in one call each, preferring
+ *  paragraph boundaries, falling back to sentence boundaries for a paragraph
+ *  oversized on its own, then grouping back up so short paragraphs share a
+ *  call. Sense comes from the surrounding sentence, which stays intact either
+ *  way, so splitting costs the glossary nothing. */
+export function splitForGlossary(text: string, langCode: string | null): string[] {
+  const pieces: string[] = []
+  for (const para of text
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean)) {
+    if (countWords(para, langCode) <= GLOSSARY_CHUNK_WORDS) {
+      pieces.push(para)
+      continue
+    }
+    let buf = ''
+    for (const sentence of para.split(/(?<=[.!?…”"])\s+/)) {
+      if (buf && countWords(`${buf} ${sentence}`, langCode) > GLOSSARY_CHUNK_WORDS) {
+        pieces.push(buf)
+        buf = sentence
+      } else {
+        buf = buf ? `${buf} ${sentence}` : sentence
+      }
+    }
+    if (buf) pieces.push(buf)
+  }
+
+  const chunks: string[] = []
+  let current = ''
+  for (const piece of pieces) {
+    if (current && countWords(`${current}\n\n${piece}`, langCode) > GLOSSARY_CHUNK_WORDS) {
+      chunks.push(current)
+      current = piece
+    } else {
+      current = current ? `${current}\n\n${piece}` : piece
+    }
+  }
+  if (current) chunks.push(current)
+  return chunks.length > 0 ? chunks : [text]
+}
+
 /** Gloss a finished story: every word of it, in the surface form it appears
  *  in, so a reader can tap anything. Split out of the writing call — annotating
  *  a text that already exists is a different, easier job than predicting the
  *  glossary of a text being written, and it leaves the writing call free to
- *  spend its whole output on prose. */
+ *  spend its whole output on prose.
+ *
+ *  Long stories are glossed in parallel pieces, so the pass costs about as much
+ *  wall-clock as its slowest piece rather than the sum of all of them. */
 async function glossaryFor(opts: {
   deck: Deck
   story: StoryProse
@@ -490,24 +544,57 @@ async function glossaryFor(opts: {
   onMeta?: (m: CallMeta) => void
 }): Promise<GlossaryEntry[]> {
   const { deck, story, bankWords, onMeta } = opts
-  const prompt = [
-    `Below is a finished story in ${deck.language}, written for a language learner who reads it by tapping words for their meanings. Build the lookup glossary for it.`,
-    `Story:\n${story.story}`,
-    `List EVERY distinct word that appears in the text above — content words AND function words (pronouns, prepositions, particles, connectives, numbers, everything), including character names. Use the exact surface form used in the text (keep inflected, conjugated and affixed forms as they appear; do not reduce them to dictionary form). Give each a concise English meaning matching the sense it carries in that sentence, not its most common sense in isolation.`,
-    `The reader must be able to look up any single word of the story and find it here. Do not skip words that seem obvious, and do not add words that do not appear in the text.`,
-    bankWords.length > 0
-      ? `The learner's word bank: ${bankWords.join(', ')}. Set isNew=true only for content words (nouns, verbs, adjectives, adverbs) outside this bank. Function words are never isNew, and neither are personal names${story.characterNames?.length ? ` (${story.characterNames.join(', ')})` : ''}.`
-      : `Set isNew=true only for content words (nouns, verbs, adjectives, adverbs); function words and personal names are never isNew.`,
-    ROMAN_RULE(deck.language, 'every glossary entry'),
-  ]
-    .filter(Boolean)
-    .join('\n')
+  const chunks = splitForGlossary(story.story, langCodeFor(deck.language))
 
-  const parsed = await callGeminiJson<{ glossary: GlossaryEntry[] }>(prompt, GLOSSARY_SCHEMA, {
-    label: 'glossary',
-    onMeta,
+  const promptFor = (chunk: string) =>
+    [
+      chunks.length > 1
+        ? `Below is an EXTRACT from a story in ${deck.language}, written for a language learner who reads it by tapping words for their meanings. Build the lookup glossary for this extract. Other extracts are handled separately — cover only the words below.`
+        : `Below is a finished story in ${deck.language}, written for a language learner who reads it by tapping words for their meanings. Build the lookup glossary for it.`,
+      `Text:\n${chunk}`,
+      `List EVERY distinct word that appears in the text above — content words AND function words (pronouns, prepositions, particles, connectives, numbers, everything), including character names. Use the exact surface form used in the text (keep inflected, conjugated and affixed forms as they appear; do not reduce them to dictionary form). Give each a concise English meaning matching the sense it carries in that sentence, not its most common sense in isolation.`,
+      `The reader must be able to look up any single word of the text and find it here. Do not skip words that seem obvious, and do not add words that do not appear in the text.`,
+      bankWords.length > 0
+        ? `The learner's word bank: ${bankWords.join(', ')}. Set isNew=true only for content words (nouns, verbs, adjectives, adverbs) outside this bank. Function words are never isNew, and neither are personal names${story.characterNames?.length ? ` (${story.characterNames.join(', ')})` : ''}.`
+        : `Set isNew=true only for content words (nouns, verbs, adjectives, adverbs); function words and personal names are never isNew.`,
+      ROMAN_RULE(deck.language, 'every glossary entry'),
+    ]
+      .filter(Boolean)
+      .join('\n')
+
+  const metas: CallMeta[] = []
+  const lists = await Promise.all(
+    chunks.map((chunk, i) =>
+      callGeminiJson<{ glossary: GlossaryEntry[] }>(promptFor(chunk), GLOSSARY_SCHEMA, {
+        label: chunks.length > 1 ? `glossary-${i + 1}/${chunks.length}` : 'glossary',
+        onMeta: (m) => metas.push(m),
+      }).then((p) => p.glossary ?? []),
+    ),
+  )
+
+  const sum = (pick: (m: CallMeta) => number | undefined) =>
+    metas.reduce((n, m) => n + (pick(m) ?? 0), 0)
+  onMeta?.({
+    model: metas[0]?.model,
+    thinking: metas[0]?.thinking,
+    // The pieces ran together, so the pass cost the slowest of them, not the sum.
+    ms: Math.max(0, ...metas.map((m) => m.ms ?? 0)),
+    promptTokens: sum((m) => m.promptTokens),
+    outputTokens: sum((m) => m.outputTokens),
+    thoughtTokens: sum((m) => m.thoughtTokens),
+    passes: chunks.length,
   })
-  return parsed.glossary ?? []
+
+  // First mention of a word wins: the pieces share one bank list, so they agree
+  // about what is new, and the earliest use is the one the reader meets first.
+  const merged = new Map<string, GlossaryEntry>()
+  for (const list of lists) {
+    for (const entry of list) {
+      const key = entry.word?.trim().toLowerCase()
+      if (key && !merged.has(key)) merged.set(key, entry)
+    }
+  }
+  return [...merged.values()]
 }
 
 /** Grow a story that came back short: hand the draft back and ask for the
@@ -881,13 +968,23 @@ export async function generateStory(opts: {
     (t) => `${countWords(t, 'en')} words`,
   )
 
-  const glossary = await step(
-    'glossary',
-    'Looking up the words',
-    (onMeta) =>
-      glossaryFor({ deck, story: prose, bankWords: [...knownWords, ...learningWords], onMeta }),
-    (g) => `${g.length} entries`,
-  )
+  // The glossary is the one pass that may fail without costing the reader the
+  // story. It is the largest output and it runs last, so a story that is fully
+  // written and translated would otherwise be thrown away over its lookup
+  // table — and the reader can still tap any word, because `defineWords` fills
+  // in whatever the glossary is missing, on demand, as they read.
+  let glossary: GlossaryEntry[] = []
+  try {
+    glossary = await step(
+      'glossary',
+      'Looking up the words',
+      (onMeta) =>
+        glossaryFor({ deck, story: prose, bankWords: [...knownWords, ...learningWords], onMeta }),
+      (g) => `${g.length} entries`,
+    )
+  } catch {
+    console.warn('[story] glossary failed — the story stands, words resolve on tap instead')
+  }
 
   const total = steps.reduce((sum, s) => sum + (s.ms ?? 0), 0)
   console.log(`[story] done in ${(total / 1000).toFixed(1)}s`, steps)
