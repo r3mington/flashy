@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, inRotation } from '../db'
+import { BUILD, buildLabel } from '../build'
 import { ContinueReading } from './ContinueReading'
 
 interface Props {
@@ -84,6 +85,12 @@ export function DeckList({ onOpen, onOpenStory }: Props) {
           })}
         </div>
       )}
+
+      {/* Which build is actually running. Worth having on screen: the app is a
+          PWA, so what a phone is running can lag a deploy by a reload. */}
+      <p className="build-stamp" title={`${BUILD.env} · built ${BUILD.builtAt}`}>
+        {buildLabel()}
+      </p>
 
       {creating && (
         <div className="overlay" onClick={() => setCreating(false)}>

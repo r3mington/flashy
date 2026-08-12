@@ -1615,6 +1615,17 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 
 /* ---- Story page ---- */
 .story-form { max-width: 560px; }
+/* Which build is running — deliberately quiet, and selectable so it can be
+   copied into a bug report or a `vercel inspect`. */
+.build-stamp {
+  margin-top: 32px;
+  font-size: 11px;
+  color: var(--ink-2);
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+  user-select: text;
+}
+
 /* ---- Generation trace ----
    What each pass of a story generation is doing and what it cost. A story is a
    long enough wait that a single spinner reads as a hang, and long enough to
