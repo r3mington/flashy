@@ -52,6 +52,33 @@ async function callGeminiJson<T>(
     onMeta?: (meta: CallMeta) => void
   } = {},
 ): Promise<T> {
+  const tier = opts.tier ?? 'fast'
+  try {
+    return await postJson<T>(prompt, schema, { ...opts, tier })
+  } catch (e) {
+    // The function has a hard 60-second budget, and the pro model's latency
+    // does not respect it reliably. A pro call that runs out of time still has
+    // somewhere to go: the same prompt on the fast model. A plainer story beats
+    // no story, and the trace records which model actually answered.
+    const ranOutOfTime = e instanceof ApiError && (e.status === 504 || e.status === 502)
+    if (ranOutOfTime && tier === 'pro') {
+      console.warn(`[story] ${opts.label ?? 'call'} timed out on pro — retrying on fast`)
+      return postJson<T>(prompt, schema, { ...opts, tier: 'fast' })
+    }
+    throw e
+  }
+}
+
+async function postJson<T>(
+  prompt: string,
+  schema: object,
+  opts: {
+    tier: 'fast' | 'pro'
+    effort?: 'minimal' | 'high'
+    label?: string
+    onMeta?: (meta: CallMeta) => void
+  },
+): Promise<T> {
   const thinking = await thinkingEnabled()
   let res: Response
   try {
@@ -62,7 +89,7 @@ async function callGeminiJson<T>(
         prompt,
         schema,
         thinking,
-        tier: opts.tier ?? 'fast',
+        tier: opts.tier,
         effort: opts.effort,
         label: opts.label,
       }),
@@ -641,9 +668,15 @@ async function planStory(opts: {
     .join('\n')
 
   // The one call worth thinking through: it returns a few hundred words and
-  // decides everything the writing pass then only has to render.
+  // decides everything the writing pass then only has to render. It runs on the
+  // FAST model with thinking turned all the way up, which is the opposite of
+  // what it looks like it should be — the pro model at high effort took over 60
+  // seconds on a 2.5KB prompt and lost the whole generation to the function
+  // timeout, having taken 15 seconds for the same work an hour earlier. What
+  // plotting needs is the reasoning, not the bigger model, and the fast one
+  // does it inside a budget we actually have.
   const plan = await callGeminiJson<StoryPlan>(prompt, PLAN_SCHEMA, {
-    tier: 'pro',
+    tier: 'fast',
     effort: 'high',
     label: 'plan',
     onMeta,
