@@ -441,6 +441,89 @@ function lengthSpec(lengthWords: number): string {
   ].join(' ')
 }
 
+/** How hard the story's vocabulary may be.
+ *
+ *  This replaced a "at most N% of the content words may be new" quota, which
+ *  asked the model for the one thing it cannot do: count content words as it
+ *  writes, diff each against a several-hundred-word bank, and hold a running
+ *  ratio. Nothing measured the result either, so the number was simply ignored
+ *  — a story asked for 2% new words came back with a tenth of its vocabulary
+ *  outside the bank, and a plot to match.
+ *
+ *  A frequency band asks for a register instead. It applies at each individual
+ *  word choice, locally, with no bookkeeping, and it is a register the model
+ *  has seen an enormous amount of: graded readers, CEFR-levelled material,
+ *  simple-language encyclopaedias. It cannot promise that word #1001 never
+ *  appears — but a miss at this level is another easy word, where a missed
+ *  quota was a story the reader could not read at all. */
+export type VocabLevel = 1 | 2 | 3 | 4
+
+export interface VocabBand {
+  level: VocabLevel
+  /** Button label in the story form. */
+  label: string
+  /** Size of the frequency band, in words — quoted to the model directly. */
+  commonWords: number
+  /** CEFR level. An anchor the model knows by name, and on its own a stronger
+   *  signal than the word count: "A2" is a register it has read; "the top 1000
+   *  words of Indonesian" is a list it does not actually hold. */
+  cefr: string
+  /** What picking this feels like to read. */
+  hint: string
+}
+
+export const VOCAB_BANDS: VocabBand[] = [
+  {
+    level: 1,
+    label: 'Simplest',
+    commonWords: 500,
+    cefr: 'CEFR A1',
+    hint: 'Only the most basic everyday words, in short plain sentences.',
+  },
+  {
+    level: 2,
+    label: 'Easy',
+    commonWords: 1000,
+    cefr: 'CEFR A2',
+    hint: 'The words of ordinary daily conversation — a beginner graded reader.',
+  },
+  {
+    level: 3,
+    label: 'Medium',
+    commonWords: 2000,
+    cefr: 'CEFR B1',
+    hint: 'Everyday vocabulary with room for a little more range.',
+  },
+  {
+    level: 4,
+    label: 'Richer',
+    commonWords: 4000,
+    cefr: 'CEFR B2',
+    hint: 'A fuller vocabulary — expect words you have not met.',
+  },
+]
+
+/** Easy by default: the band someone reading a story built from their own word
+ *  bank actually wants. */
+export const DEFAULT_VOCAB_LEVEL: VocabLevel = 2
+
+export function bandFor(level: VocabLevel): VocabBand {
+  return VOCAB_BANDS.find((b) => b.level === level) ?? VOCAB_BANDS[1]
+}
+
+/** The vocabulary instruction: a ceiling on which words may exist at all,
+ *  never a quota over how many are new. Narration gets its own line because
+ *  that is where hard words creep back in once the dialogue is safely simple. */
+function vocabSpec(language: string, band: VocabBand): string {
+  return [
+    `VOCABULARY — a hard requirement, and the difficulty dial for this story.`,
+    `Write at ${band.cefr}: build it from the ${band.commonWords} most common words of ${language} — the everyday words a native speaker uses in ordinary conversation, the vocabulary of a graded reader at this level.`,
+    `Whenever a word would be literary, formal, technical, bookish or merely uncommon, it is out of bounds: say the same thing with a plainer word, or with several simple words in place of one hard one. A story that says something a little more plainly than you intended is correct; a story with a word the reader cannot read is not.`,
+    `This applies to NARRATION as much as to dialogue — narration is where hard words creep back in once the dialogue is simple.`,
+    `Test every word against this: would someone a few months into learning ${language} know it? If not, replace it.`,
+  ].join(' ')
+}
+
 const EXTEND_SCHEMA = {
   type: 'OBJECT',
   properties: {
@@ -604,13 +687,13 @@ async function extendStory(opts: {
   deck: Deck
   story: StoryProse
   missingWords: number
-  newWordPercent: number
+  band: VocabBand
   /** The ending the part was planned for — the continuation becomes the new
    *  ending, so it has to land the same way. */
   ending: StoryEnding
   onMeta?: (m: CallMeta) => void
 }): Promise<StoryProse> {
-  const { deck, story, missingWords, newWordPercent, ending, onMeta } = opts
+  const { deck, story, missingWords, band, ending, onMeta } = opts
   const prompt = [
     `Below is a story in ${deck.language} written for a language learner. It stopped too early — it needs about ${missingWords} more words.`,
     `Story so far, titled "${story.title}":\n${story.story}`,
@@ -621,7 +704,8 @@ async function extendStory(opts: {
     // missing, so it has no licence to grow the cast.
     `Do NOT introduce any new named character. Work with the people already in the story above.`,
     `IMPORTANT — register: casual, everyday spoken ${deck.language}, matching the story above. Keep dialogue inside quotation marks “…”.`,
-    `At most ${newWordPercent}% of the content words may be new words the learner has not met; prefer the vocabulary already used above.`,
+    vocabSpec(deck.language, band),
+    `Lean on the vocabulary the story above already uses — the reader has just read it.`,
     ending === 'payoff'
       ? `ENDING — the continuation must answer ONE of the questions the story has been carrying, shown as a scene rather than explained, and then raise a new one in its last line. Never wrap the story up.`
       : `ENDING — the continuation must end on a hook, unresolved: an interruption, a reveal, an arrival, or a question the reader cannot answer. Never wrap the story up.`,
@@ -687,13 +771,19 @@ const PLAN_SCHEMA = {
  *  planted twist requires knowing the ending before writing the first line,
  *  which a single forward pass cannot do.
  *
- *  The plan is made in ENGLISH and deliberately ignores the learner's
- *  vocabulary: the word bank is a ceiling on what the story can SAY, and left
- *  in place at this stage it silently becomes a ceiling on what can HAPPEN.
- *  Invent freely here; the writing pass renders it under constraint. */
+ *  The plan is made in ENGLISH and the learner's own word bank is deliberately
+ *  kept out of it: the bank is a ceiling on what the story can SAY, and left in
+ *  place at this stage it silently becomes a ceiling on what can HAPPEN.
+ *
+ *  The difficulty band, though, does belong here. A plan is a choice of world
+ *  as much as of plot, and a world chosen without it — a storm, a betrayal, a
+ *  forest ranger's post — cannot be rendered in beginner vocabulary however
+ *  firmly the writing pass is told to try. It will simply reach for the words
+ *  the plan needs. So the plot stays free and the WORLD gets constrained. */
 async function planStory(opts: {
   deck: Deck
   lengthWords: number
+  band: VocabBand
   topic?: string
   avoidThemes: string[]
   beat?: string
@@ -701,14 +791,16 @@ async function planStory(opts: {
   continueFrom?: { title: string; story: string; direction?: string; bible?: StoryBible }
   onMeta?: (m: CallMeta) => void
 }): Promise<StoryPlan> {
-  const { deck, lengthWords, topic, avoidThemes, beat, ending, continueFrom, onMeta } = opts
+  const { deck, lengthWords, band, topic, avoidThemes, beat, ending, continueFrom, onMeta } = opts
   const bible = continueFrom?.bible
   // Enough beats to fill the length with events rather than with padding.
   const beats = Math.max(4, Math.min(7, Math.round(lengthWords / 150)))
 
   const prompt = [
     `Plan a short story that will afterwards be written in ${deck.language} for a language learner. PLAN ONLY — do not write any prose.`,
-    `Plan in English, and plan freely: this stage is NOT limited by the learner's vocabulary. Decide what would make the best story; rendering it in simple ${deck.language} is a later problem.`,
+    `Plan in English. The PLOT is free — the learner's own word bank is no limit here, and the turn should be as sharp as you can make it.`,
+    `The WORLD is not free. This story will be written in very simple ${deck.language} (${band.cefr}, from the ${band.commonWords} most common words), so plan something that can actually be TOLD that way: an everyday setting, concrete objects a beginner can name, things people plainly do and say. A plan whose events can only be described with specialist vocabulary cannot be written at this level, however good it is — so no courtrooms, hospitals, war, politics, business, technology, crime procedure or the supernatural.`,
+    `This costs the drama nothing. A small lie, a missing object, an overheard conversation, a deadline, a stranger at the door, someone caught where they should not be — all of these land completely in simple words. Find the sharp turn inside an ordinary world.`,
     continueFrom
       ? `This is the NEXT PART of a story already under way. Plan what happens next — do not re-plan what already happened.`
       : '',
@@ -780,8 +872,8 @@ export async function generateStory(opts: {
   deck: Deck
   knownWords: string[]
   learningWords: string[]
-  /** 0–100: share of the story's content vocabulary allowed to be outside the word bank. */
-  newWordPercent: number
+  /** How hard the story's vocabulary may be (see `VOCAB_BANDS`). */
+  vocabLevel: VocabLevel
   topic?: string
   lengthWords: number
   /** Titles/topics of the learner's previous stories — steer clear of their themes. */
@@ -801,11 +893,12 @@ export async function generateStory(opts: {
    *  UI can show what the wait is for and what each pass cost. */
   onProgress?: (steps: StoryStep[]) => void
 }): Promise<Story> {
-  const { deck, knownWords, learningWords, newWordPercent, topic, lengthWords } = opts
+  const { deck, knownWords, learningWords, vocabLevel, topic, lengthWords } = opts
   const { avoidThemes = [], continueFrom, beat, focusWords = [], ending = 'hook' } = opts
 
   const bible = continueFrom?.bible
   const langCode = langCodeFor(deck.language)
+  const band = bandFor(vocabLevel)
 
   const steps: StoryStep[] = []
   const emit = () => opts.onProgress?.(steps.map((s) => ({ ...s })))
@@ -850,7 +943,7 @@ export async function generateStory(opts: {
     'plan',
     'Working out the plot',
     (onMeta) =>
-      planStory({ deck, lengthWords, topic, avoidThemes, beat, ending, continueFrom, onMeta }),
+      planStory({ deck, lengthWords, band, topic, avoidThemes, beat, ending, continueFrom, onMeta }),
     (p) => `${p.spine.length} beats · ${p.cast.length} characters`,
   )
 
@@ -889,6 +982,7 @@ export async function generateStory(opts: {
       ? `PLANT: ${plan.plant} Put it in early, inside an ordinary-looking detail, and never draw attention to it — the reader should walk past it and only realise later.`
       : '',
     lengthSpec(lengthWords),
+    vocabSpec(deck.language, band),
     `IMPORTANT — register: use casual, everyday conversational ${deck.language}, the way people actually talk in daily life. Prefer informal forms over formal ones (for example, in Indonesian say "aku", not "saya"). No formal, literary, or textbook language.`,
     `STYLE — dialogue-first: tell the story mainly through conversation. At least half of the words should be inside spoken lines, as short, natural back-and-forth exchanges between the characters; keep narration to brief connective sentences. Always wrap spoken lines in quotation marks “…” (never dashes), so dialogue is machine-detectable.`,
     `TEXTURE: each scene gets exactly ONE concrete physical detail — a smell, a sound, a texture, a temperature, something someone is holding — in a single short sentence. One per scene, never a descriptive paragraph, and make it specific ("the rice was still too hot to hold") rather than general ("it was a nice day").`,
@@ -896,14 +990,19 @@ export async function generateStory(opts: {
     // head: every extra name is another thing to decode. The plan already caps
     // it; this keeps the writing pass from quietly adding walk-on names.
     `CHARACTERS: refer to the people above by the names the plan gives them — never as "the man", "my friend", "the seller" and so on. Do NOT name anyone the plan does not name: everyone else stays unnamed and off-stage, mentioned in passing at most. Return every personal name used in the story in the characterNames array.`,
-    `The learner's word bank is below. Build the story primarily from these words (plus basic function words like articles, pronouns and common connectives, which are always allowed).`,
+    // The bank is a preference, not a second ceiling. The common-word band
+    // above already decides how hard the story is; this decides which of the
+    // easy words it reaches for first, so the reader keeps meeting their own
+    // vocabulary. Told as a limit instead, it produced contorted prose working
+    // around perfectly ordinary words the learner happened not to have carded.
+    `THE LEARNER'S WORD BANK — a preference, not a limit. Within the common words allowed above, reach for these first: they are exactly what the reader is learning, and meeting them in a story is the point of it.`,
     knownWords.length > 0
       ? `Known words — use these freely and often: ${knownWords.join(', ')}`
       : '',
     learningWords.length > 0
       ? `Words being learned — weave in as many of these as possible for practice: ${learningWords.join(', ')}`
       : '',
-    `At most ${newWordPercent}% of the content words (nouns, verbs, adjectives, adverbs) may be NEW words outside the word bank. ${newWordPercent === 0 ? 'Use no new content words at all.' : 'Prefer common, useful new words at the learner’s level.'}`,
+    `Where the story needs something the bank does not cover, just use the most common everyday ${deck.language} word for it. Do NOT contort a sentence to avoid an ordinary word, and do NOT reach past the band above to find one.`,
     focusWords.length > 0
       ? `PLOT-CRITICAL VOCABULARY: these are words the learner keeps forgetting — ${focusWords.join(', ')}. Each one must appear at least three times, in different sentences and different situations, and at least one of them must matter to the plot (it names the thing that goes missing, the place they must reach, the thing someone wants). Never draw attention to them or define them in the text; just make the story impossible to follow without them.`
       : '',
@@ -946,7 +1045,7 @@ export async function generateStory(opts: {
             deck,
             story: prose,
             missingWords: Math.max(40, lengthWords - have),
-            newWordPercent,
+            band,
             ending,
             onMeta,
           }),

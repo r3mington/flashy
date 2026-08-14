@@ -20,7 +20,11 @@ import {
   pickBeat,
   pickEnding,
   ApiError,
+  VOCAB_BANDS,
+  DEFAULT_VOCAB_LEVEL,
+  bandFor,
   type StoryStep,
+  type VocabLevel,
 } from '../ai'
 import { definable, missingDefinitions } from '../glossary'
 import { leeches } from '../stats'
@@ -102,7 +106,7 @@ interface Definition {
 export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const [topic, setTopic] = useState('')
   const [length, setLength] = useState(150)
-  const [newPercent, setNewPercent] = useState(10)
+  const [vocabLevel, setVocabLevel] = useState<VocabLevel>(DEFAULT_VOCAB_LEVEL)
   // 'all' — draw on every word in the deck; 'learning' — only words not yet
   // marked known (the ones you haven't learnt yet).
   const [scope, setScope] = useState<'all' | 'learning'>('all')
@@ -457,7 +461,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         // build it only from the ones still being learned.
         knownWords: scope === 'all' ? cards!.filter((c) => c.known).map((c) => c.word) : [],
         learningWords: cards!.filter(inRotation).map((c) => c.word),
-        newWordPercent: newPercent,
+        vocabLevel,
         topic: from ? undefined : topic || undefined,
         lengthWords: length,
         onProgress: setSteps,
@@ -801,12 +805,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     })
   }
 
-  // Move the deck card matching a tapped word between the four statuses.
-  async function setWordStatus(word: string, status: WordStatus) {
-    const card = (cards ?? []).find((c) => defKey(c.word) === defKey(word))
-    if (card) await setCardStatus([card.id], status)
-  }
-
   // Words worth surfacing under the story. The glossary now holds EVERY word
   // (function words included), so require the model's content-word isNew flag —
   // otherwise "ke", "dan" etc. would flood the list — and still drop anything
@@ -868,8 +866,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     saveSettings({ storyRoman: next })
   }
 
+  // Resolve through the same roots the highlighting uses, not an exact match.
+  // On an exact match only, an inflected form of a word you own ("menjawab"
+  // when "jawab" is carded) rendered as plain prose — correctly — but the sheet
+  // found no card and offered to add it, so the text and the sheet disagreed
+  // about whether you already knew it.
   const selectedCard = selected
-    ? (cards ?? []).find((c) => defKey(c.word) === defKey(selected.word))
+    ? (() => {
+        const key = defKey(selected.word)
+        const deckKey = resolveDeckKey(key)
+        return deckKey ? cardByKey.get(deckKey) : undefined
+      })()
     : undefined
   const selectedInDeck = !!selectedCard
 
@@ -975,18 +982,25 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               />
             </div>
             <div className="field">
-              <label htmlFor="story-new">
-                New words allowed · {newPercent}% {newPercent === 0 ? '(word bank only)' : ''}
-              </label>
-              <input
-                id="story-new"
-                type="range"
-                min={0}
-                max={30}
-                step={1}
-                value={newPercent}
-                onChange={(e) => setNewPercent(Number(e.target.value))}
-              />
+              <label>Difficulty</label>
+              <div className="seg-control">
+                {VOCAB_BANDS.map((b) => (
+                  <button
+                    key={b.level}
+                    type="button"
+                    className={vocabLevel === b.level ? 'on' : ''}
+                    title={b.hint}
+                    onClick={() => setVocabLevel(b.level)}
+                  >
+                    {b.label}
+                  </button>
+                ))}
+              </div>
+              <p className="note">
+                {bandFor(vocabLevel).hint} Written from the ~
+                {bandFor(vocabLevel).commonWords} most common words of {deck.language}, leaning on
+                your own words wherever they fit.
+              </p>
             </div>
             <p className="note">
               {continuing
@@ -1602,7 +1616,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                         key={s.key}
                         className={statusOf(selectedCard) === s.key ? 'on' : ''}
                         title={s.title}
-                        onClick={() => setWordStatus(selected.word, s.key)}
+                        onClick={() => setCardStatus([selectedCard.id], s.key)}
                       >
                         {s.label}
                       </button>
