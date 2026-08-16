@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { GLOSSARY_CHUNK_WORDS, pickEnding, splitForGlossary } from './ai'
+import {
+  GLOSSARY_CHUNK_WORDS,
+  SIMPLIFY_CHUNK_WORDS,
+  groupParagraphs,
+  pickEnding,
+  splitForGlossary,
+  swappedWords,
+} from './ai'
 import { countWords } from './text'
 
 /** A paragraph of roughly `n` words, distinct enough to spot in a chunk. */
@@ -41,6 +48,54 @@ describe('splitForGlossary', () => {
   it('never returns nothing, whatever it is handed', () => {
     expect(splitForGlossary('', 'id')).toEqual([''])
     expect(splitForGlossary('halo', 'id')).toEqual(['halo'])
+  })
+})
+
+describe('groupParagraphs', () => {
+  // The simplification pass replaces the story with the joined chunks, so a
+  // split that cannot be rejoined faithfully would silently reshape the prose.
+  it('rejoins to exactly the original story', () => {
+    const story = Array.from({ length: 9 }, (_, i) => para(120, `p${i}_`)).join('\n\n')
+    expect(groupParagraphs(story, 'id', SIMPLIFY_CHUNK_WORDS).join('\n\n')).toBe(story)
+  })
+
+  it('never splits a paragraph, even one over the budget', () => {
+    // A single paragraph past the budget has to survive whole: half a paragraph
+    // handed to the editor would come back edited as if it were the end of one.
+    const huge = para(900, 'big')
+    expect(groupParagraphs(huge, 'id', SIMPLIFY_CHUNK_WORDS)).toEqual([huge])
+  })
+
+  it('stays inside the budget wherever the paragraphs allow it', () => {
+    const story = Array.from({ length: 9 }, (_, i) => para(120, `p${i}_`)).join('\n\n')
+    const chunks = groupParagraphs(story, 'id', SIMPLIFY_CHUNK_WORDS)
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const chunk of chunks) {
+      expect(countWords(chunk, 'id')).toBeLessThanOrEqual(SIMPLIFY_CHUNK_WORDS)
+    }
+  })
+
+  it('never returns nothing, whatever it is handed', () => {
+    expect(groupParagraphs('', 'id', SIMPLIFY_CHUNK_WORDS)).toEqual([''])
+    expect(groupParagraphs('halo', 'id', SIMPLIFY_CHUNK_WORDS)).toEqual(['halo'])
+  })
+})
+
+describe('swappedWords', () => {
+  it('counts the distinct words the pass removed', () => {
+    const before = 'Mata tetua itu menatap tajam ke arah tas.'
+    const after = 'Mata orang tua itu melihat ke arah tas.'
+    // tetua, menatap and tajam are gone; "orang" arriving does not count.
+    expect(swappedWords(before, after, 'id')).toBe(3)
+  })
+
+  it('reports nothing when the pass changed nothing', () => {
+    const text = 'Dia pergi ke pasar dan membeli nasi.'
+    expect(swappedWords(text, text, 'id')).toBe(0)
+  })
+
+  it('ignores punctuation and case', () => {
+    expect(swappedWords('Dia pergi.', 'dia pergi!', 'id')).toBe(0)
   })
 })
 

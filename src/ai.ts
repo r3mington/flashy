@@ -1,6 +1,6 @@
 import { db, type Deck, type StoryBible } from './db'
 import { langCodeFor } from './speech'
-import { countWords } from './text'
+import { countWords, tokenizeWords } from './text'
 
 export interface Suggestion {
   word: string
@@ -511,17 +511,45 @@ export function bandFor(level: VocabLevel): VocabBand {
   return VOCAB_BANDS.find((b) => b.level === level) ?? VOCAB_BANDS[1]
 }
 
-/** The vocabulary instruction: a ceiling on which words may exist at all,
- *  never a quota over how many are new. Narration gets its own line because
- *  that is where hard words creep back in once the dialogue is safely simple. */
+/** Bookish Indonesian: the register a model slides into when it is asked for a
+ *  "story" rather than for speech. The generic register line asks for casual
+ *  language and names one example (aku/saya), which turned out not to reach any
+ *  of these. Every item here is a form that actually came back in a story
+ *  generated at the easiest band. */
+const ID_STORY_BANNED = [
+  `Never use the honorific "beliau" — "dia" for everyone, whatever their age or standing.`,
+  `Never use "tersebut" or other written-register back-references. Repeat the noun, or use "itu".`,
+  `Never use written-register connectives: sehingga, namun, oleh karena itu, adapun, dengan demikian, seraya, sembari.`,
+  `Never use reduplication for plurals or for "the gaps in" (buku-buku, sela-sela) — say it a plainer way.`,
+  `Take the commonest synonym every single time, never the more exact or more elegant one: "tiba-tiba" not "mendadak", "sepi" not "sunyi", "melihat" not "menatap", "orang tua" not "tetua", "pintu" not "gerbang", "tas" not "ransel", "keluar dari" not "menyembul".`,
+]
+
+/** The vocabulary instruction: a ceiling on which words may exist at all, never
+ *  a quota over how many are new.
+ *
+ *  Three of these lines exist because of specific words that got through at the
+ *  easiest band. Narration, because the dialogue came back simple and the prose
+ *  around it did not. Physical description, because a story told to make its
+ *  details SPECIFIC will reach for the exact word for a thing, and the exact
+ *  word for a thing is nearly always a rare one — that single pull produced
+ *  most of the hard vocabulary in the story that prompted this. And the
+ *  re-read, because the same self-check is what makes the dialogue writer's
+ *  much stricter word-bank rule hold. */
 function vocabSpec(language: string, band: VocabBand): string {
-  return [
-    `VOCABULARY — a hard requirement, and the difficulty dial for this story.`,
-    `Write at ${band.cefr}: build it from the ${band.commonWords} most common words of ${language} — the everyday words a native speaker uses in ordinary conversation, the vocabulary of a graded reader at this level.`,
+  const rules = [
+    `Build the story from the ${band.commonWords} most common words of ${language} — the everyday words a native speaker uses in ordinary conversation, the vocabulary of a graded reader at this level.`,
     `Whenever a word would be literary, formal, technical, bookish or merely uncommon, it is out of bounds: say the same thing with a plainer word, or with several simple words in place of one hard one. A story that says something a little more plainly than you intended is correct; a story with a word the reader cannot read is not.`,
-    `This applies to NARRATION as much as to dialogue — narration is where hard words creep back in once the dialogue is simple.`,
-    `Test every word against this: would someone a few months into learning ${language} know it? If not, replace it.`,
-  ].join(' ')
+    `Where two words mean nearly the same thing, always take the commoner one — the word a child would use, not the more precise or more literary one.`,
+    `This applies to NARRATION as much as to dialogue. Narration is where hard words creep back in once the dialogue is simple.`,
+    `PHYSICAL DETAIL is where this rule is usually lost. Naming an object, texture or gesture exactly nearly always means a rare word. Do not reach for the exact word: describe the thing in simple words, or choose a different detail that common words can name. A precise description is never worth a word the reader cannot read.`,
+    `Test every word: would someone a few months into learning ${language} know it? If not, replace it.`,
+  ]
+  if (langCodeFor(language) === 'id') rules.push(...ID_STORY_BANNED)
+  return [
+    `VOCABULARY — ${band.cefr}. The difficulty dial for this story, and the requirement most easily lost while writing.`,
+    ...rules.map((r) => `• ${r}`),
+    `• BEFORE YOU RETURN: re-read the finished story word by word and replace every word that breaks these rules. Do this last, and do it properly — it matters more than any other check.`,
+  ].join('\n')
 }
 
 const EXTEND_SCHEMA = {
@@ -678,6 +706,153 @@ async function glossaryFor(opts: {
     }
   }
   return [...merged.values()]
+}
+
+const SIMPLIFY_SCHEMA = {
+  type: 'OBJECT',
+  properties: { text: { type: 'STRING' } },
+  required: ['text'],
+}
+
+/** Words per simplification call. Comfortably larger than the glossary's chunk:
+ *  the output here is the text itself, where the glossary's is an entry per
+ *  distinct word, several times longer than what it covers. */
+export const SIMPLIFY_CHUNK_WORDS = 400
+
+/** A chunk that comes back under this share of its original length dropped
+ *  something rather than simplifying it, and is thrown away. */
+const SIMPLIFY_MIN_KEPT = 0.6
+
+/** Group whole paragraphs into chunks of at most `maxWords`.
+ *
+ *  Unlike `splitForGlossary` this never breaks a paragraph, so joining the
+ *  chunks back with blank lines reproduces the story exactly. The glossary
+ *  splitter cannot promise that and does not need to — it only reads the text.
+ *  This one's output replaces it. A single paragraph over the budget becomes an
+ *  oversized chunk of its own rather than being split. */
+export function groupParagraphs(
+  text: string,
+  langCode: string | null,
+  maxWords: number,
+): string[] {
+  const paras = text
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+  const chunks: string[] = []
+  let current = ''
+  for (const para of paras) {
+    if (current && countWords(`${current}\n\n${para}`, langCode) > maxWords) {
+      chunks.push(current)
+      current = para
+    } else {
+      current = current ? `${current}\n\n${para}` : para
+    }
+  }
+  if (current) chunks.push(current)
+  return chunks.length > 0 ? chunks : [text]
+}
+
+/** Distinct words that were in the prose before this pass and are gone after
+ *  it — the trace's one-number answer to "did that actually change anything?". */
+export function swappedWords(before: string, after: string, langCode: string | null): number {
+  const keys = (t: string) => {
+    const set = new Set<string>()
+    for (const tok of tokenizeWords(t, langCode)) {
+      const k = tok.trim().toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+      if (k) set.add(k)
+    }
+    return set
+  }
+  const had = keys(before)
+  const has = keys(after)
+  let n = 0
+  for (const k of had) if (!has.has(k)) n++
+  return n
+}
+
+/** Second pass over the finished prose: replace every word above the band and
+ *  change nothing else.
+ *
+ *  Writing under a vocabulary ceiling and checking one afterwards are different
+ *  jobs, and the model is far better at the second. While generating it holds a
+ *  plot, a cast, a length, a register and an ending all at once, and vocabulary
+ *  is the constraint that quietly loses to the others — asking harder did not
+ *  fix that, because the instruction was never what was missing. Editing, the
+ *  text already exists: the judgement is one word at a time, local, with
+ *  nothing to trade it against. It is the same reason the length loop works by
+ *  measuring the draft rather than by asking for length more firmly.
+ *
+ *  Pieces run in parallel, and any piece that fails or comes back truncated
+ *  falls back to its original text — a paragraph that is too hard beats a
+ *  paragraph that is missing. */
+async function simplifyStory(opts: {
+  deck: Deck
+  story: string
+  band: VocabBand
+  characterNames: string[]
+  onMeta?: (m: CallMeta) => void
+}): Promise<string> {
+  const { deck, story, band, characterNames, onMeta } = opts
+  const langCode = langCodeFor(deck.language)
+  const chunks = groupParagraphs(story, langCode, SIMPLIFY_CHUNK_WORDS)
+
+  const promptFor = (chunk: string) =>
+    [
+      chunks.length > 1
+        ? `Below is an EXTRACT from a story in ${deck.language} written for a language learner. Some of its words are above the reader's level. Rewrite the extract so every word is inside the vocabulary below, and change nothing else. Other extracts are handled separately — edit only the text below.`
+        : `Below is a story in ${deck.language} written for a language learner. Some of its words are above the reader's level. Rewrite it so every word is inside the vocabulary below, and change nothing else.`,
+      vocabSpec(deck.language, band),
+      `HOW TO EDIT — this is a vocabulary edit, not a rewrite:`,
+      `• Keep the events, the people, the order and the meaning exactly as they are. Add nothing, cut nothing, and improve nothing.`,
+      `• Keep every paragraph break, and keep all dialogue inside “…”.`,
+      characterNames.length > 0
+        ? `• Keep these names spelled exactly as they are: ${characterNames.join(', ')}.`
+        : '',
+      `• Keep the length. Replacing one hard word with three easy ones is right; dropping the sentence is not.`,
+      `• Where a sentence can only be said with a hard word, change what is DESCRIBED rather than what happens — a plainer object, a different detail — so the plot still runs exactly as before.`,
+      `• Where a sentence is already simple enough, leave it alone word for word.`,
+      `Return the complete edited text in "text": the whole extract, not a summary, and not only the parts you changed.`,
+      `Text:\n${chunk}`,
+    ]
+      .filter(Boolean)
+      .join('\n')
+
+  const metas: CallMeta[] = []
+  const edited = await Promise.all(
+    chunks.map((chunk, i) =>
+      callGeminiJson<{ text: string }>(promptFor(chunk), SIMPLIFY_SCHEMA, {
+        label: chunks.length > 1 ? `simplify-${i + 1}/${chunks.length}` : 'simplify',
+        onMeta: (m) => metas.push(m),
+      })
+        .then((r) => {
+          const text = (r.text ?? '').trim()
+          if (countWords(text, langCode) < countWords(chunk, langCode) * SIMPLIFY_MIN_KEPT) {
+            console.warn(`[story] simplify piece ${i + 1} came back short — keeping the original`)
+            return chunk
+          }
+          return text
+        })
+        .catch((e) => {
+          console.warn(`[story] simplify piece ${i + 1} failed — keeping the original`, e)
+          return chunk
+        }),
+    ),
+  )
+
+  const sum = (pick: (m: CallMeta) => number | undefined) =>
+    metas.reduce((n, m) => n + (pick(m) ?? 0), 0)
+  onMeta?.({
+    model: metas[0]?.model,
+    thinking: metas[0]?.thinking,
+    ms: Math.max(0, ...metas.map((m) => m.ms ?? 0)),
+    promptTokens: sum((m) => m.promptTokens),
+    outputTokens: sum((m) => m.outputTokens),
+    thoughtTokens: sum((m) => m.thoughtTokens),
+    passes: chunks.length,
+  })
+
+  return edited.join('\n\n')
 }
 
 /** Grow a story that came back short: hand the draft back and ask for the
@@ -837,7 +1012,7 @@ async function planStory(opts: {
     continueFrom
       ? `• "cast" — the people in this part, carrying forward the names already established above. You may add AT MOST ONE new named character, and only if the plot genuinely needs them.`
       : `• "cast" — at most ${MAX_CAST} named characters, ideally two or three, each with their role and what they want. Give every one a personal name that is natural and common for a native ${deck.language} speaker. A learner reading in a second language cannot hold more names than that.`,
-    `• "plant" — the ordinary-looking detail that carries the turn: something mentioned early that looks like scenery and later turns out to matter. Say what it is and where it goes.`,
+    `• "plant" — the ordinary-looking detail that carries the turn: something mentioned early that looks like scenery and later turns out to matter. Say what it is and where it goes. It must be an everyday thing a beginner can name — a bag, a key, a letter, a coin, a shoe, a bowl. Never an object whose name, or whose parts, would be uncommon words.`,
     `• "spine" — exactly ${beats} beats, in order, each one sentence: what actually HAPPENS. Events, not moods — someone does something, someone finds something out, something arrives. Each beat must change the situation the one before it left behind. No beat may be two characters discussing how they feel.`,
     ending === 'payoff'
       ? `• "ending" — this part answers ONE of the unanswered questions above. Say which one, and describe the final image that shows the answer happening (shown as a scene, never explained in summary). Then say which question is left open, and what NEW question the last line raises.`
@@ -949,7 +1124,7 @@ export async function generateStory(opts: {
 
   const prompt = [
     continueFrom
-      ? `Below is a story in ${deck.language} that a language learner has been reading. Write the NEXT PART of it: continue seamlessly from where it ends, keeping the same characters, setting, tone and register. Advance the plot — don't recap or repeat what already happened.`
+      ? `Below is a story in ${deck.language} that a language learner has been reading. Write the NEXT PART of it: continue seamlessly from where it ends, keeping the same characters, setting and tone. Advance the plot — don't recap or repeat what already happened.`
       : `Write a story in ${deck.language} for a language learner.`,
     continueFrom ? `Previous part, titled "${continueFrom.title}":\n${continueFrom.story}` : '',
     bible
@@ -979,13 +1154,27 @@ export async function generateStory(opts: {
       ? `What happens — work through these beats IN ORDER, giving each roughly equal space, and make sure every one of them actually reaches the page:\n${plan.spine.map((b, i) => `${i + 1}. ${b}`).join('\n')}`
       : '',
     plan.plant
-      ? `PLANT: ${plan.plant} Put it in early, inside an ordinary-looking detail, and never draw attention to it — the reader should walk past it and only realise later.`
+      ? `PLANT: ${plan.plant} Put it in early, inside an ordinary-looking detail, and never draw attention to it — the reader should walk past it and only realise later. Name it in plain words ("the yellow cloth in his bag"), never with the exact technical word for the object or the part of it.`
       : '',
     lengthSpec(lengthWords),
     vocabSpec(deck.language, band),
+    // "Same register as the part before" is right for tone and wrong for
+    // difficulty: earlier parts were written under whatever rules were in force
+    // then, and matching them propagates hard vocabulary through a whole thread
+    // that the reader has since asked to be made easier.
+    continueFrom
+      ? `The previous part above may use words harder than these rules allow — it was written to a different setting. Do NOT match its vocabulary. These rules win, even where that makes this part noticeably plainer than the last one.`
+      : '',
     `IMPORTANT — register: use casual, everyday conversational ${deck.language}, the way people actually talk in daily life. Prefer informal forms over formal ones (for example, in Indonesian say "aku", not "saya"). No formal, literary, or textbook language.`,
     `STYLE — dialogue-first: tell the story mainly through conversation. At least half of the words should be inside spoken lines, as short, natural back-and-forth exchanges between the characters; keep narration to brief connective sentences. Always wrap spoken lines in quotation marks “…” (never dashes), so dialogue is machine-detectable.`,
-    `TEXTURE: each scene gets exactly ONE concrete physical detail — a smell, a sound, a texture, a temperature, something someone is holding — in a single short sentence. One per scene, never a descriptive paragraph, and make it specific ("the rice was still too hot to hold") rather than general ("it was a nice day").`,
+    // "Make it specific" and "use only common words" pull against each other,
+    // and specificity used to win: it is concrete and checkable at the moment of
+    // writing, where "is this word common?" is a judgement call. So the detail
+    // is now chosen for what it can be said WITH — a zip, a crease, a crevice
+    // are all off the table, and the scene loses nothing by picking a plainer
+    // thing to notice.
+    `TEXTURE: each scene gets exactly ONE concrete physical detail — a smell, a sound, something someone is holding — in a single short sentence. One per scene, never a descriptive paragraph, and specific ("the rice was still too hot to hold") rather than general ("it was a nice day").`,
+    `But it must be specific in COMMON words: pick a detail you can name with the vocabulary allowed above. If the exact word for it would be a hard word, notice something else instead. A physical detail must never be the reason a hard word enters the story.`,
     // A learner reading in a second language cannot hold a large cast in their
     // head: every extra name is another thing to decode. The plan already caps
     // it; this keeps the writing pass from quietly adding walk-on names.
@@ -1055,6 +1244,32 @@ export async function generateStory(opts: {
       // A failed top-up shouldn't cost the reader the story they already have.
       break
     }
+  }
+
+  // Now bring the vocabulary down to the band. This has to happen before the
+  // translation and the glossary, which both read the final text — and after
+  // the extensions, so a spliced-on stretch is checked too.
+  //
+  // Best-effort, like the glossary: a story that is written and readable should
+  // never be lost to the pass that was only meant to polish it.
+  const written = prose.story
+  try {
+    const simpler = await step(
+      'simplify',
+      'Making the words easier',
+      (onMeta) =>
+        simplifyStory({
+          deck,
+          story: written,
+          band,
+          characterNames: prose.characterNames ?? [],
+          onMeta,
+        }),
+      (after) => `${swappedWords(written, after, langCode)} words swapped out`,
+    )
+    prose = { ...prose, story: simpler }
+  } catch {
+    console.warn('[story] simplify failed — the story stands as written')
   }
 
   // Translate and gloss last, once each, over the text as it finally stands —
