@@ -3,6 +3,7 @@ import {
   GLOSSARY_CHUNK_WORDS,
   SIMPLIFY_CHUNK_WORDS,
   groupParagraphs,
+  pickAngle,
   pickEnding,
   splitForGlossary,
   swappedWords,
@@ -99,10 +100,46 @@ describe('swappedWords', () => {
   })
 })
 
+describe('pickAngle', () => {
+  it('rolls all four dimensions', () => {
+    const a = pickAngle()
+    for (const v of [a.turn, a.tone, a.bond, a.world]) expect(v).toBeTruthy()
+  })
+
+  it('avoids values the thread has already played, per dimension', () => {
+    const first = pickAngle()
+    // With one angle used, a fresh draw must dodge it on every dimension.
+    for (let i = 0; i < 50; i++) {
+      const next = pickAngle([first])
+      expect(next.turn).not.toBe(first.turn)
+      expect(next.tone).not.toBe(first.tone)
+      expect(next.bond).not.toBe(first.bond)
+      expect(next.world).not.toBe(first.world)
+    }
+  })
+
+  it('still returns something once every value has been used', () => {
+    const exhausted = Array.from({ length: 500 }, () => pickAngle())
+    const a = pickAngle(exhausted)
+    for (const v of [a.turn, a.tone, a.bond, a.world]) expect(v).toBeTruthy()
+  })
+
+  it('accepts partial angles — stories saved before tones existed carry only a turn', () => {
+    const a = pickAngle([{ turn: 'someone tells a small lie, and it snowballs' }])
+    expect(a.turn).not.toBe('someone tells a small lie, and it snowballs')
+    expect(a.tone).toBeTruthy()
+  })
+})
+
 describe('pickEnding', () => {
-  it('leaves a fresh story open — there is nothing to pay off yet', () => {
-    expect(pickEnding({ partsSoFar: 0, openThreads: 0 })).toBe('hook')
-    expect(pickEnding({ partsSoFar: 0, openThreads: 5 })).toBe('hook')
+  it('lets a fresh story either end or open, and never pays off — there is nothing to pay off yet', () => {
+    const drawn = new Set(
+      Array.from({ length: 200 }, () => pickEnding({ partsSoFar: 0, openThreads: 0 })),
+    )
+    expect(drawn).toEqual(new Set(['land', 'hook']))
+    // An open-question count is irrelevant before there is a thread.
+    for (const e of Array.from({ length: 50 }, () => pickEnding({ partsSoFar: 0, openThreads: 5 })))
+      expect(e).not.toBe('payoff')
   })
 
   it('pays off every third part', () => {

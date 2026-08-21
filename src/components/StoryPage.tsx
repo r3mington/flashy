@@ -17,7 +17,7 @@ import {
   defineWord,
   defineWords,
   generateStory,
-  pickBeat,
+  pickAngle,
   pickEnding,
   ApiError,
   VOCAB_BANDS,
@@ -442,15 +442,18 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     setSteps([])
     setError('')
     try {
-      // Every part of the thread being continued — its own beats shouldn't be
-      // replayed, and how many parts there are decides whether this one pays a
-      // running question off instead of leaving everything open.
+      // Every part of the thread being continued — its own turns, tones,
+      // pairings and settings shouldn't be replayed, and how many parts there
+      // are decides whether this one pays a running question off, leaves
+      // everything open, or (for a first story) simply ends.
       const thread = from
         ? (savedStories ?? []).filter(
             (s) => s.id === (from.parentId ?? from.id) || s.parentId === (from.parentId ?? from.id),
           )
         : []
-      const beat = pickBeat(thread.map((s) => s.beat).filter((b): b is string => !!b))
+      // Stories saved before angles existed carry only a turn — still worth
+      // avoiding, so they come through as a partial angle.
+      const angle = pickAngle(thread.map((s) => s.angle ?? { turn: s.beat }))
       const ending = pickEnding({
         partsSoFar: thread.length,
         openThreads: from?.bible?.openThreads?.length ?? 0,
@@ -465,13 +468,18 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         topic: from ? undefined : topic || undefined,
         lengthWords: length,
         onProgress: setSteps,
-        beat,
+        angle,
         ending,
         focusWords,
         // Steer fresh stories away from themes already covered (recent first).
+        // What a past story was ABOUT, not what it was called — the premise is
+        // the only field that says which mechanic it turned on, and the
+        // mechanic is what kept coming back.
         avoidThemes: from
           ? undefined
-          : (savedStories ?? []).slice(0, 8).map((s) => (s.topic ? `${s.title} (${s.topic})` : s.title)),
+          : (savedStories ?? [])
+              .slice(0, 8)
+              .map((s) => s.premise || (s.topic ? `${s.title} (${s.topic})` : s.title)),
         continueFrom: from
           ? {
               title: from.title,
@@ -489,7 +497,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         glossary: result.glossary,
         characterNames: result.characterNames,
         bible: result.bible,
-        beat,
+        angle,
+        beat: angle.turn,
+        premise: result.premise,
         focusWords: focusWords.length > 0 ? focusWords : undefined,
         chosen: from && steer ? steer : undefined,
         topic: from ? undefined : topic.trim() || undefined,

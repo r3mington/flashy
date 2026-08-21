@@ -111,8 +111,17 @@ export interface SavedStory {
   /** World state after this part — fed back when continuing. Plain. */
   bible?: StoryBible
   /** The dramatic turn this part was built around. Kept so a thread doesn't
-   *  reuse a turn it has already played. Plain, not indexed. */
+   *  reuse a turn it has already played. Plain, not indexed. Superseded by
+   *  `angle`, still written and still read for stories saved before it. */
   beat?: string
+  /** Turn, tone, pairing and setting rolled for this part — the four dimensions
+   *  a story is built from. Kept so the next part of a thread rolls different
+   *  ones. Plain, not indexed. */
+  angle?: { turn: string; tone: string; bond: string; world: string }
+  /** The plan's one-sentence premise, fed back so later stories can be steered
+   *  away from what this one actually did. A title cannot do that job. Plain,
+   *  not indexed. */
+  premise?: string
   /** Words the learner keeps forgetting that were seeded into this part. */
   focusWords?: string[]
   /** What the reader asked to happen next in this part, if they steered it.
