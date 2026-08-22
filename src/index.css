@@ -1975,6 +1975,9 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .btn .icon { margin-right: 0.35em; }
 .btn.icon-btn .icon { margin-right: 0; }
 .roman-glyph { font-weight: 600; letter-spacing: -0.03em; }
+/* The emoji-toggle's glyph. Held to the button's own text size so it doesn't
+   tower over the "on"/"off" beside it, the way emoji otherwise do. */
+.emoji-glyph { font-size: 0.95em; line-height: 1; }
 
 /* Read-aloud bar + active-sentence highlight. Sticky so play/progress stay
    reachable while scrolling; the rest of the controls collapse away. */

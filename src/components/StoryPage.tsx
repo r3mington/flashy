@@ -915,6 +915,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // (non-Latin scripts only); shown per the storyRoman setting.
   const hasRoman = (story?.glossary ?? []).some((g) => g.roman)
   const romanMode = settings.storyRoman
+  // The emoji toggle only earns a place in the bar when this story has
+  // pictures to show — from its own glossary, or from the cards its in-study
+  // words belong to.
+  const hasEmoji =
+    (story?.glossary ?? []).some((g) => g.emoji) || (cards ?? []).some((c) => c.emoji)
+  const showEmoji = settings.storyEmoji
   const controlsOpen = settings.storyControlsOpen
   const progressPct = Math.round(progress * 100)
   // Where the saved marker sits along the story, as a tick on the progress bar.
@@ -1407,6 +1413,20 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               </button>
             )}
 
+            {hasEmoji && (
+              <button
+                className={`btn small ${showEmoji ? '' : 'ghost'}`}
+                onClick={() => saveSettings({ storyEmoji: !showEmoji })}
+                aria-pressed={showEmoji}
+                title="Mnemonic emoji in front of the words you're still learning"
+              >
+                <span className="emoji-glyph" aria-hidden="true">
+                  🙂
+                </span>{' '}
+                {showEmoji ? 'on' : 'off'}
+              </button>
+            )}
+
             <div className="story-size">
               <button
                 className="btn small ghost"
@@ -1487,7 +1507,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   // Only on the words still being learned. On known words it
                   // would be decoration, and on every word it would be noise
                   // that stops the few that matter from standing out.
-                  const emoji = isNew || inStudy ? emojiFor(key) : undefined
+                  const emoji = showEmoji && (isNew || inStudy) ? emojiFor(key) : undefined
                   // Ruby romanization above the word, per the setting.
                   const roman =
                     romanMode === 'all' || (romanMode === 'new' && isNew)

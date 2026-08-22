@@ -297,6 +297,11 @@ export interface AppSettings {
   /** Ruby romanization above story words (non-Latin scripts): none, only
    *  new/highlighted words, or every word. */
   storyRoman: 'off' | 'new' | 'all'
+  /** Mnemonic emoji in front of the story's new and in-study words. Separate
+   *  from `showEmoji`, which governs cards during study: a picture is a help
+   *  on a flashcard and a distraction in a paragraph, and the reader should be
+   *  able to say so per context. */
+  storyEmoji: boolean
   /** Whether the reader's control bar is expanded (it collapses to a slim
    *  play + progress strip so the story gets the screen). */
   storyControlsOpen: boolean
@@ -318,6 +323,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   storyFontScale: 1,
   storyRoman: 'new',
+  storyEmoji: true,
   storyControlsOpen: true,
   storyColors: DEFAULT_STORY_COLORS,
 }
