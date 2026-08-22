@@ -90,9 +90,16 @@ interface Definition {
   word: string
   meaning: string
   isNew: boolean
-  /** Root word this is an inflected form of, when the surface word itself isn't
-   *  in the deck but its root is (e.g. "menjawab" → root "jawab"). */
+  /** The base word this one is built on (e.g. "makanya" → "makan"), either from
+   *  the glossary or — when the surface word isn't in the deck but its root is —
+   *  from the deck card the meaning was borrowed from. */
   root?: string
+  /** What the root means on its own. */
+  rootMeaning?: string
+  /** The root is a card in the deck, so the meaning shown is that card's. */
+  rootInDeck?: boolean
+  /** 1–2 mnemonic emoji for the word. */
+  emoji?: string
   /** Definition being fetched on demand (word absent from this story's glossary). */
   loading?: boolean
   /** The on-demand lookup failed. */
@@ -260,22 +267,34 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const defs = useMemo(() => {
     const map = new Map<string, Definition>()
     for (const c of cards ?? []) {
-      map.set(defKey(c.word), { word: c.word, meaning: c.meaning, isNew: false, roman: c.roman })
+      map.set(defKey(c.word), {
+        word: c.word,
+        meaning: c.meaning,
+        isNew: false,
+        roman: c.roman,
+        emoji: c.emoji,
+      })
     }
     for (const g of story?.glossary ?? []) {
       const key = defKey(g.word)
       const isName = nameKeys.has(key)
+      // A deck card for the same word carries the emoji the learner already
+      // studies it by — keep that one rather than the glossary's second guess.
+      const card = cardByKey.get(key)
       map.set(key, {
         word: g.word,
         meaning: g.meaning,
         isNew: !isName && isNewWord(key),
         roman: g.roman,
+        emoji: card?.emoji ?? g.emoji,
+        root: g.root,
+        rootMeaning: g.rootMeaning,
         isName,
       })
     }
     return map
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cards, story, deckKeys, resolveDeckKey, nameKeys])
+  }, [cards, cardByKey, story, deckKeys, resolveDeckKey, nameKeys])
 
   // Sentences of the open story — the read-aloud unit and highlight granularity.
   const sentences = useMemo(
@@ -706,7 +725,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         meaning: rootCard.meaning,
         isNew: false,
         root: rootCard.word,
+        rootInDeck: true,
         roman: rootCard.roman,
+        emoji: rootCard.emoji,
       })
       return
     }
@@ -737,6 +758,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         // purely on it being a content word (keeps function words off the chips).
         isNew: res.isContentWord,
         roman: res.roman || undefined,
+        emoji: res.emoji || undefined,
+        root: res.root || undefined,
+        rootMeaning: res.rootMeaning || undefined,
       }
       if (sid != null) {
         const rec = await db.stories.get(sid)
@@ -747,9 +771,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         }
       }
       setSelected((sel) =>
-        sel?.loading && defKey(sel.word) === key
-          ? { word: display, meaning: res.meaning, isNew: true, roman: res.roman || undefined }
-          : sel,
+        sel?.loading && defKey(sel.word) === key ? { ...entry, isNew: true } : sel,
       )
     } catch {
       setSelected((sel) =>
@@ -787,6 +809,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 meaning: got.meaning,
                 isNew: got.isContentWord,
                 roman: got.roman,
+                emoji: got.emoji,
+                root: got.root,
+                rootMeaning: got.rootMeaning,
               })
           }
           done += batch.length
@@ -813,6 +838,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     meaning: string,
     status: WordStatus = 'inStudy',
     roman?: string,
+    // Carried over from the definition, so a word added while reading arrives in
+    // the deck with the same mnemonic it was met with.
+    emoji?: string,
   ) {
     await db.cards.add({
       deckId,
@@ -820,6 +848,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       meaning,
       example: '',
       roman: roman || undefined,
+      emoji: emoji || undefined,
       ...newCardDefaults(),
       ...statusPatch(status),
     })
@@ -1550,6 +1579,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               <div className="chip-list">
                 {newWords.map((w) => (
                   <span key={w.word} className="chip">
+                    {w.emoji && <span className="chip-emoji">{w.emoji}</span>}
                     {w.word}
                     {w.roman && <span className="chip-roman">{w.roman}</span>}
                     <em>{w.meaning}</em>
@@ -1559,7 +1589,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                       <button
                         className="add-word"
                         title={`Add “${w.word}” to the deck`}
-                        onClick={() => addWord(w.word, w.meaning, 'inStudy', w.roman)}
+                        onClick={() => addWord(w.word, w.meaning, 'inStudy', w.roman, w.emoji)}
                       >
                         +
                       </button>
@@ -1568,7 +1598,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                       <button
                         className="add-word ignore"
                         title={`Ignore “${w.word}” — not vocabulary, just stop flagging it as new`}
-                        onClick={() => addWord(w.word, w.meaning, 'ignored', w.roman)}
+                        onClick={() => addWord(w.word, w.meaning, 'ignored', w.roman, w.emoji)}
                       >
                         ⊘
                       </button>
@@ -1585,6 +1615,11 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         <div className="word-sheet-backdrop" onClick={() => setSelected(null)}>
           <div className="word-sheet" onClick={(e) => e.stopPropagation()}>
             <div className="word-sheet-word">
+              {selected.emoji && (
+                <span className="word-sheet-emoji" aria-hidden="true">
+                  {selected.emoji}
+                </span>
+              )}
               {selected.word}
               {canRead && (
                 <button
@@ -1602,11 +1637,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 !selectedInDeck &&
                 !selected.loading &&
                 !selected.failed && <span className="state-pill new">new</span>}
-              {selected.root && (
-                <span className="state-pill root" title={`Form of “${selected.root}”, in your deck`}>
-                  form of {selected.root}
-                </span>
-              )}
             </div>
             {(selected.roman || selectedCard?.roman) && (
               <div className="word-sheet-roman">{selected.roman ?? selectedCard?.roman}</div>
@@ -1618,6 +1648,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   ? 'Couldn’t fetch a definition — check your connection and tap the word again.'
                   : selected.meaning}
             </div>
+            {/* The word it's built from — the thing that makes an affixed form
+                stick ("makanya" is just "makan" wearing a suffix). One quiet
+                line under the meaning, never a second definition competing
+                with the first. */}
+            {selected.root && defKey(selected.root) !== defKey(selected.word) && (
+              <div className="word-sheet-root">
+                from <b>{selected.root}</b>
+                {selected.rootMeaning && <span> — {selected.rootMeaning}</span>}
+                {selected.rootInDeck && <span className="in-deck"> · in your deck</span>}
+              </div>
+            )}
             <div className="word-sheet-actions">
               {selectedCard ? (
                 <>
@@ -1648,7 +1689,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   <button
                     className="btn small primary"
                     disabled={!selected.meaning}
-                    onClick={() => addWord(selected.word, selected.meaning, 'inStudy', selected.roman)}
+                    onClick={() => addWord(selected.word, selected.meaning, 'inStudy', selected.roman, selected.emoji)}
                   >
                     Add to deck
                   </button>
@@ -1656,7 +1697,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     className="btn small"
                     disabled={!selected.meaning}
                     title="Add to the deck already marked as known"
-                    onClick={() => addWord(selected.word, selected.meaning, 'known', selected.roman)}
+                    onClick={() => addWord(selected.word, selected.meaning, 'known', selected.roman, selected.emoji)}
                   >
                     Add as known
                   </button>
@@ -1664,7 +1705,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     className="btn small"
                     disabled={!selected.meaning}
                     title="Not vocabulary (a name, a brand…) — add it so the story stops flagging it as new, without counting it as a word you know"
-                    onClick={() => addWord(selected.word, selected.meaning, 'ignored', selected.roman)}
+                    onClick={() => addWord(selected.word, selected.meaning, 'ignored', selected.roman, selected.emoji)}
                   >
                     Ignore
                   </button>

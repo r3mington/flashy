@@ -1372,6 +1372,7 @@ button { font-family: inherit; }
 .chip em { font-style: normal; color: var(--ink-3); font-size: 11px; }
 /* Romanization inside a new-word chip, between the word and its meaning. */
 .chip-roman { color: var(--ink-2); font-size: 11px; font-style: italic; }
+.chip-emoji { font-size: 13px; line-height: 1; }
 .chip button {
   border: none;
   background: var(--line);
@@ -2125,8 +2126,16 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   margin-bottom: 6px;
 }
 .word-sheet-meaning { color: var(--ink-2); font-size: 15px; margin-bottom: 14px; }
+/* The mnemonic emoji, big enough to register as a picture next to the word. */
+.word-sheet-emoji { font-size: 26px; line-height: 1; }
 /* Romanization line in the tap-to-define sheet (non-Latin scripts). */
 .word-sheet-roman { color: var(--ink-2); font-size: 14px; font-style: italic; margin: -6px 0 8px; }
+/* "from makan — to eat": the base word an affixed form is built on. Sits tight
+   under the meaning, quieter than it, so it reads as a footnote and not as a
+   second definition. */
+.word-sheet-root { color: var(--ink-2); font-size: 13.5px; margin: -8px 0 14px; }
+.word-sheet-root b { color: var(--accent); font-weight: 600; }
+.word-sheet-root .in-deck { color: var(--ink-3); }
 .word-sheet-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 /* --- Export modal ------------------------------------------------------- */

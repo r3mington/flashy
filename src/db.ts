@@ -107,7 +107,15 @@ export interface SavedStory {
   title: string
   story: string
   translation: string
-  glossary: { word: string; meaning: string; isNew: boolean; roman?: string }[]
+  glossary: {
+    word: string
+    meaning: string
+    isNew: boolean
+    roman?: string
+    emoji?: string
+    root?: string
+    rootMeaning?: string
+  }[]
   /** World state after this part — fed back when continuing. Plain. */
   bible?: StoryBible
   /** The dramatic turn this part was built around. Kept so a thread doesn't

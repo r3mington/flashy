@@ -292,6 +292,24 @@ export interface GlossaryEntry {
   isNew: boolean
   /** Romanization, present for languages not written in the Latin alphabet. */
   roman?: string
+  /** 1–2 mnemonic emoji, on content words concrete enough to picture. */
+  emoji?: string
+  /** The base word this one is built from ("makanya" → "makan"), when the
+   *  surface form is derived or inflected. Absent when the word IS its base. */
+  root?: string
+  /** What that base word means on its own. */
+  rootMeaning?: string
+}
+
+/** Shared instruction for the two fields that exist to make a word stick: an
+ *  emoji to picture it by, and the base word it was built from. Both are
+ *  optional on purpose — an emoji forced onto "however" is noise, and a root
+ *  that just repeats the word is worse than none. */
+function MEMORY_RULE(language: string): string {
+  return [
+    `Give an "emoji" field (1-2 emoji) ONLY to content words concrete enough to picture instantly — a thing, an action, a vivid quality. Leave it off function words, names, numbers, and abstractions no emoji really depicts.`,
+    `Where a word is derived or inflected from a simpler ${language} base word, give "root" (that base word, in its dictionary form) and "rootMeaning" (its English meaning) — e.g. Indonesian "makanya" from "makan" (to eat), "berjalan" from "jalan" (road, to walk). Omit both when the word already IS its own base, or when the base is not itself a real ${language} word.`,
+  ].join('\n')
 }
 
 /** Shared instruction for the optional "roman" field: standard learner
@@ -322,6 +340,9 @@ const GLOSSARY_ARRAY = {
       meaning: { type: 'STRING' },
       isNew: { type: 'BOOLEAN' },
       roman: { type: 'STRING' },
+      emoji: { type: 'STRING' },
+      root: { type: 'STRING' },
+      rootMeaning: { type: 'STRING' },
     },
     required: ['word', 'meaning', 'isNew'],
   },
@@ -732,8 +753,8 @@ async function translateStory(
  *  every distinct word of the story paired with a meaning runs to several times
  *  the token count of the story itself — so this is the call that reaches the
  *  60-second limit first, and the only thing that shrinks it is covering less
- *  text per call. */
-export const GLOSSARY_CHUNK_WORDS = 300
+ *  text per call. Lowered from 300 when entries grew an emoji and a root. */
+export const GLOSSARY_CHUNK_WORDS = 250
 
 /** Break a story into pieces small enough to gloss in one call each, preferring
  *  paragraph boundaries, falling back to sentence boundaries for a paragraph
@@ -805,6 +826,7 @@ async function glossaryFor(opts: {
         ? `The learner's word bank: ${bankWords.join(', ')}. Set isNew=true only for content words (nouns, verbs, adjectives, adverbs) outside this bank. Function words are never isNew, and neither are personal names${story.characterNames?.length ? ` (${story.characterNames.join(', ')})` : ''}.`
         : `Set isNew=true only for content words (nouns, verbs, adjectives, adverbs); function words and personal names are never isNew.`,
       ROMAN_RULE(deck.language, 'every glossary entry'),
+      MEMORY_RULE(deck.language),
     ]
       .filter(Boolean)
       .join('\n')
@@ -1507,6 +1529,9 @@ const DEFINE_SCHEMA = {
     meaning: { type: 'STRING' },
     isContentWord: { type: 'BOOLEAN' },
     roman: { type: 'STRING' },
+    emoji: { type: 'STRING' },
+    root: { type: 'STRING' },
+    rootMeaning: { type: 'STRING' },
   },
   required: ['meaning', 'isContentWord'],
 }
@@ -1517,20 +1542,18 @@ export async function defineWord(opts: {
   word: string
   /** Sentence the word was tapped in, to pin down the sense used. */
   sentence?: string
-}): Promise<{ meaning: string; isContentWord: boolean; roman?: string }> {
+}): Promise<WordDefinition> {
   const { deck, word, sentence } = opts
   const prompt = [
     `Give a concise English meaning for the ${deck.language} word "${word}", as a glossary entry for a language learner.`,
     sentence?.trim() ? `It appears in this sentence — define the sense used here: "${sentence.trim()}"` : '',
     `Also report whether it is a content word (noun, verb, adjective or adverb) rather than a function word.`,
     ROMAN_RULE(deck.language, 'the word'),
+    MEMORY_RULE(deck.language),
   ]
     .filter(Boolean)
     .join('\n')
-  return callGeminiJson<{ meaning: string; isContentWord: boolean; roman?: string }>(
-    prompt,
-    DEFINE_SCHEMA,
-  )
+  return callGeminiJson<WordDefinition>(prompt, DEFINE_SCHEMA)
 }
 
 const DEFINE_MANY_SCHEMA = {
@@ -1545,6 +1568,9 @@ const DEFINE_MANY_SCHEMA = {
           meaning: { type: 'STRING' },
           isContentWord: { type: 'BOOLEAN' },
           roman: { type: 'STRING' },
+          emoji: { type: 'STRING' },
+          root: { type: 'STRING' },
+          rootMeaning: { type: 'STRING' },
         },
         required: ['word', 'meaning', 'isContentWord'],
       },
@@ -1557,6 +1583,9 @@ export interface WordDefinition {
   meaning: string
   isContentWord: boolean
   roman?: string
+  emoji?: string
+  root?: string
+  rootMeaning?: string
 }
 
 /** Define a batch of words at once, each in the sentence it was used in — the
@@ -1574,6 +1603,7 @@ export async function defineWords(opts: {
     `Also report, for each, whether it is a content word (noun, verb, adjective or adverb) rather than a function word. Personal names are not content words.`,
     `Return every word exactly as given, each with its meaning.`,
     ROMAN_RULE(deck.language, 'every entry'),
+    MEMORY_RULE(deck.language),
     `Words:`,
     ...words.map((w) => (w.sentence ? `${w.word} — in: "${w.sentence.trim()}"` : w.word)),
   ]
@@ -1581,7 +1611,7 @@ export async function defineWords(opts: {
     .join('\n')
 
   const parsed = await callGeminiJson<{
-    items: { word: string; meaning: string; isContentWord: boolean; roman?: string }[]
+    items: ({ word: string } & WordDefinition)[]
   }>(prompt, DEFINE_MANY_SCHEMA)
   const map = new Map<string, WordDefinition>()
   for (const item of parsed.items ?? []) {
@@ -1590,6 +1620,9 @@ export async function defineWords(opts: {
         meaning: item.meaning.trim(),
         isContentWord: !!item.isContentWord,
         roman: item.roman?.trim() || undefined,
+        emoji: item.emoji?.trim() || undefined,
+        root: item.root?.trim() || undefined,
+        rootMeaning: item.rootMeaning?.trim() || undefined,
       })
   }
   return map
