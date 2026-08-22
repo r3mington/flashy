@@ -452,8 +452,11 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
           )
         : []
       // Stories saved before angles existed carry only a turn — still worth
-      // avoiding, so they come through as a partial angle.
-      const angle = pickAngle(thread.map((s) => s.angle ?? { turn: s.beat }))
+      // avoiding, so they come through as a partial angle. A fresh story
+      // dodges the last few stories' dimensions the same way a part dodges
+      // its own thread's: repetition is felt across stories too.
+      const recent = from ? thread : (savedStories ?? []).slice(0, 6)
+      const angle = pickAngle(recent.map((s) => s.angle ?? { turn: s.beat }))
       const ending = pickEnding({
         partsSoFar: thread.length,
         openThreads: from?.bible?.openThreads?.length ?? 0,
@@ -480,6 +483,13 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
           : (savedStories ?? [])
               .slice(0, 8)
               .map((s) => s.premise || (s.topic ? `${s.title} (${s.topic})` : s.title)),
+        // Same idea for the cast: the reader shouldn't meet the same three
+        // people in every story. Continuations keep their thread's cast.
+        avoidNames: from
+          ? undefined
+          : [
+              ...new Set((savedStories ?? []).slice(0, 8).flatMap((s) => s.characterNames ?? [])),
+            ].slice(0, 24),
         continueFrom: from
           ? {
               title: from.title,

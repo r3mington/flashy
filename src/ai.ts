@@ -1099,6 +1099,9 @@ async function planStory(opts: {
   band: VocabBand
   topic?: string
   avoidThemes: string[]
+  /** Character names the learner's recent stories used — a fresh cast reads
+   *  fresher than a fresh plot acted out by the same three people. */
+  avoidNames: string[]
   angle?: StoryAngle
   ending: StoryEnding
   continueFrom?: {
@@ -1109,7 +1112,8 @@ async function planStory(opts: {
   }
   onMeta?: (m: CallMeta) => void
 }): Promise<StoryPlan> {
-  const { deck, lengthWords, band, topic, avoidThemes, angle, ending, continueFrom, onMeta } = opts
+  const { deck, lengthWords, band, topic, avoidThemes, avoidNames, angle, ending, continueFrom } = opts
+  const { onMeta } = opts
   const bible = continueFrom?.bible
   // Enough beats to fill the length with events rather than with padding.
   const beats = Math.max(4, Math.min(7, Math.round(lengthWords / 150)))
@@ -1166,7 +1170,11 @@ async function planStory(opts: {
     `• "premise" — the situation in ONE English sentence.`,
     continueFrom
       ? `• "cast" — the people in this part, carrying forward the names already established above. You may add AT MOST ONE new named character, and only if the plot genuinely needs them.`
-      : `• "cast" — at most ${MAX_CAST} named characters, ideally two or three, each with their role and what they want. Give every one a personal name that is natural and common for a native ${deck.language} speaker. A learner reading in a second language cannot hold more names than that.`,
+      : `• "cast" — at most ${MAX_CAST} named characters, ideally two or three, each with their role and what they want. Give every one a personal name that is natural and common for a native ${deck.language} speaker${
+          avoidNames.length > 0
+            ? `, and NOT one of these — the learner's recent stories used them already: ${avoidNames.join(', ')}`
+            : ''
+        }. A learner reading in a second language cannot hold more names than that.`,
     // Mandatory, this produced an object planted early and paid off late in
     // every single story — which is the mystery-box shape itself, whatever the
     // plot around it. Most stories do not need one, and the examples that used
@@ -1212,8 +1220,10 @@ export async function generateStory(opts: {
   vocabLevel: VocabLevel
   topic?: string
   lengthWords: number
-  /** Titles/topics of the learner's previous stories — steer clear of their themes. */
+  /** Premises/topics of the learner's previous stories — steer clear of their themes. */
   avoidThemes?: string[]
+  /** Character names the learner's recent stories used — the plan picks new ones. */
+  avoidNames?: string[]
   /** Continue this existing story instead of starting a fresh one. `direction`
    *  is the reader's optional steer for what should happen next, `bible` the
    *  world state the previous part left behind. */
@@ -1235,7 +1245,7 @@ export async function generateStory(opts: {
   onProgress?: (steps: StoryStep[]) => void
 }): Promise<Story> {
   const { deck, knownWords, learningWords, vocabLevel, topic, lengthWords } = opts
-  const { avoidThemes = [], continueFrom, angle, focusWords = [], ending = 'hook' } = opts
+  const { avoidThemes = [], avoidNames = [], continueFrom, angle, focusWords = [], ending = 'hook' } = opts
 
   const bible = continueFrom?.bible
   const langCode = langCodeFor(deck.language)
@@ -1284,7 +1294,18 @@ export async function generateStory(opts: {
     'plan',
     'Working out the plot',
     (onMeta) =>
-      planStory({ deck, lengthWords, band, topic, avoidThemes, angle, ending, continueFrom, onMeta }),
+      planStory({
+        deck,
+        lengthWords,
+        band,
+        topic,
+        avoidThemes,
+        avoidNames,
+        angle,
+        ending,
+        continueFrom,
+        onMeta,
+      }),
     (p) => `${p.spine.length} beats · ${p.cast.length} characters`,
   )
 
@@ -1362,14 +1383,18 @@ export async function generateStory(opts: {
       : '',
     `Where the story needs something the bank does not cover, just use the most common everyday ${deck.language} word for it. Do NOT contort a sentence to avoid an ordinary word, and do NOT reach past the band above to find one.`,
     focusWords.length > 0
-      ? `PLOT-CRITICAL VOCABULARY: these are words the learner keeps forgetting — ${focusWords.join(', ')}. Each one must appear at least three times, in different sentences and different situations, and at least one of them must matter to the plot (it names the thing that goes missing, the place they must reach, the thing someone wants). Never draw attention to them or define them in the text; just make the story impossible to follow without them.`
+      ? `PLOT-CRITICAL VOCABULARY: these are words the learner keeps forgetting — ${focusWords.join(', ')}. Each one must appear at least three times, in different sentences and different situations, and at least one of them must matter to the plot (it names the thing someone wants, the task that keeps going wrong, the person everyone is waiting for). Never draw attention to them or define them in the text; just make the story impossible to follow without them.`
       : '',
     ending === 'land'
       ? `ENDING — this story ends here, properly: ${plan.ending} Land it as a scene the reader watches, not as a summary. The last line should be small and concrete — a gesture, an object, something someone says — and it should feel like the right place to stop. Do NOT add a moral, a lesson, a look back over what happened, or a line telling the reader how anyone has changed.`
       : ending === 'payoff'
         ? `ENDING — this part pays something off: ${plan.ending} Show the answer HAPPENING, as a scene the reader watches — never as a character explaining it or a narrator summarising it. Then let the very last line raise a new question. Do not wrap the whole story up: nobody goes home, nothing turns out fine, nobody learns a lesson.`
         : `ENDING — do NOT resolve the story. Land it here: ${plan.ending} The last line must be a hook — an interruption, a reveal, an arrival, an unanswered question, or a decision whose outcome the reader cannot guess. Never end with everyone going home, everything turning out fine, a lesson learned, or a summary of what happened. Stop at the moment of maximum "wait, what?" — mid-scene is good, mid-sentence is not.`,
-    `THE BIBLE: also return "bible" — the state of the story world after this part${continueFrom ? ', updated from the bible above (carry forward everything still true, add what this part established, and drop questions this part answered)' : ''}. "logline" is ONE English sentence recapping what happened, written so it can be shown to the reader as "Previously…" before the next part. "cast" lists every named character with their role and what they want; "places" the locations used; "facts" the concrete details a later part must stay consistent with; "openThreads" the questions this part leaves unanswered — including the one your ending hook just raised.`,
+    `THE BIBLE: also return "bible" — the state of the story world after this part${continueFrom ? ', updated from the bible above (carry forward everything still true, add what this part established, and drop questions this part answered)' : ''}. "logline" is ONE English sentence recapping what happened, written so it can be shown to the reader as "Previously…" before the next part. "cast" lists every named character with their role and what they want; "places" the locations used; "facts" the concrete details a later part must stay consistent with; "openThreads" the questions this part leaves unanswered${
+      ending === 'land'
+        ? ' — for a story that has ended properly this is often empty, and empty is correct: never invent a question just to have one'
+        : ' — including the one your ending hook just raised'
+    }.`,
     `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story and the bible. Write the story in ${deck.language} only — it is translated and glossed separately afterwards, so do not include any English or define anything here. Spend everything on the story itself.`,
   ]
     .filter(Boolean)
