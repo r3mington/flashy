@@ -250,6 +250,18 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     return deckKey !== null && inStudyKeys.has(deckKey)
   }
 
+  // The mnemonic to show in front of a word in the text. The glossary entry
+  // first (it was written for this word in this sentence), then the deck card
+  // an inflected form belongs to — "menjawab" borrows the picture on "jawab",
+  // which is the whole point of a picture: it belongs to the root idea, not to
+  // one surface form. Absent for anything no emoji really depicts.
+  const emojiFor = (key: string): string | undefined => {
+    const own = defs.get(key)?.emoji
+    if (own) return own
+    const deckKey = resolveDeckKey(key)
+    return deckKey ? cardByKey.get(deckKey)?.emoji : undefined
+  }
+
   // Character names (every word of multi-word names) — rendered in their own
   // colour and kept out of the new-word highlighting and chips.
   const nameKeys = useMemo(() => {
@@ -1464,13 +1476,18 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   // as plain prose. Character names get their own colour.
                   const isName = nameKeys.has(key)
                   const isNew = !isName && isNewWord(key)
+                  const inStudy = !isName && !isNew && isInStudy(key)
                   const cls = isName
                     ? ' story-name'
                     : isNew
                       ? ' new-word'
-                      : isInStudy(key)
+                      : inStudy
                         ? ' study-word'
                         : ' plain'
+                  // Only on the words still being learned. On known words it
+                  // would be decoration, and on every word it would be noise
+                  // that stops the few that matter from standing out.
+                  const emoji = isNew || inStudy ? emojiFor(key) : undefined
                   // Ruby romanization above the word, per the setting.
                   const roman =
                     romanMode === 'all' || (romanMode === 'new' && isNew)
@@ -1490,6 +1507,11 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                         className={`story-word${cls}${t.quoted ? ' story-quoted' : ''}`}
                         onClick={() => onWordTap(t.tok, t.wordIdx)}
                       >
+                        {emoji && (
+                          <span className="story-word-emoji" aria-hidden="true">
+                            {emoji}
+                          </span>
+                        )}
                         {roman ? (
                           <ruby>
                             {t.tok}

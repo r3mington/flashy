@@ -1373,6 +1373,15 @@ button { font-family: inherit; }
 /* Romanization inside a new-word chip, between the word and its meaning. */
 .chip-roman { color: var(--ink-2); font-size: 11px; font-style: italic; }
 .chip-emoji { font-size: 13px; line-height: 1; }
+/* The mnemonic in front of a word in the story itself. Smaller than the prose
+   and riding a touch high, so it reads as a mark on the word rather than as
+   another word in the sentence. */
+.story-word-emoji {
+  font-size: 0.78em;
+  margin-right: 0.14em;
+  vertical-align: 0.08em;
+  line-height: 1;
+}
 .chip button {
   border: none;
   background: var(--line);
