@@ -319,8 +319,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     [savedStories, langCode, story?.id],
   )
 
-  // 0 = full colour; each story the word was read in without a tap since
-  // fades it a step, until it sits in the prose like any known word.
+  // Stories the word has been read in without a tap since — zero means the
+  // reader has never got past it unaided. Decides whether a new word still
+  // gets its micro-gloss.
   const fadeFor = (key: string) => fadeLevel(encounters.get(key), lastTapAt.get(key))
 
   // The mnemonic to show in front of a word in the text. The glossary entry
@@ -1668,20 +1669,19 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   const isNew = !isName && isNewWord(key)
                   const inStudy = !isName && !isNew && isInStudy(key)
                   // How many stories the word has been read in since the
-                  // reader last needed to tap it. Study words fade a step per
-                  // story, so the page shows what is sinking in; new words
-                  // stay at full colour — faded orange turned out to tell
-                  // the reader nothing they could act on — and the fade only
-                  // decides whether the micro-gloss is still shown.
-                  const fade = isNew || inStudy ? fadeFor(key) : 0
-                  const cls =
-                    (isName
-                      ? ' story-name'
-                      : isNew
-                        ? ' new-word'
-                        : inStudy
-                          ? ' study-word'
-                          : ' plain') + (inStudy && fade > 0 ? ` fade-${fade}` : '')
+                  // reader last needed to tap it. This used to fade the
+                  // word's colour a step per story; a paler highlight turned
+                  // out to tell the reader nothing they could act on, so the
+                  // colour is now constant and the count's one remaining job
+                  // is deciding whether the micro-gloss is still shown.
+                  const fade = isNew ? fadeFor(key) : 0
+                  const cls = isName
+                    ? ' story-name'
+                    : isNew
+                      ? ' new-word'
+                      : inStudy
+                        ? ' study-word'
+                        : ' plain'
                   // Only on the words still being learned. On known words it
                   // would be decoration, and on every word it would be noise
                   // that stops the few that matter from standing out.

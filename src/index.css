@@ -1956,28 +1956,6 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   background: color-mix(in srgb, var(--c-study) 14%, transparent);
   text-decoration-color: var(--c-study);
 }
-/* Fading highlights — deck words in study only. A study word loses a step
-   of colour for every story it has been read in since the reader last tapped
-   it, until after four it sits in the prose like a known word; a tap brings
-   the colour back. New words do NOT fade: a paler orange turned out to tell
-   the reader nothing they could act on — the word is still not in the deck —
-   so they stay at full colour until they are added. */
-.story-word.study-word.fade-1 {
-  color: color-mix(in srgb, var(--c-study) 75%, var(--c-known, var(--ink)));
-  text-decoration-color: color-mix(in srgb, var(--c-study) 35%, transparent);
-}
-.story-word.study-word.fade-2 {
-  color: color-mix(in srgb, var(--c-study) 50%, var(--c-known, var(--ink)));
-  text-decoration-color: color-mix(in srgb, var(--c-study) 28%, transparent);
-}
-.story-word.study-word.fade-3 {
-  color: color-mix(in srgb, var(--c-study) 25%, var(--c-known, var(--ink)));
-  text-decoration-color: color-mix(in srgb, var(--c-study) 20%, transparent);
-}
-.story-word.study-word.fade-4 {
-  color: var(--c-known, inherit);
-  text-decoration-color: color-mix(in srgb, var(--c-study) 15%, transparent);
-}
 /* Character names — so who's-who reads at a glance. */
 .story-word.story-name {
   color: var(--c-name);
