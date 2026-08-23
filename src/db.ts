@@ -115,6 +115,8 @@ export interface SavedStory {
     emoji?: string
     root?: string
     rootMeaning?: string
+    /** How common the word is, 1 (top 500) to 5 (rare) — see `FREQ_BANDS`. */
+    band?: number
   }[]
   /** World state after this part — fed back when continuing. Plain. */
   bible?: StoryBible
@@ -275,6 +277,18 @@ export const DEFAULT_STORY_COLORS: StoryColors = {
   known: 'plain',
 }
 
+/** A word the reader tapped for its meaning while reading, and when. The
+ *  one thing the stories themselves can't tell us: a tap means the word had
+ *  not stuck, and it resets the word's highlight to full colour (see
+ *  `fadeLevel`). Keyed by deck and word, so one row per word per deck. */
+export interface WordTap {
+  deckId: number
+  /** The word's `defKey`. */
+  key: string
+  count: number
+  lastAt: number
+}
+
 export interface AppSettings {
   key: 'app'
   apiKey: string
@@ -302,6 +316,10 @@ export interface AppSettings {
    *  on a flashcard and a distraction in a paragraph, and the reader should be
    *  able to say so per context. */
   storyEmoji: boolean
+  /** A one-word English gloss above the FIRST appearance of each new word in
+   *  a story, and nothing after: the first meeting is anchored without a tap,
+   *  and every later one asks the reader to remember. */
+  storyGloss: boolean
   /** Whether the reader's control bar is expanded (it collapses to a slim
    *  play + progress strip so the story gets the screen). */
   storyControlsOpen: boolean
@@ -324,6 +342,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   storyFontScale: 1,
   storyRoman: 'new',
   storyEmoji: true,
+  storyGloss: true,
   storyControlsOpen: true,
   storyColors: DEFAULT_STORY_COLORS,
 }
@@ -339,6 +358,7 @@ export const db = new Dexie('flashy') as Dexie & {
   reading: EntityTable<ReadingLog, 'day'>
   listening: EntityTable<ListeningLog, 'day'>
   translations: EntityTable<TranslationSession, 'id'>
+  wordTaps: EntityTable<WordTap, 'key'>
 }
 
 db.version(1).stores({
@@ -398,6 +418,30 @@ db.version(6).stores({
   listening: 'day',
   translations: '++id, deckId, createdAt',
 })
+
+// Taps while reading, one row per word per deck.
+db.version(7).stores({
+  decks: '++id, name',
+  cards: '++id, deckId, due, [deckId+due], word',
+  reviews: '++id, cardId, deckId, ts',
+  blacklist: '++id, deckId, word',
+  settings: 'key',
+  stories: '++id, deckId, createdAt',
+  snapshots: 'day',
+  reading: 'day',
+  listening: 'day',
+  translations: '++id, deckId, createdAt',
+  wordTaps: '[deckId+key], deckId',
+})
+
+/** Record a tap on a word while reading. */
+export async function recordWordTap(deckId: number, key: string): Promise<void> {
+  const now = Date.now()
+  await db.transaction('rw', db.wordTaps, async () => {
+    const cur = await db.wordTaps.get([deckId, key] as unknown as string)
+    await db.wordTaps.put({ deckId, key, count: (cur?.count ?? 0) + 1, lastAt: now })
+  })
+}
 
 /** Update a day's reading log without clobbering the field the other writer
  *  owns — the timer sets `seconds` outright, the scroll tracker adds words. */

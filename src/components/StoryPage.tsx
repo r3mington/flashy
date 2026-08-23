@@ -6,6 +6,7 @@ import {
   db,
   inRotation,
   newCardDefaults,
+  recordWordTap,
   setCardStatus,
   statusOf,
   statusPatch,
@@ -13,6 +14,7 @@ import {
   type SavedStory,
   type WordStatus,
 } from '../db'
+import { dueForRecurrence, encounterStats, fadeLevel } from '../encounters'
 import {
   defineWord,
   defineWords,
@@ -23,6 +25,8 @@ import {
   VOCAB_BANDS,
   DEFAULT_VOCAB_LEVEL,
   bandFor,
+  bandOf,
+  FREQ_BANDS,
   type StoryStep,
   type VocabLevel,
 } from '../ai'
@@ -101,6 +105,8 @@ interface Definition {
   rootInDeck?: boolean
   /** 1–2 mnemonic emoji for the word. */
   emoji?: string
+  /** Frequency band, 1 (top 500) to 5 (rare) — see `FREQ_BANDS`. */
+  band?: number
   /** Definition being fetched on demand (word absent from this story's glossary). */
   loading?: boolean
   /** The on-demand lookup failed. */
@@ -251,6 +257,30 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     return deckKey !== null && inStudyKeys.has(deckKey)
   }
 
+  // When the reader last tapped each word of this deck — the signal that a
+  // word had NOT stuck, and the thing that brings its colour back.
+  const taps = useLiveQuery(
+    () => db.wordTaps.where('deckId').equals(deckId).toArray(),
+    [deckId],
+  )
+  const lastTapAt = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const t of taps ?? []) map.set(t.key, t.lastAt)
+    return map
+  }, [taps])
+
+  // How many stories each word has been read in, worked out from the stories
+  // themselves. The open story is left out: its words are being met now and
+  // must not count towards their own colour.
+  const encounters = useMemo(
+    () => encounterStats(savedStories ?? [], langCode, story?.id),
+    [savedStories, langCode, story?.id],
+  )
+
+  // 0 = full colour; each story the word was read in without a tap since
+  // fades it a step, until it sits in the prose like any known word.
+  const fadeFor = (key: string) => fadeLevel(encounters.get(key), lastTapAt.get(key))
+
   // The mnemonic to show in front of a word in the text. The glossary entry
   // first (it was written for this word in this sentence), then the deck card
   // an inflected form belongs to — "menjawab" borrows the picture on "jawab",
@@ -302,6 +332,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         emoji: card?.emoji ?? g.emoji,
         root: g.root,
         rootMeaning: g.rootMeaning,
+        band: bandOf(g.band),
         isName,
       })
     }
@@ -337,6 +368,21 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     )
     return { rows, wordToSentence, wordCount: w + 1 }
   }, [sentences, langCode])
+
+  // The first appearance of each word in the story, by word index — where the
+  // micro-gloss goes. Only the FIRST: the first meeting is the one worth
+  // anchoring for free, and every one after it should ask to be remembered.
+  const showGloss = settings.storyGloss
+  const firstAt = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const row of layout.rows)
+      for (const t of row) {
+        if (t.wordIdx < 0) continue
+        const k = defKey(t.tok)
+        if (!map.has(k)) map.set(k, t.wordIdx)
+      }
+    return map
+  }, [layout])
   // Read by the scroll handler, which is bound once per story.
   const wordCountRef = useRef(0)
   wordCountRef.current = layout.wordCount
@@ -493,6 +539,34 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         partsSoFar: thread.length,
         openThreads: from?.bible?.openThreads?.length ?? 0,
       })
+      // Words met in earlier stories whose spacing says it is time to meet
+      // them again — still new, or still in study. Known words are not
+      // re-encounters, just words. The open story is none, so nothing is
+      // excluded from the count here.
+      const allStats = encounterStats(savedStories ?? [], langCode)
+      // Character names from every story, not just the open one: "Rina" is
+      // not in the deck, so without this she would count as a new word due
+      // to come round again.
+      const allNames = new Set<string>()
+      for (const s of savedStories ?? [])
+        for (const name of s.characterNames ?? [])
+          for (const part of tokenizeWords(name, langCode)) {
+            const k = defKey(part)
+            if (k) allNames.add(k)
+          }
+      // Content words only. Every glossary flags its content words as isNew;
+      // a word no glossary ever flagged is a "dan" or a "di", which turns up
+      // in any story unasked and should not take one of the few slots.
+      const contentKeys = new Set<string>()
+      for (const s of savedStories ?? [])
+        for (const g of s.glossary ?? []) if (g.isNew) contentKeys.add(defKey(g.word))
+      const recurWords = from
+        ? []
+        : dueForRecurrence(
+            allStats,
+            (savedStories ?? []).map((s) => s.createdAt),
+            (k) => !allNames.has(k) && contentKeys.has(k) && (isNewWord(k) || isInStudy(k)),
+          )
       const result = await generateStory({
         deck: deck!,
         // In 'learning' mode, don't seed the story with already-known words —
@@ -506,6 +580,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         angle,
         ending,
         focusWords,
+        recurWords,
         // Steer fresh stories away from themes already covered (recent first).
         // What a past story was ABOUT, not what it was called — the premise is
         // the only field that says which mechanic it turned on, and the
@@ -722,6 +797,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     const deckKey = resolveDeckKey(key)
     const rootCard = deckKey ? cardByKey.get(deckKey) : undefined
     if (rootCard) recordLookup(rootCard.id)
+    // Needing the meaning is the evidence the word has not stuck yet — this
+    // brings its highlight back to full colour (see `fadeLevel`).
+    void recordWordTap(deckId, key)
 
     const def = defs.get(key)
     if (def) {
@@ -774,6 +852,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         emoji: res.emoji || undefined,
         root: res.root || undefined,
         rootMeaning: res.rootMeaning || undefined,
+        band: bandOf(res.band),
       }
       if (sid != null) {
         const rec = await db.stories.get(sid)
@@ -825,6 +904,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 emoji: got.emoji,
                 root: got.root,
                 rootMeaning: got.rootMeaning,
+                band: bandOf(got.band),
               })
           }
           done += batch.length
@@ -916,6 +996,14 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // (non-Latin scripts only); shown per the storyRoman setting.
   const hasRoman = (story?.glossary ?? []).some((g) => g.roman)
   const romanMode = settings.storyRoman
+  /** A gloss short enough to sit above a word: the first sense only, and
+   *  cut before it becomes a caption. */
+  const microGloss = (meaning: string | undefined): string | undefined => {
+    if (!meaning) return undefined
+    const first = meaning.split(/[;,(]/)[0].replace(/^(to|a|an|the)\s+/i, '').trim()
+    if (!first) return undefined
+    return first.length > 22 ? `${first.slice(0, 20).trimEnd()}…` : first
+  }
   // The emoji toggle only earns a place in the bar when this story has
   // pictures to show — from its own glossary, or from the cards its in-study
   // words belong to.
@@ -947,6 +1035,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       })()
     : undefined
   const selectedInDeck = !!selectedCard
+  // What the stories say about the tapped word: how many the reader has met
+  // it in before this one. Names are left out — meeting "Rina" five times is
+  // not vocabulary.
+  const selectedSeen =
+    selected && !selected.isName ? (encounters.get(defKey(selected.word))?.seen ?? 0) : null
+  const selectedBand = selected?.band ? FREQ_BANDS.find((b) => b.band === selected.band) : undefined
   // The affixes standing between the root and the word in front of you. Read
   // off the model's root rather than guessed from the word, so a word that
   // merely looks affixed ("bulan", "punya") explains nothing at all.
@@ -1434,6 +1528,15 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               </button>
             )}
 
+            <button
+              className={`btn small ${showGloss ? '' : 'ghost'}`}
+              onClick={() => saveSettings({ storyGloss: !showGloss })}
+              aria-pressed={showGloss}
+              title="A one-word meaning above the first appearance of each new word"
+            >
+              <span className="roman-glyph">abc</span> {showGloss ? 'on' : 'off'}
+            </button>
+
             <div className="story-size">
               <button
                 className="btn small ghost"
@@ -1504,13 +1607,18 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   const isName = nameKeys.has(key)
                   const isNew = !isName && isNewWord(key)
                   const inStudy = !isName && !isNew && isInStudy(key)
-                  const cls = isName
-                    ? ' story-name'
-                    : isNew
-                      ? ' new-word'
-                      : inStudy
-                        ? ' study-word'
-                        : ' plain'
+                  // A word still being learned fades a step for every story
+                  // it has been read in since the reader last needed to tap
+                  // it — so the page shows what is sinking in.
+                  const fade = isNew || inStudy ? fadeFor(key) : 0
+                  const cls =
+                    (isName
+                      ? ' story-name'
+                      : isNew
+                        ? ' new-word'
+                        : inStudy
+                          ? ' study-word'
+                          : ' plain') + (fade > 0 ? ` fade-${fade}` : '')
                   // Only on the words still being learned. On known words it
                   // would be decoration, and on every word it would be noise
                   // that stops the few that matter from standing out.
@@ -1520,6 +1628,18 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     romanMode === 'all' || (romanMode === 'new' && isNew)
                       ? defs.get(key)?.roman
                       : undefined
+                  // The micro-gloss: a new word's meaning above its FIRST
+                  // appearance only — and only while the word is genuinely
+                  // unfamiliar. Once the reader has read past it in an
+                  // earlier story without needing a tap, the gloss is
+                  // withdrawn and the word asks to be remembered instead;
+                  // a tap brings it back along with the colour. Shares the
+                  // ruby line with romanization when both apply.
+                  const gloss =
+                    showGloss && isNew && fade === 0 && firstAt.get(key) === t.wordIdx
+                      ? microGloss(defs.get(key)?.meaning)
+                      : undefined
+                  const ruby = [roman, gloss].filter(Boolean).join(' · ')
                   return (
                     <span key={ti} className={marked ? 'story-marked-word' : undefined}>
                       {marked && <Icon name="bookmark" className="story-bookmark-marker" />}
@@ -1539,10 +1659,10 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                             {emoji}
                           </span>
                         )}
-                        {roman ? (
+                        {ruby ? (
                           <ruby>
                             {t.tok}
-                            <rt>{roman}</rt>
+                            <rt className={gloss ? 'rt-gloss' : undefined}>{ruby}</rt>
                           </ruby>
                         ) : (
                           t.tok
@@ -1686,6 +1806,11 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 !selectedInDeck &&
                 !selected.loading &&
                 !selected.failed && <span className="state-pill new">new</span>}
+              {selectedBand && !selected.isName && (
+                <span className={`state-pill freq freq-${selectedBand.band}`} title={selectedBand.hint}>
+                  {selectedBand.label}
+                </span>
+              )}
             </div>
             {(selected.roman || selectedCard?.roman) && (
               <div className="word-sheet-roman">{selected.roman ?? selectedCard?.roman}</div>
@@ -1706,6 +1831,18 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 from <b>{selected.root}</b>
                 {selected.rootMeaning && <span> — {selected.rootMeaning}</span>}
                 {selected.rootInDeck && <span className="in-deck"> · in your deck</span>}
+              </div>
+            )}
+            {/* How often the reader has met this word in earlier stories. A
+                climbing count is its own small reward, and "first time" says
+                this one is worth a moment. */}
+            {selectedSeen != null && !selected.loading && !selected.failed && (
+              <div className="word-sheet-seen">
+                {selectedSeen === 0
+                  ? 'First time you’ve met this word'
+                  : selectedSeen === 1
+                    ? 'Met once before, in an earlier story'
+                    : `Met ${selectedSeen} times before, in earlier stories`}
               </div>
             )}
             {/* What the affixes on this word actually do. The word on screen is

@@ -299,12 +299,32 @@ export interface GlossaryEntry {
   root?: string
   /** What that base word means on its own. */
   rootMeaning?: string
+  /** How common the word is, 1 (top 500) to 5 (rare) — see `FREQ_BANDS`. */
+  band?: number
 }
 
 /** Shared instruction for the two fields that exist to make a word stick: an
  *  emoji to picture it by, and the base word it was built from. Both are
  *  optional on purpose — an emoji forced onto "however" is noise, and a root
  *  that just repeats the word is worse than none. */
+/** The frequency bands a word can be placed in. Mirrors `VOCAB_BANDS`, so
+ *  the badge in the dictionary and the difficulty dial on the story form
+ *  speak the same scale. A model's placement is an estimate, but a usefully
+ *  honest one: it has read enough of the language to know "rumah" is not
+ *  "rumpun", and that is all the badge needs to say — whether this word is
+ *  worth a card, or a curiosity to let go of. */
+export const FREQ_BANDS: { band: number; label: string; hint: string }[] = [
+  { band: 1, label: 'top 500', hint: 'among the 500 commonest words — worth knowing cold' },
+  { band: 2, label: 'top 1,000', hint: 'everyday conversation — well worth a card' },
+  { band: 3, label: 'top 2,000', hint: 'ordinary vocabulary — worth a card' },
+  { band: 4, label: 'top 4,000', hint: 'a fuller vocabulary — useful, not urgent' },
+  { band: 5, label: 'rare', hint: 'uncommon — fine to look up and let go' },
+]
+
+function FREQ_RULE(language: string): string {
+  return `Give every entry a "band" — how common the word is in everyday ${language}, as an integer: 1 if it is among the 500 most frequent words, 2 within the top 1,000, 3 within the top 2,000, 4 within the top 4,000, 5 if rarer than that. Judge the dictionary form's frequency, not the inflected one's. Personal names get 5.`
+}
+
 function MEMORY_RULE(language: string): string {
   return [
     `Give an "emoji" field (1-2 emoji) ONLY to content words concrete enough to picture instantly — a thing, an action, a vivid quality. Leave it off function words, names, numbers, and abstractions no emoji really depicts.`,
@@ -343,6 +363,7 @@ const GLOSSARY_ARRAY = {
       emoji: { type: 'STRING' },
       root: { type: 'STRING' },
       rootMeaning: { type: 'STRING' },
+      band: { type: 'INTEGER' },
     },
     required: ['word', 'meaning', 'isNew'],
   },
@@ -827,6 +848,7 @@ async function glossaryFor(opts: {
         : `Set isNew=true only for content words (nouns, verbs, adjectives, adverbs); function words and personal names are never isNew.`,
       ROMAN_RULE(deck.language, 'every glossary entry'),
       MEMORY_RULE(deck.language),
+      FREQ_RULE(deck.language),
     ]
       .filter(Boolean)
       .join('\n')
@@ -1262,12 +1284,18 @@ export async function generateStory(opts: {
   /** Words the learner keeps forgetting — worked into the plot on purpose so
    *  they're met repeatedly, in context, instead of only on a flashcard. */
   focusWords?: string[]
+  /** Words the learner met in earlier stories and is due to meet again (see
+   *  `dueForRecurrence`). Unlike focus words these are a preference only: the
+   *  spacing is what matters, and a story bent to fit a word in teaches the
+   *  word worse than a story that left it out. */
+  recurWords?: string[]
   /** Called with the running trace whenever a pass starts or finishes, so the
    *  UI can show what the wait is for and what each pass cost. */
   onProgress?: (steps: StoryStep[]) => void
 }): Promise<Story> {
   const { deck, knownWords, learningWords, vocabLevel, topic, lengthWords } = opts
   const { avoidThemes = [], avoidNames = [], continueFrom, angle, focusWords = [], ending = 'hook' } = opts
+  const { recurWords = [] } = opts
 
   const bible = continueFrom?.bible
   const langCode = langCodeFor(deck.language)
@@ -1404,6 +1432,13 @@ export async function generateStory(opts: {
       ? `Words being learned — weave in as many of these as possible for practice: ${learningWords.join(', ')}`
       : '',
     `Where the story needs something the bank does not cover, just use the most common everyday ${deck.language} word for it. Do NOT contort a sentence to avoid an ordinary word, and do NOT reach past the band above to find one.`,
+    // Deliberately the gentlest instruction in the prompt. The whole point of
+    // a re-encounter is meeting the word in a story that is going somewhere;
+    // told any more firmly, the model writes a sentence that exists only to
+    // hold the word, and the reader learns that the word is filler.
+    recurWords.length > 0
+      ? `DUE FOR ANOTHER MEETING — the reader met these in earlier stories and it is about time they saw them again: ${recurWords.join(', ')}. Use whichever of them fall naturally into what the plan already has happening, and leave out any that don't. This is the lowest priority on this page: never add a scene, a line or a detail just to fit one in, and never bend a sentence around one. A good story with none of them beats a worse story with all of them.`
+      : '',
     focusWords.length > 0
       ? `PLOT-CRITICAL VOCABULARY: these are words the learner keeps forgetting — ${focusWords.join(', ')}. Each one must appear at least three times, in different sentences and different situations, and at least one of them must matter to the plot (it names the thing someone wants, the task that keeps going wrong, the person everyone is waiting for). Never draw attention to them or define them in the text; just make the story impossible to follow without them.`
       : '',
@@ -1532,6 +1567,7 @@ const DEFINE_SCHEMA = {
     emoji: { type: 'STRING' },
     root: { type: 'STRING' },
     rootMeaning: { type: 'STRING' },
+    band: { type: 'INTEGER' },
   },
   required: ['meaning', 'isContentWord'],
 }
@@ -1550,6 +1586,7 @@ export async function defineWord(opts: {
     `Also report whether it is a content word (noun, verb, adjective or adverb) rather than a function word.`,
     ROMAN_RULE(deck.language, 'the word'),
     MEMORY_RULE(deck.language),
+    FREQ_RULE(deck.language),
   ]
     .filter(Boolean)
     .join('\n')
@@ -1571,12 +1608,18 @@ const DEFINE_MANY_SCHEMA = {
           emoji: { type: 'STRING' },
           root: { type: 'STRING' },
           rootMeaning: { type: 'STRING' },
+          band: { type: 'INTEGER' },
         },
         required: ['word', 'meaning', 'isContentWord'],
       },
     },
   },
   required: ['items'],
+}
+
+/** Keep a band only if it is one of ours. */
+export function bandOf(n: unknown): number | undefined {
+  return typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 5 ? n : undefined
 }
 
 export interface WordDefinition {
@@ -1586,6 +1629,7 @@ export interface WordDefinition {
   emoji?: string
   root?: string
   rootMeaning?: string
+  band?: number
 }
 
 /** Define a batch of words at once, each in the sentence it was used in — the
@@ -1604,6 +1648,7 @@ export async function defineWords(opts: {
     `Return every word exactly as given, each with its meaning.`,
     ROMAN_RULE(deck.language, 'every entry'),
     MEMORY_RULE(deck.language),
+    FREQ_RULE(deck.language),
     `Words:`,
     ...words.map((w) => (w.sentence ? `${w.word} — in: "${w.sentence.trim()}"` : w.word)),
   ]
@@ -1623,6 +1668,7 @@ export async function defineWords(opts: {
         emoji: item.emoji?.trim() || undefined,
         root: item.root?.trim() || undefined,
         rootMeaning: item.rootMeaning?.trim() || undefined,
+        band: bandOf(item.band),
       })
   }
   return map
