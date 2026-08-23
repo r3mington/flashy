@@ -2145,9 +2145,26 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 /* "from makan — to eat": the base word an affixed form is built on. Sits tight
    under the meaning, quieter than it, so it reads as a footnote and not as a
    second definition. */
-.word-sheet-root { color: var(--ink-2); font-size: 13.5px; margin: -8px 0 14px; }
+.word-sheet-root { color: var(--ink-2); font-size: 13.5px; margin: -8px 0 10px; }
 .word-sheet-root b { color: var(--accent); font-weight: 600; }
 .word-sheet-root .in-deck { color: var(--ink-3); }
+/* What each affix on the word does. A grammar note under the definition, set
+   quieter than it — the meaning is why you tapped, this is the bonus. */
+.word-sheet-affixes {
+  /* A two-column grid rather than a stack of rows, so every gloss starts at
+     the same x however long the affix beside it is ("-i" and "meN-…-kan" are
+     both in this table). The rows are `display: contents` for that reason. */
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  margin: 0 0 14px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+  font-size: 13px;
+}
+.affix-row { display: contents; }
+.affix-label { color: var(--accent); font-weight: 700; white-space: nowrap; }
+.affix-gloss { color: var(--ink-2); }
 .word-sheet-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 /* --- Export modal ------------------------------------------------------- */

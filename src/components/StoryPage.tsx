@@ -46,6 +46,7 @@ import { Icon } from './Icon'
 import { rootCandidates } from '../lemma'
 import { defKey, splitSentences, tokenizeWords, countWords } from '../text'
 import { storyColorVars } from '../storyColors'
+import { explainAffixes } from '../affixes'
 import { useSettings, saveSettings } from '../useSettings'
 
 const WORD_STATUSES: { key: WordStatus; label: string; title: string }[] = [
@@ -946,6 +947,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       })()
     : undefined
   const selectedInDeck = !!selectedCard
+  // The affixes standing between the root and the word in front of you. Read
+  // off the model's root rather than guessed from the word, so a word that
+  // merely looks affixed ("bulan", "punya") explains nothing at all.
+  const selectedAffixes = selected?.root
+    ? explainAffixes(selected.word, selected.root, langCode)
+    : []
 
   // The open story's place in its thread: what came before (for the recap) and
   // whether a next part already exists (which the reader gets a link to).
@@ -1699,6 +1706,23 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 from <b>{selected.root}</b>
                 {selected.rootMeaning && <span> — {selected.rootMeaning}</span>}
                 {selected.rootInDeck && <span className="in-deck"> · in your deck</span>}
+              </div>
+            )}
+            {/* What the affixes on this word actually do. The word on screen is
+                already the worked example, so only the rule needs stating; the
+                canned example rides along as a tooltip. */}
+            {selectedAffixes.length > 0 && (
+              <div className="word-sheet-affixes">
+                {selectedAffixes.map((a) => (
+                  <div key={a.label} className="affix-row">
+                    <span className="affix-label" title={a.example}>
+                      {a.label}
+                    </span>
+                    <span className="affix-gloss" title={a.example}>
+                      {a.gloss}
+                    </span>
+                  </div>
+                ))}
               </div>
             )}
             <div className="word-sheet-actions">
