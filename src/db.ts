@@ -132,6 +132,10 @@ export interface SavedStory {
    *  away from what this one actually did. A title cannot do that job. Plain,
    *  not indexed. */
   premise?: string
+  /** The plot in English, ≤50 words, shown above the text before reading so
+   *  attention can go on the language rather than on decoding what happens.
+   *  Absent on stories made before it existed. Plain, not indexed. */
+  summary?: string
   /** Words the learner keeps forgetting that were seeded into this part. */
   focusWords?: string[]
   /** What the reader asked to happen next in this part, if they steered it.
@@ -289,6 +293,23 @@ export interface WordTap {
   lastAt: number
 }
 
+/** A keyword-method mnemonic the reader asked for on a word they kept
+ *  looking up. Generated once and kept: the same picture every time is what
+ *  makes it a memory aid, and a fresh one per tap would be a fresh thing to
+ *  forget. One per word per deck. */
+export interface Mnemonic {
+  deckId: number
+  /** The word's `defKey`. */
+  key: string
+  /** The word as it was shown when the mnemonic was made. */
+  word: string
+  /** The English sound-alike — "pin to" for pintu. */
+  keyword: string
+  /** The one-sentence image. */
+  text: string
+  createdAt: number
+}
+
 export interface AppSettings {
   key: 'app'
   apiKey: string
@@ -359,6 +380,7 @@ export const db = new Dexie('flashy') as Dexie & {
   listening: EntityTable<ListeningLog, 'day'>
   translations: EntityTable<TranslationSession, 'id'>
   wordTaps: EntityTable<WordTap, 'key'>
+  mnemonics: EntityTable<Mnemonic, 'key'>
 }
 
 db.version(1).stores({
@@ -432,6 +454,22 @@ db.version(7).stores({
   listening: 'day',
   translations: '++id, deckId, createdAt',
   wordTaps: '[deckId+key], deckId',
+})
+
+// Keyword mnemonics, one row per word per deck.
+db.version(8).stores({
+  decks: '++id, name',
+  cards: '++id, deckId, due, [deckId+due], word',
+  reviews: '++id, cardId, deckId, ts',
+  blacklist: '++id, deckId, word',
+  settings: 'key',
+  stories: '++id, deckId, createdAt',
+  snapshots: 'day',
+  reading: 'day',
+  listening: 'day',
+  translations: '++id, deckId, createdAt',
+  wordTaps: '[deckId+key], deckId',
+  mnemonics: '[deckId+key], deckId',
 })
 
 /** Record a tap on a word while reading. */

@@ -349,6 +349,8 @@ export interface Story {
    *  `avoidThemes` on the next one — a title says nothing about the mechanic a
    *  story turned on, which is the thing that actually kept repeating. */
   premise?: string
+  /** The plot in English, at most `SUMMARY_MAX_WORDS`, shown before the text. */
+  summary?: string
 }
 
 const GLOSSARY_ARRAY = {
@@ -416,7 +418,7 @@ const STORY_SCHEMA = {
 
 /** The prose half of a story — what the writing call returns. Translation and
  *  glossary are added afterwards, each by its own pass. */
-type StoryProse = Omit<Story, 'glossary' | 'translation' | 'premise'>
+type StoryProse = Omit<Story, 'glossary' | 'translation' | 'premise' | 'summary'>
 
 /** Most named characters a first part may introduce. Reading in a second
  *  language is slow enough that a fourth name costs more than it adds. */
@@ -742,9 +744,13 @@ const EXTEND_SCHEMA = {
 
 const TRANSLATION_SCHEMA = {
   type: 'OBJECT',
-  properties: { translation: { type: 'STRING' } },
-  required: ['translation'],
+  properties: { translation: { type: 'STRING' }, summary: { type: 'STRING' } },
+  required: ['translation', 'summary'],
 }
+
+/** Longest the plot summary may run. Short enough to be read before the
+ *  story without becoming a second story. */
+export const SUMMARY_MAX_WORDS = 50
 
 /** Translate the finished story into English, in one pass over the final text.
  *  Split out of the writing call because it doubled that call's output for
@@ -754,19 +760,33 @@ async function translateStory(
   deck: Deck,
   story: string,
   onMeta?: (m: CallMeta) => void,
-): Promise<string> {
+): Promise<{ translation: string; summary: string }> {
   const prompt = [
     `Translate this ${deck.language} story into natural English. Return the whole translation as one string in "translation".`,
     `Keep the paragraph breaks of the original, keep dialogue inside quotation marks “…”, and translate every line — do not summarise, abridge or add anything.`,
     `Write English a person would actually write: idiomatic, not a word-for-word calque of the ${deck.language}.`,
+    // The summary is made here, from the text as it finally stands, rather
+    // than in the writing pass: extensions and the vocabulary edit both
+    // change the story after it is written, and a summary of the draft can
+    // end up describing a scene that was cut.
+    `Also return "summary": the plot of this story in English, at most ${SUMMARY_MAX_WORDS} words. It is shown to the learner BEFORE they read, so they can spend their attention on the language rather than on working out what is happening. Plain and concrete — who, where, what happens — naming the characters. No suspense-building, no questions, no commentary on the story.`,
     `Story:\n${story}`,
   ].join('\n')
 
-  const parsed = await callGeminiJson<{ translation: string }>(prompt, TRANSLATION_SCHEMA, {
-    label: 'translate',
-    onMeta,
-  })
-  return parsed.translation ?? ''
+  const parsed = await callGeminiJson<{ translation: string; summary: string }>(
+    prompt,
+    TRANSLATION_SCHEMA,
+    { label: 'translate', onMeta },
+  )
+  return { translation: parsed.translation ?? '', summary: clipWords(parsed.summary ?? '', SUMMARY_MAX_WORDS) }
+}
+
+/** Cut a text to its first `max` words. The model is asked for the limit and
+ *  usually keeps it; this is for the times it doesn't. */
+export function clipWords(text: string, max: number): string {
+  const words = text.trim().split(/\s+/).filter(Boolean)
+  if (words.length <= max) return words.join(' ')
+  return `${words.slice(0, max).join(' ')}…`
 }
 
 /** Roughly how much story one glossary call can cover inside the function's
@@ -1528,11 +1548,11 @@ export async function generateStory(opts: {
   // Translate and gloss last, once each, over the text as it finally stands —
   // so extensions cost nothing extra here, the English reads as one piece, and
   // no word of the story goes unglossed.
-  const translation = await step(
+  const { translation, summary } = await step(
     'translate',
     'Translating',
     (onMeta) => translateStory(deck, prose.story, onMeta),
-    (t) => `${countWords(t, 'en')} words`,
+    (t) => `${countWords(t.translation, 'en')} words`,
   )
 
   // The glossary is the one pass that may fail without costing the reader the
@@ -1555,7 +1575,47 @@ export async function generateStory(opts: {
 
   const total = steps.reduce((sum, s) => sum + (s.ms ?? 0), 0)
   console.log(`[story] done in ${(total / 1000).toFixed(1)}s`, steps)
-  return { ...prose, translation, glossary, premise: plan.premise }
+  return { ...prose, translation, glossary, premise: plan.premise, summary }
+}
+
+const MNEMONIC_SCHEMA = {
+  type: 'OBJECT',
+  properties: { keyword: { type: 'STRING' }, mnemonic: { type: 'STRING' } },
+  required: ['keyword', 'mnemonic'],
+}
+
+export interface Mnemonic {
+  /** The English sound-alike the image hangs on — "pin to" for pintu. */
+  keyword: string
+  /** One sentence tying the sound-alike to the meaning. */
+  mnemonic: string
+}
+
+/** A keyword-method mnemonic for one stubborn word.
+ *
+ *  The keyword method (Atkinson, 1975) is among the best-evidenced techniques
+ *  for vocabulary: find a first-language word that SOUNDS like the foreign
+ *  one, then a vivid image in which that sound-alike does the foreign word's
+ *  meaning. "pintu" → "pin to" → pin a note TO the door. The sound carries
+ *  the reader to the keyword, the image carries the keyword to the meaning.
+ *
+ *  Asked for on demand, for words the reader keeps needing to look up — a
+ *  mnemonic on a word that is sticking by itself is clutter. */
+export async function generateMnemonic(opts: {
+  deck: Deck
+  word: string
+  meaning: string
+  roman?: string
+}): Promise<Mnemonic> {
+  const { deck, word, meaning, roman } = opts
+  const prompt = [
+    `Make a keyword-method mnemonic for an English speaker learning ${deck.language} who keeps forgetting the word "${word}"${roman ? ` (pronounced roughly "${roman}")` : ''}, meaning "${meaning}".`,
+    `Step 1 — "keyword": an English word or short phrase that SOUNDS like "${word}" (or like its first syllables) when said aloud. Sound is everything here: pick by ear, not by spelling, and prefer something concrete that can be pictured.`,
+    `Step 2 — "mnemonic": ONE short sentence (at most 20 words) in which the keyword's image does the thing the word means, so vividly it is hard to forget — absurd, physical, specific. Write the sound-alike part in CAPITALS so the reader can hear it. Example for pintu / door: "PIN a note TO the door and slam it."`,
+    `Rules: the sentence must contain the meaning plainly (the reader should get from the picture to "${meaning}" without guessing). Do not explain the technique, do not add options, do not mention ${deck.language}. Return only the two fields.`,
+  ].join('\n')
+  const m = await callGeminiJson<Mnemonic>(prompt, MNEMONIC_SCHEMA, { label: 'mnemonic' })
+  return { keyword: (m.keyword ?? '').trim(), mnemonic: (m.mnemonic ?? '').trim() }
 }
 
 const DEFINE_SCHEMA = {

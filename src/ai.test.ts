@@ -3,6 +3,7 @@ import {
   GLOSSARY_CHUNK_WORDS,
   SIMPLIFY_CHUNK_WORDS,
   groupParagraphs,
+  clipWords,
   pickAngle,
   pickEnding,
   splitForGlossary,
@@ -158,5 +159,20 @@ describe('pickEnding', () => {
 
   it('holds off until a thread has parts behind it', () => {
     expect(pickEnding({ partsSoFar: 1, openThreads: 3 })).toBe('hook')
+  })
+})
+
+describe('clipWords', () => {
+  it('leaves a text within the limit alone', () => {
+    expect(clipWords('a cat eats rice', 50)).toBe('a cat eats rice')
+  })
+
+  it('cuts at the limit and says so', () => {
+    expect(clipWords('one two three four five', 3)).toBe('one two three…')
+  })
+
+  it('normalises stray whitespace and survives an empty summary', () => {
+    expect(clipWords('  one   two  ', 5)).toBe('one two')
+    expect(clipWords('', 5)).toBe('')
   })
 })

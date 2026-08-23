@@ -1543,6 +1543,17 @@ button { font-family: inherit; }
   margin-right: 4px;
 }
 .story-previously em { font-style: normal; opacity: 0.75; }
+/* The plot in English, above the text. Set like "Previously" — a quiet
+   aside before the story proper, not part of it. */
+.story-summary {
+  margin: -6px 0 16px;
+  padding-left: 12px;
+  border-left: 3px solid var(--line);
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+.story-summary b { color: var(--ink); margin-right: 4px; }
 
 /* The English "who's who" above a continuation — same left-rule treatment as
    "Previously", so the two read as one block of orientation before the text. */
@@ -1945,34 +1956,12 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   background: color-mix(in srgb, var(--c-study) 14%, transparent);
   text-decoration-color: var(--c-study);
 }
-/* Fading highlights. A word still being learned loses a step of colour for
-   every story it has been read in since the reader last tapped it, so the
-   page shows what is sinking in: a word met four times without needing its
-   meaning has, by every sign we have, been learned, and sits in the prose
-   like one. A tap brings the full colour back. Each level is the same rule
-   with the highlight mixed further towards the known-word colour; the last
-   keeps a hairline underline so the word can still be found by a reader
-   who wants it. */
-.story-word.new-word.fade-1 {
-  color: color-mix(in srgb, var(--c-new) 75%, var(--c-known, var(--ink)));
-  background: color-mix(in srgb, var(--c-new) 11%, transparent);
-  text-decoration-color: color-mix(in srgb, var(--c-new) 45%, transparent);
-}
-.story-word.new-word.fade-2 {
-  color: color-mix(in srgb, var(--c-new) 50%, var(--c-known, var(--ink)));
-  background: color-mix(in srgb, var(--c-new) 7%, transparent);
-  text-decoration-color: color-mix(in srgb, var(--c-new) 35%, transparent);
-}
-.story-word.new-word.fade-3 {
-  color: color-mix(in srgb, var(--c-new) 25%, var(--c-known, var(--ink)));
-  background: color-mix(in srgb, var(--c-new) 3%, transparent);
-  text-decoration-color: color-mix(in srgb, var(--c-new) 25%, transparent);
-}
-.story-word.new-word.fade-4 {
-  color: var(--c-known, inherit);
-  background: transparent;
-  text-decoration-color: color-mix(in srgb, var(--c-new) 18%, transparent);
-}
+/* Fading highlights — deck words in study only. A study word loses a step
+   of colour for every story it has been read in since the reader last tapped
+   it, until after four it sits in the prose like a known word; a tap brings
+   the colour back. New words do NOT fade: a paler orange turned out to tell
+   the reader nothing they could act on — the word is still not in the deck —
+   so they stay at full colour until they are added. */
 .story-word.study-word.fade-1 {
   color: color-mix(in srgb, var(--c-study) 75%, var(--c-known, var(--ink)));
   text-decoration-color: color-mix(in srgb, var(--c-study) 35%, transparent);
@@ -2205,6 +2194,28 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .word-sheet-emoji { font-size: 26px; line-height: 1; }
 /* Romanization line in the tap-to-define sheet (non-Latin scripts). */
 .word-sheet-roman { color: var(--ink-2); font-size: 14px; font-style: italic; margin: -6px 0 8px; }
+/* The keyword mnemonic: a lightbulb and one sentence, set apart from the
+   definition so it reads as a memory aid rather than a second meaning. */
+.word-sheet-mnemonic {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: -4px 0 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.word-sheet-mnemonic .mnemonic-glyph { font-size: 15px; line-height: 1; flex: none; }
+/* The offer, for a word the reader keeps looking up. */
+.word-sheet-mnemonic.offer {
+  flex-wrap: wrap;
+  background: color-mix(in srgb, var(--ink-3) 10%, transparent);
+  color: var(--ink-2);
+}
+.word-sheet-mnemonic .mnemonic-error { color: var(--red); font-size: 12.5px; flex-basis: 100%; }
 /* "Met 3 times before": what the stories say about the tapped word. */
 .word-sheet-seen { color: var(--ink-3); font-size: 12.5px; margin: -8px 0 12px; }
 /* "from makan — to eat": the base word an affixed form is built on. Sits tight

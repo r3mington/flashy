@@ -18,6 +18,7 @@ import { dueForRecurrence, encounterStats, fadeLevel } from '../encounters'
 import {
   defineWord,
   defineWords,
+  generateMnemonic,
   generateStory,
   pickAngle,
   pickEnding,
@@ -268,6 +269,47 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     for (const t of taps ?? []) map.set(t.key, t.lastAt)
     return map
   }, [taps])
+  const tapCount = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const t of taps ?? []) map.set(t.key, t.count)
+    return map
+  }, [taps])
+
+  // Mnemonics the reader has asked for in this deck, one per word.
+  const mnemonics = useLiveQuery(
+    () => db.mnemonics.where('deckId').equals(deckId).toArray(),
+    [deckId],
+  )
+  const mnemonicFor = useMemo(() => {
+    const map = new Map<string, { keyword: string; text: string }>()
+    for (const m of mnemonics ?? []) map.set(m.key, { keyword: m.keyword, text: m.text })
+    return map
+  }, [mnemonics])
+  const [mnemonicBusy, setMnemonicBusy] = useState<string | null>(null)
+  const [mnemonicError, setMnemonicError] = useState('')
+
+  /** Make and keep a mnemonic for the tapped word. */
+  async function makeMnemonic(word: string, meaning: string, roman?: string) {
+    const key = defKey(word)
+    setMnemonicBusy(key)
+    setMnemonicError('')
+    try {
+      const m = await generateMnemonic({ deck: deck!, word, meaning, roman })
+      if (!m.mnemonic) throw new Error('Nothing came back — try again.')
+      await db.mnemonics.put({
+        deckId,
+        key,
+        word,
+        keyword: m.keyword,
+        text: m.mnemonic,
+        createdAt: Date.now(),
+      })
+    } catch (e) {
+      setMnemonicError(e instanceof Error ? e.message : 'Could not make a mnemonic.')
+    } finally {
+      setMnemonicBusy(null)
+    }
+  }
 
   // How many stories each word has been read in, worked out from the stories
   // themselves. The open story is left out: its words are being met now and
@@ -617,6 +659,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         angle,
         beat: angle.turn,
         premise: result.premise,
+        summary: result.summary,
         focusWords: focusWords.length > 0 ? focusWords : undefined,
         chosen: from && steer ? steer : undefined,
         topic: from ? undefined : topic.trim() || undefined,
@@ -1041,6 +1084,14 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const selectedSeen =
     selected && !selected.isName ? (encounters.get(defKey(selected.word))?.seen ?? 0) : null
   const selectedBand = selected?.band ? FREQ_BANDS.find((b) => b.band === selected.band) : undefined
+  // A word the reader has had to look up five times is a leech — the normal
+  // route is not working for it, and it is offered a mnemonic. Once made,
+  // the mnemonic shows whatever the count.
+  const LEECH_TAPS = 5
+  const selectedKey = selected ? defKey(selected.word) : ''
+  const selectedMnemonic = selected ? mnemonicFor.get(selectedKey) : undefined
+  const selectedIsLeech =
+    !!selected && !selected.isName && (tapCount.get(selectedKey) ?? 0) >= LEECH_TAPS
   // The affixes standing between the root and the word in front of you. Read
   // off the model's root rather than guessed from the word, so a word that
   // merely looks affixed ("bulan", "punya") explains nothing at all.
@@ -1354,6 +1405,15 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               {story.chosen && <em> You chose: {story.chosen}.</em>}
             </p>
           )}
+          {/* The plot, in English, before the text: an advance organiser. A
+              reader who already knows what happens spends the reading on
+              the language instead of on decoding the events — which is the
+              point of reading in the first place. */}
+          {story.summary && (
+            <p className="story-summary">
+              <b>The story</b> {story.summary}
+            </p>
+          )}
           {/* Who's who, in English. A part picked up days later starts with a
               cast the reader has half-forgotten — and names in an unfamiliar
               script are the hardest thing to reconstruct from context. Taken
@@ -1607,9 +1667,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   const isName = nameKeys.has(key)
                   const isNew = !isName && isNewWord(key)
                   const inStudy = !isName && !isNew && isInStudy(key)
-                  // A word still being learned fades a step for every story
-                  // it has been read in since the reader last needed to tap
-                  // it — so the page shows what is sinking in.
+                  // How many stories the word has been read in since the
+                  // reader last needed to tap it. Study words fade a step per
+                  // story, so the page shows what is sinking in; new words
+                  // stay at full colour — faded orange turned out to tell
+                  // the reader nothing they could act on — and the fade only
+                  // decides whether the micro-gloss is still shown.
                   const fade = isNew || inStudy ? fadeFor(key) : 0
                   const cls =
                     (isName
@@ -1618,7 +1681,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                         ? ' new-word'
                         : inStudy
                           ? ' study-word'
-                          : ' plain') + (fade > 0 ? ` fade-${fade}` : '')
+                          : ' plain') + (inStudy && fade > 0 ? ` fade-${fade}` : '')
                   // Only on the words still being learned. On known words it
                   // would be decoration, and on every word it would be noise
                   // that stops the few that matter from standing out.
@@ -1843,6 +1906,33 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   : selectedSeen === 1
                     ? 'Met once before, in an earlier story'
                     : `Met ${selectedSeen} times before, in earlier stories`}
+              </div>
+            )}
+            {/* A keyword-method mnemonic: the sound-alike in capitals, then
+                the picture. Kept once made, so it is the same picture every
+                time — which is what makes it one. */}
+            {selectedMnemonic && (
+              <div className="word-sheet-mnemonic">
+                <span className="mnemonic-glyph" aria-hidden="true">
+                  💡
+                </span>
+                <span>{selectedMnemonic.text}</span>
+              </div>
+            )}
+            {!selectedMnemonic && selectedIsLeech && !selected.loading && !selected.failed && (
+              <div className="word-sheet-mnemonic offer">
+                <span>
+                  You keep looking this one up
+                  {tapCount.get(selectedKey) ? ` — ${tapCount.get(selectedKey)} times` : ''}.
+                </span>
+                <button
+                  className="btn small"
+                  disabled={mnemonicBusy === selectedKey}
+                  onClick={() => makeMnemonic(selected.word, selected.meaning, selected.roman)}
+                >
+                  {mnemonicBusy === selectedKey ? 'Thinking…' : '💡 Make me a mnemonic'}
+                </button>
+                {mnemonicError && <span className="mnemonic-error">{mnemonicError}</span>}
               </div>
             )}
             {/* What the affixes on this word actually do. The word on screen is
