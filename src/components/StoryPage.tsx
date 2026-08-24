@@ -20,8 +20,7 @@ import {
   defineWords,
   generateMnemonic,
   generateStory,
-  pickAngle,
-  pickEnding,
+  clipWords,
   ApiError,
   VOCAB_BANDS,
   DEFAULT_VOCAB_LEVEL,
@@ -567,21 +566,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       // pairings and settings shouldn't be replayed, and how many parts there
       // are decides whether this one pays a running question off, leaves
       // everything open, or (for a first story) simply ends.
-      const thread = from
-        ? (savedStories ?? []).filter(
-            (s) => s.id === (from.parentId ?? from.id) || s.parentId === (from.parentId ?? from.id),
-          )
-        : []
-      // Stories saved before angles existed carry only a turn — still worth
-      // avoiding, so they come through as a partial angle. A fresh story
-      // dodges the last few stories' dimensions the same way a part dodges
-      // its own thread's: repetition is felt across stories too.
-      const recent = from ? thread : (savedStories ?? []).slice(0, 6)
-      const angle = pickAngle(recent.map((s) => s.angle ?? { turn: s.beat }))
-      const ending = pickEnding({
-        partsSoFar: thread.length,
-        openThreads: from?.bible?.openThreads?.length ?? 0,
-      })
       // Words met in earlier stories whose spacing says it is time to meet
       // them again — still new, or still in study. Known words are not
       // re-encounters, just words. The open story is none, so nothing is
@@ -620,19 +604,22 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         topic: from ? undefined : topic || undefined,
         lengthWords: length,
         onProgress: setSteps,
-        angle,
-        ending,
         focusWords,
         recurWords,
         // Steer fresh stories away from themes already covered (recent first).
-        // What a past story was ABOUT, not what it was called — the premise is
-        // the only field that says which mechanic it turned on, and the
-        // mechanic is what kept coming back.
+        // What a past story was ABOUT, not what it was called. The summary
+        // (clipped) says what actually happened; older stories fall back to
+        // the planner-era premise, then the title.
         avoidThemes: from
           ? undefined
           : (savedStories ?? [])
               .slice(0, 8)
-              .map((s) => s.premise || (s.topic ? `${s.title} (${s.topic})` : s.title)),
+              .map(
+                (s) =>
+                  (s.summary && clipWords(s.summary, 22)) ||
+                  s.premise ||
+                  (s.topic ? `${s.title} (${s.topic})` : s.title),
+              ),
         // Same idea for the cast: the reader shouldn't meet the same three
         // people in every story. Continuations keep their thread's cast.
         avoidNames: from
@@ -657,9 +644,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         glossary: result.glossary,
         characterNames: result.characterNames,
         bible: result.bible,
-        angle,
-        beat: angle.turn,
-        premise: result.premise,
         summary: result.summary,
         focusWords: focusWords.length > 0 ? focusWords : undefined,
         chosen: from && steer ? steer : undefined,

@@ -92,7 +92,7 @@ globalThis.fetch = (async (url: any, init?: any) => {
 }) as typeof fetch
 
 // ---- scenarios ----
-const { generateStory, pickAngle, pickEnding } = await import('../src/ai.ts')
+const { generateStory } = await import('../src/ai.ts')
 
 const deck: any = { id: 1, name: 'Indonesian', language: 'Indonesian' }
 const OUT = new URL('../.story-lab/', import.meta.url).pathname
@@ -109,12 +109,9 @@ function save(name: string, obj: unknown) {
 
 if (cmd === 'full' || cmd === 'continue') {
   const prev = cmd === 'continue' ? JSON.parse(readFileSync(arg1!, 'utf-8')) : undefined
-  const angle = pickAngle()
-  const ending = pickEnding({
-    partsSoFar: prev ? 1 : 0,
-    openThreads: prev?.bible?.openThreads?.length ?? 0,
-  })
-  console.error(`angle: ${JSON.stringify(angle, null, 1)}\nending: ${ending}`)
+  // AVOID/RECUR simulate what StoryPage passes from the reader's history.
+  const avoidThemes = (process.env.AVOID ?? '').split('|').filter(Boolean)
+  const avoidNames = (process.env.NAMES ?? '').split(',').filter(Boolean)
   const story = await generateStory({
     deck,
     knownWords: [],
@@ -122,14 +119,14 @@ if (cmd === 'full' || cmd === 'continue') {
     vocabLevel: 2,
     topic: prev ? undefined : arg1 || undefined,
     lengthWords: 300,
-    angle: prev ? undefined : angle,
-    ending,
+    avoidThemes: prev ? undefined : avoidThemes,
+    avoidNames: prev ? undefined : avoidNames,
     continueFrom: prev
       ? { title: prev.title, story: prev.story, direction: arg2 || undefined, bible: prev.bible }
       : undefined,
     onProgress: () => {},
   })
-  save(cmd, { angle: prev ? undefined : angle, ending, ...story })
+  save(cmd, story)
   console.log(`\n===== ${story.title} =====\n\n${story.story}\n\n----- summary -----\n${story.summary}\n\n----- translation -----\n${story.translation}`)
 } else if (cmd === 'bare') {
   // The stripped pipeline the user proposes: one prompt, no plan, no angle,

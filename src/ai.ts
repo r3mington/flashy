@@ -345,11 +345,9 @@ export interface Story {
   glossary: GlossaryEntry[]
   characterNames: string[]
   bible: StoryBible
-  /** The plan's one-sentence premise. Saved with the story and fed back as
-   *  `avoidThemes` on the next one — a title says nothing about the mechanic a
-   *  story turned on, which is the thing that actually kept repeating. */
-  premise?: string
-  /** The plot in English, at most `SUMMARY_MAX_WORDS`, shown before the text. */
+  /** The plot in English, at most `SUMMARY_MAX_WORDS`, shown before the text.
+   *  Also fed back as `avoidThemes` on later stories — a title says nothing
+   *  about what a story actually did, which is the part that repeats. */
   summary?: string
 }
 
@@ -418,187 +416,11 @@ const STORY_SCHEMA = {
 
 /** The prose half of a story — what the writing call returns. Translation and
  *  glossary are added afterwards, each by its own pass. */
-type StoryProse = Omit<Story, 'glossary' | 'translation' | 'premise' | 'summary'>
+type StoryProse = Omit<Story, 'glossary' | 'translation' | 'summary'>
 
 /** Most named characters a first part may introduce. Reading in a second
  *  language is slow enough that a fourth name costs more than it adds. */
 const MAX_CAST = 4
-
-/** A story is rolled from four independent dimensions instead of picked from
- *  one list of plots.
- *
- *  One list, however long, has a shape. The seventeen we had were four
- *  mechanics rephrased — a secret, a missing thing, a message gone astray, a
- *  stranger who knows too much — so every story came out the same small
- *  domestic mystery, and the reader met the same found note in all of them.
- *  Four dimensions multiplied give thousands of starting positions, and more to
- *  the point they vary what a plot list cannot: how the story FEELS, who these
- *  people are to each other, and where they are. Most of the sameness lived in
- *  those three, not in the plot.
- */
-const STORY_TURNS = [
-  'someone tells a small lie, and it snowballs',
-  'the reader learns something one of the characters does not know',
-  'there is a deadline, and it is closer than anyone thought',
-  'someone makes a promise they cannot keep',
-  'a favour turns out to cost far more than expected',
-  'two characters want the same thing and only one can have it',
-  'someone is trying to do something kind and keeps being prevented',
-  'the plan is going perfectly until the weather, the traffic or the queue decides otherwise',
-  'someone is pretending to know how to do something they cannot do',
-  'an argument about something tiny that is really about something else',
-  'someone has to ask for help and would rather do almost anything else',
-  'two people remember the same event completely differently',
-  'someone is waiting for a person who is very late',
-  'one small change breaks a routine, and nothing works properly after that',
-  'someone is trying to say one particular thing and never gets to it',
-  'an ordinary transaction goes wrong in a way nobody has a rule for',
-  'someone gets exactly what they asked for',
-  'a character does something generous for a completely selfish reason',
-  'someone must choose between two people who both need them right now',
-  'a job that should take ten minutes takes the whole day',
-  'someone is trying to keep two people from meeting',
-  'a character changes their mind halfway and has to walk it back',
-  'one person is copying what another does and getting it slightly wrong',
-  'a small competition that neither person will admit is a competition',
-  'someone is far better at something than anyone expected',
-  'a character keeps being mistaken for someone else',
-]
-
-/** How the story reads. Drawn separately from the plot, because a turn played
- *  warm and the same turn played tense are two different stories — and left
- *  unspecified, every one of them came out tense. */
-const STORY_TONES = [
-  'warm — these people like each other, and it shows in how they talk',
-  'funny — the comedy comes from the situation, and everyone plays it straight',
-  'tense — something is at stake and there is not enough time',
-  'wistful — quiet and a little sad, with nothing dramatic in it',
-  'absurd — one thing in this world is faintly ridiculous and everybody simply accepts it',
-  'matter-of-fact — plain and unhurried; the interest is in what people actually do',
-  'bickering — affectionate friction, everyone talking over everyone else',
-  'awkward — nobody quite knows how to behave, and it never resolves into ease',
-  'suspicious — someone is not being told everything',
-  'excited — everyone is keyed up about something small',
-]
-
-/** Who the people are to each other. The single strongest lever on how a scene
- *  sounds, and the one the old prompt never touched at all. */
-const STORY_BONDS = [
-  'two siblings',
-  'neighbours who see each other every day',
-  'people who work together',
-  'a child and an adult who is not their parent',
-  'old friends who have not met for a long time',
-  'complete strangers thrown together',
-  'a parent and their grown-up child',
-  'someone and a person they are slightly afraid of',
-  'two people who barely tolerate each other',
-  'a newcomer and the person showing them around',
-  'a customer and the person behind the counter',
-  'a couple who have been together a long time',
-  'a teacher and a former student, years later',
-  'someone and the friend of a friend they have just met',
-]
-
-/** Where it happens. Every one of these can be named and described with
- *  beginner vocabulary, which is the only real constraint on the setting. */
-const STORY_WORLDS = [
-  'a kitchen, halfway through cooking',
-  'a market stall',
-  'a long bus or train journey',
-  'a queue that is not moving',
-  'a rooftop or a balcony at night',
-  'a family party',
-  'a rainstorm that has trapped everyone indoors',
-  'the last hour of a working day',
-  'a small shop just after closing',
-  'a river or a beach on a very hot day',
-  'a shared house on a morning when everyone is late',
-  'a wedding or a birthday that nobody is enjoying yet',
-  'a walk on foot that is taking far longer than expected',
-  'a repair somebody insists they can do themselves',
-  'a classroom, seen from the wrong side of it',
-  'an evening when the electricity has gone out',
-  'a borrowed motorbike, car or bicycle',
-  'a meal with one guest too many',
-  'a bus stop in the wrong part of town',
-  'a garden or a yard that has got out of hand',
-]
-
-/** The four dimensions a single story is rolled from. */
-export interface StoryAngle {
-  turn: string
-  tone: string
-  bond: string
-  world: string
-}
-
-/** Roll an angle, avoiding values this thread has already played. Each
- *  dimension is drawn independently — a repeated setting with a new turn, tone
- *  and pairing is a different story, so there is no need to hold whole
- *  combinations. */
-export function pickAngle(used: Partial<StoryAngle>[] = []): StoryAngle {
-  const draw = (pool: string[], seen: (string | undefined)[]) => {
-    const fresh = pool.filter((v) => !seen.includes(v))
-    const from = fresh.length > 0 ? fresh : pool
-    return from[Math.floor(Math.random() * from.length)]
-  }
-  return {
-    turn: draw(
-      STORY_TURNS,
-      used.map((u) => u.turn),
-    ),
-    tone: draw(
-      STORY_TONES,
-      used.map((u) => u.tone),
-    ),
-    bond: draw(
-      STORY_BONDS,
-      used.map((u) => u.bond),
-    ),
-    world: draw(
-      STORY_WORLDS,
-      used.map((u) => u.world),
-    ),
-  }
-}
-
-/** Props and events the planner reaches for first, and therefore reached for in
- *  nearly every story. A general instruction to be fresh never got near them —
- *  each one is the single most obvious way to render "an everyday scene with a
- *  sharp turn in it", so only naming them outright keeps them out. */
-const OVERUSED = [
-  'a found note, letter or scrap of paper with a name or a message on it',
-  'a box, envelope or bag whose contents are a mystery',
-  'the police, a security guard or any other official arriving',
-  'a mysterious key, and the question of what it opens',
-  'an old photograph that gives away a secret',
-  'a call or message from an unknown number',
-  'a stranger who turns out to know more than they should',
-  'someone secretly ill, or secretly about to leave town',
-]
-
-/** How a part ends. 'hook' leaves everything open; 'payoff' closes one running
- *  question before opening another; 'land' finishes the story properly. */
-export type StoryEnding = 'hook' | 'payoff' | 'land'
-
-/** Every part ending on a cliffhanger teaches the reader that nothing will ever
- *  be answered, and the hooks stop counting for anything. So every third part of
- *  a thread pays one thread off — provided there are at least two open, since
- *  closing the only one would end the story.
- *
- *  A story that is not yet a thread gets a third option. A piece forbidden to
- *  resolve is a suspense piece, and forbidding it every time was most of the
- *  reason every story turned into the same small mystery: the only endings
- *  reachable in an everyday setting are a discovery, an accusation or an
- *  arrival. Half of first parts now simply end. The other half open something,
- *  and the reader can carry it on if they want to. */
-export function pickEnding(opts: { partsSoFar: number; openThreads: number }): StoryEnding {
-  const { partsSoFar, openThreads } = opts
-  if (partsSoFar === 0) return Math.random() < 0.5 ? 'land' : 'hook'
-  if (partsSoFar < 2 || openThreads < 2) return 'hook'
-  return (partsSoFar + 1) % 3 === 0 ? 'payoff' : 'hook'
-}
 
 /** Roughly how many words a sentence of dialogue-led prose runs to. Used to
  *  turn a word target into a sentence count, which models hit far more
@@ -703,6 +525,17 @@ const ID_STORY_BANNED = [
   `Never use reduplication for plurals or for "the gaps in" (buku-buku, sela-sela) — say it a plainer way.`,
   `Take the commonest synonym every single time, never the more exact or more elegant one: "tiba-tiba" not "mendadak", "sepi" not "sunyi", "melihat" not "menatap", "orang tua" not "tetua", "pintu" not "gerbang", "tas" not "ransel", "keluar dari" not "menyembul".`,
 ]
+
+/** The writing pass's vocabulary line: the band, stated plainly and briefly.
+ *
+ *  Deliberately NOT the full `vocabSpec`. That block — six rules and a
+ *  re-read ritual — is enforcement machinery, and enforcement while writing
+ *  bends the prose: the writer reaches for a circumlocution mid-sentence and
+ *  the sentence shows it. Writing gets the register; the simplify pass, which
+ *  edits one word at a time with nothing to trade against, gets the rules. */
+function vocabHint(language: string, band: VocabBand): string {
+  return `VOCABULARY — ${band.cefr}: build the story from roughly the ${band.commonWords} most common words of ${language}, in simple sentences — the register of a graded reader. Where two words mean nearly the same thing, take the commoner one. A few words above the band are acceptable when the story needs them; a plainer word is always preferred.`
+}
 
 /** The vocabulary instruction: a ceiling on which words may exist at all, never
  *  a quota over how many are new.
@@ -1063,12 +896,9 @@ async function extendStory(opts: {
   story: StoryProse
   missingWords: number
   band: VocabBand
-  /** The ending the part was planned for — the continuation becomes the new
-   *  ending, so it has to land the same way. */
-  ending: StoryEnding
   onMeta?: (m: CallMeta) => void
 }): Promise<StoryProse> {
-  const { deck, story, missingWords, band, ending, onMeta } = opts
+  const { deck, story, missingWords, band, onMeta } = opts
   const prompt = [
     `Below is a story in ${deck.language} written for a language learner. It stopped too early — it needs about ${missingWords} more words.`,
     `Story so far, titled "${story.title}":\n${story.story}`,
@@ -1081,11 +911,7 @@ async function extendStory(opts: {
     `IMPORTANT — register: casual, everyday spoken ${deck.language}, matching the story above. Keep dialogue inside quotation marks “…”.`,
     vocabSpec(deck.language, band),
     `Lean on the vocabulary the story above already uses — the reader has just read it.`,
-    ending === 'land'
-      ? `ENDING — the continuation carries the story to its proper end. Land it on a quiet, specific final image: someone gets what they wanted or plainly does not, or something between these people has shifted. No summary, no moral, no lesson learned.`
-      : ending === 'payoff'
-        ? `ENDING — the continuation must answer ONE of the questions the story has been carrying, shown as a scene rather than explained, and then raise a new one in its last line. Never wrap the story up.`
-        : `ENDING — the continuation must end on a hook, unresolved: an interruption, a reveal, an arrival, or a question the reader cannot answer. Never wrap the story up.`,
+    `ENDING — the continuation carries the story to its own ending: land it somewhere that feels like the right place to stop, concrete and earned. No moral, no summary, no line telling the reader how anyone has changed.`,
     `Return: "story" (the continuation text only), "characterNames" (any personal names appearing in the continuation), and "bible" (the world state after the continuation: logline, cast, places, facts, openThreads).`,
   ].join('\n')
 
@@ -1103,172 +929,6 @@ async function extendStory(opts: {
     ],
     bible: more.bible ?? story.bible,
   }
-}
-
-/** The plot, decided before a word of the story is written. */
-export interface StoryPlan {
-  /** The situation, in one English sentence. */
-  premise: string
-  cast: { name: string; role: string; wants: string }[]
-  /** The ordinary-looking detail that carries the turn, planted early. */
-  plant: string
-  /** What happens, in order — the events the prose has to render. */
-  spine: string[]
-  /** The final image, and what it leaves the reader wanting. */
-  ending: string
-}
-
-const PLAN_SCHEMA = {
-  type: 'OBJECT',
-  properties: {
-    premise: { type: 'STRING' },
-    cast: {
-      type: 'ARRAY',
-      items: {
-        type: 'OBJECT',
-        properties: {
-          name: { type: 'STRING' },
-          role: { type: 'STRING' },
-          wants: { type: 'STRING' },
-        },
-        required: ['name', 'role', 'wants'],
-      },
-    },
-    plant: { type: 'STRING' },
-    spine: { type: 'ARRAY', items: { type: 'STRING' } },
-    ending: { type: 'STRING' },
-  },
-  required: ['premise', 'cast', 'plant', 'spine', 'ending'],
-}
-
-/** Plot the story before writing it. Two things make this worth a separate
- *  round-trip. A model composing under this many constraints at once — a word
- *  bank, a cast cap, a register, a length, a dialogue ratio — has nothing left
- *  over for plot, and spends it on satisfying the constraints instead. And a
- *  planted twist requires knowing the ending before writing the first line,
- *  which a single forward pass cannot do.
- *
- *  The plan is made in ENGLISH and the learner's own word bank is deliberately
- *  kept out of it: the bank is a ceiling on what the story can SAY, and left in
- *  place at this stage it silently becomes a ceiling on what can HAPPEN.
- *
- *  The difficulty band, though, does belong here. A plan is a choice of world
- *  as much as of plot, and a world chosen without it — a storm, a betrayal, a
- *  forest ranger's post — cannot be rendered in beginner vocabulary however
- *  firmly the writing pass is told to try. It will simply reach for the words
- *  the plan needs. So the plot stays free and the WORLD gets constrained. */
-async function planStory(opts: {
-  deck: Deck
-  lengthWords: number
-  band: VocabBand
-  topic?: string
-  avoidThemes: string[]
-  /** Character names the learner's recent stories used — a fresh cast reads
-   *  fresher than a fresh plot acted out by the same three people. */
-  avoidNames: string[]
-  angle?: StoryAngle
-  ending: StoryEnding
-  continueFrom?: {
-    title: string
-    story: string
-    direction?: string
-    bible?: StoryBible
-  }
-  onMeta?: (m: CallMeta) => void
-}): Promise<StoryPlan> {
-  const { deck, lengthWords, band, topic, avoidThemes, avoidNames, angle, ending, continueFrom } = opts
-  const { onMeta } = opts
-  const bible = continueFrom?.bible
-  // Enough beats to fill the length with events rather than with padding.
-  const beats = Math.max(4, Math.min(7, Math.round(lengthWords / 150)))
-
-  const prompt = [
-    `Plan a short story that will afterwards be written in ${deck.language} for a language learner. PLAN ONLY — do not write any prose.`,
-    `Plan in English. The PLOT is free — the learner's own word bank is no limit here, and the turn should be as sharp as you can make it.`,
-    `The WORLD is not free. This story will be written in very simple ${deck.language} (${band.cefr}, from the ${band.commonWords} most common words), so plan something that can actually be TOLD that way. The test is not the subject but the words: can the things in the scene be NAMED in everyday vocabulary, and the actions described plainly? A rooftop, a bus, a wedding, a broken fridge, a job somebody hates all pass that test easily. What fails it is anything whose events only exist in specialist language — a courtroom or a medical procedure, war, party politics, technical or business jargon, or a magic system that has to be explained before it can be used.`,
-    // The planner's first instinct, left alone, is the same handful of props in
-    // every story. A general instruction to be fresh does not reach them, and
-    // any list of examples given here comes straight back as the plot — which is
-    // exactly how the found note and the mystery box got into everything. So:
-    // no examples, and the defaults named and banned.
-    `DO NOT USE any of the following. They are the first things that come to mind and the reader has met all of them already: ${OVERUSED.join('; ')}. If your plan contains one, throw it away and plan something else.`,
-    `The interest does not have to come from a secret or a discovery. It can come from two people wanting different things, from a task going wrong, from somebody behaving slightly out of character, from a decision that has to be made now.`,
-    continueFrom
-      ? `This is the NEXT PART of a story already under way. Plan what happens next — do not re-plan what already happened.`
-      : '',
-    continueFrom ? `Previous part, titled "${continueFrom.title}":\n${continueFrom.story}` : '',
-    bible
-      ? [
-          `THE WORLD SO FAR — all of it is already true and must not be contradicted.`,
-          `Cast: ${bible.cast.map((c) => `${c.name} (${c.role}; wants ${c.wants})`).join('; ')}`,
-          bible.places.length > 0 ? `Places: ${bible.places.join('; ')}` : '',
-          bible.facts.length > 0 ? `Established facts: ${bible.facts.join('; ')}` : '',
-          bible.openThreads.length > 0
-            ? `Unanswered questions: ${bible.openThreads.join('; ')}`
-            : '',
-        ]
-          .filter(Boolean)
-          .join('\n')
-      : '',
-    continueFrom?.direction?.trim()
-      ? `THE READER CHOSE THIS — the plan must follow it, and it must start happening in the first beat, not the last: "${continueFrom.direction.trim()}"`
-      : '',
-    angle
-      ? [
-          `THE ANGLE — these four were drawn at random for this story. All four are binding, and together they are what makes this story different from the last one. Do not quietly drift back to a safer version of any of them.`,
-          `• Turn — build the plot around exactly this: ${angle.turn}. Do NOT take the first, most obvious instantiation that comes to mind; find the version with a specific situation and a specific reason behind it. The turn must be something the reader works out, never something the story announces.`,
-          `• Tone — ${angle.tone}. This governs the whole piece, not one scene of it, and it decides what kind of ending the story is walking towards.`,
-          `• Who these people are to each other — ${angle.bond}. Let it show in how they speak to each other, not in a line explaining the relationship.`,
-          `• Where it happens — ${angle.world}. Use it: it should cause some of the trouble, not just sit behind the story.`,
-        ].join('\n')
-      : '',
-    continueFrom
-      ? ''
-      : topic?.trim()
-        ? `Topic: "${topic.trim()}".`
-        : `Invent a fresh premise from the angle above: a specific situation these particular people would be in, in that particular place. Something has to be happening — a hangout scene where people merely chat is not a premise.`,
-    !continueFrom && avoidThemes.length > 0
-      ? `The learner's previous stories were these — pick a clearly different one. Not just a different setting and cast, but a different MECHANIC: if those stories turned on something being hidden, found or discovered, this one must not. Previous: ${avoidThemes.join('; ')}`
-      : '',
-    `Return:`,
-    `• "premise" — the situation in ONE English sentence.`,
-    continueFrom
-      ? `• "cast" — the people in this part, carrying forward the names already established above. You may add AT MOST ONE new named character, and only if the plot genuinely needs them.`
-      : `• "cast" — at most ${MAX_CAST} named characters, ideally two or three, each with their role and what they want. Give every one a personal name that is natural and common for a native ${deck.language} speaker${
-          avoidNames.length > 0
-            ? `, and NOT one of these — the learner's recent stories used them already: ${avoidNames.join(', ')}`
-            : ''
-        }. A learner reading in a second language cannot hold more names than that.`,
-    // Mandatory, this produced an object planted early and paid off late in
-    // every single story — which is the mystery-box shape itself, whatever the
-    // plot around it. Most stories do not need one, and the examples that used
-    // to be listed here came back as the props.
-    `• "plant" — OPTIONAL, and usually best left as an empty string. Only if the turn genuinely depends on something the reader should have noticed earlier, name that detail and say where it goes. Never invent an object just to plant it. If you do use one it must be something the scene would contain anyway, nameable in beginner vocabulary, and it must not be a note, a letter, a key, a box, a bag or a photograph.`,
-    `• "spine" — exactly ${beats} beats, in order, each one sentence: what actually HAPPENS. Events, not moods — someone does something, someone finds something out, something arrives. Each beat must change the situation the one before it left behind. No beat may be two characters discussing how they feel.`,
-    ending === 'land'
-      ? `• "ending" — this is a complete short story and it ENDS. Somebody gets what they wanted, or plainly does not, or something between these people is a little different from how it started. Describe the final image: quiet and specific — a gesture, an object, one line of dialogue. Not a summary, not a moral, and nobody learns a lesson. Nothing is left dangling and nothing is tidied up; the story simply stops at the right moment.`
-      : ending === 'payoff'
-        ? `• "ending" — this part answers ONE of the unanswered questions above. Say which one, and describe the final image that shows the answer happening (shown as a scene, never explained in summary). Then say which question is left open, and what NEW question the last line raises.`
-        : `• "ending" — the final image, landing on a hook: an interruption, a reveal, an arrival, or a decision whose outcome cannot be guessed. Do NOT resolve the story: nobody goes home, nothing turns out fine, nobody learns a lesson.`,
-  ]
-    .filter(Boolean)
-    .join('\n')
-
-  // The one call worth thinking through: it returns a few hundred words and
-  // decides everything the writing pass then only has to render. It runs on the
-  // FAST model with thinking turned all the way up, which is the opposite of
-  // what it looks like it should be — the pro model at high effort took over 60
-  // seconds on a 2.5KB prompt and lost the whole generation to the function
-  // timeout, having taken 15 seconds for the same work an hour earlier. What
-  // plotting needs is the reasoning, not the bigger model, and the fast one
-  // does it inside a budget we actually have.
-  const plan = await callGeminiJson<StoryPlan>(prompt, PLAN_SCHEMA, {
-    tier: 'fast',
-    effort: 'high',
-    label: 'plan',
-    onMeta,
-  })
-  return { ...plan, cast: plan.cast ?? [], spine: plan.spine ?? [] }
 }
 
 /** How close to the requested length is close enough to stop topping up. */
@@ -1297,10 +957,6 @@ export async function generateStory(opts: {
     direction?: string
     bible?: StoryBible
   }
-  /** The turn, tone, pairing and setting rolled for this part (see `pickAngle`). */
-  angle?: StoryAngle
-  /** Whether this part lands on a hook or pays one thread off (see `pickEnding`). */
-  ending?: StoryEnding
   /** Words the learner keeps forgetting — worked into the plot on purpose so
    *  they're met repeatedly, in context, instead of only on a flashcard. */
   focusWords?: string[]
@@ -1314,7 +970,7 @@ export async function generateStory(opts: {
   onProgress?: (steps: StoryStep[]) => void
 }): Promise<Story> {
   const { deck, knownWords, learningWords, vocabLevel, topic, lengthWords } = opts
-  const { avoidThemes = [], avoidNames = [], continueFrom, angle, focusWords = [], ending = 'hook' } = opts
+  const { avoidThemes = [], avoidNames = [], continueFrom, focusWords = [] } = opts
   const { recurWords = [] } = opts
 
   const bible = continueFrom?.bible
@@ -1359,30 +1015,17 @@ export async function generateStory(opts: {
     }
   }
 
-  // Plot first, in English and unconstrained — then write to the plan.
-  const plan = await step(
-    'plan',
-    'Working out the plot',
-    (onMeta) =>
-      planStory({
-        deck,
-        lengthWords,
-        band,
-        topic,
-        avoidThemes,
-        avoidNames,
-        angle,
-        ending,
-        continueFrom,
-        onMeta,
-      }),
-    (p) => `${p.spine.length} beats · ${p.cast.length} characters`,
-  )
-
+  // One writing call, and the topic — or the thread being continued — is the
+  // whole brief. This replaced a planning pass and a rolled four-way "angle"
+  // that were injected as binding constraints: they bought variety, but they
+  // also overrode the reader's own topic, derailed continuations with random
+  // unrelated dimensions, and their enforcement showed in the prose. Variety
+  // is now asked for with two non-binding avoid-lists instead, and judged by
+  // reading the output (scripts/story-lab.mts).
   const prompt = [
     continueFrom
-      ? `Below is a story in ${deck.language} that a language learner has been reading. Write the NEXT PART of it: continue seamlessly from where it ends, keeping the same characters, setting and tone. Advance the plot — don't recap or repeat what already happened.`
-      : `Write a story in ${deck.language} for a language learner.`,
+      ? `Below is a story in ${deck.language} that a language learner has been reading. Write the NEXT PART of it: continue seamlessly from where it ends, with the same people, the same world and the same feel. Advance the story — something new happens; do not re-tell, recap or pad.`
+      : `Write a short story in ${deck.language} for a language learner.`,
     continueFrom ? `Previous part, titled "${continueFrom.title}":\n${continueFrom.story}` : '',
     bible
       ? [
@@ -1391,94 +1034,59 @@ export async function generateStory(opts: {
           bible.places.length > 0 ? `Places: ${bible.places.join('; ')}` : '',
           bible.facts.length > 0 ? `Established facts: ${bible.facts.join('; ')}` : '',
           bible.openThreads.length > 0
-            ? ending === 'payoff'
-              ? `Unanswered questions so far — this part answers ONE of them (the plan says which) and leaves at least one still open: ${bible.openThreads.join('; ')}`
-              : `Unanswered questions so far — keep them alive. You may edge closer to one, but do not answer any outright: ${bible.openThreads.join('; ')}`
+            ? `Open questions the reader is carrying — move the ones this part naturally moves, keep the rest alive: ${bible.openThreads.join('; ')}`
             : '',
         ]
           .filter(Boolean)
           .join('\n')
       : '',
-    // The plot was decided in a separate pass — premise, cast, turn, ending and
-    // the reader's steer are all already settled inside it. This call's whole
-    // job is to render it as prose the learner can read.
-    `THE PLAN — follow it. It was made for this story: do not invent a different premise, a different cast or a different ending.`,
-    `Premise: ${plan.premise}`,
-    plan.cast.length > 0
-      ? `Cast — use exactly these people, with exactly these names, and name nobody else: ${plan.cast.map((c) => `${c.name} (${c.role}; wants ${c.wants})`).join('; ')}`
+    continueFrom?.direction?.trim()
+      ? `THE READER ASKED FOR THIS NEXT: "${continueFrom.direction.trim()}". It must actually happen in this part — starting early, not teased for the end.`
       : '',
-    plan.spine.length > 0
-      ? `What happens — work through these beats IN ORDER, giving each roughly equal space, and make sure every one of them actually reaches the page:\n${plan.spine.map((b, i) => `${i + 1}. ${b}`).join('\n')}`
+    !continueFrom && topic?.trim()
+      ? `THE READER ASKED FOR: "${topic.trim()}". This is the whole brief — the story must genuinely BE this, not merely mention it. If it names a genre (a love story, a mystery, a ghost story), deliver that genre's real pleasures at this reading level.`
       : '',
-    angle
-      ? `TONE — ${angle.tone}. The whole story reads this way: it is in the rhythm of the dialogue, in what people bother to say and what they leave out. These people are ${angle.bond} — let that show in how they talk to each other, never in a sentence explaining it.`
+    !continueFrom && !topic?.trim()
+      ? `Write a story you would actually want to read: specific people who want something, events that follow from each other, and an ending that lands. Any genre, any mood.`
       : '',
-    plan.plant?.trim()
-      ? `PLANT: ${plan.plant} Put it in early, inside an ordinary-looking detail, and never draw attention to it — the reader should walk past it and only realise later. Name it in plain words ("the yellow cloth in his bag"), never with the exact technical word for the object or the part of it.`
+    // Both lists are requests, not rules — the machinery that used to enforce
+    // variety also overrode the brief, which is a worse failure than a repeat.
+    !continueFrom && avoidThemes.length > 0
+      ? `The reader's recent stories, for variety: make this one clearly different in subject and in kind. Recent: ${avoidThemes.join('; ')}`
       : '',
-    lengthSpec(lengthWords),
-    vocabSpec(deck.language, band),
-    // "Same register as the part before" is right for tone and wrong for
-    // difficulty: earlier parts were written under whatever rules were in force
-    // then, and matching them propagates hard vocabulary through a whole thread
-    // that the reader has since asked to be made easier.
+    !continueFrom && avoidNames.length > 0
+      ? `Recent stories used these character names — pick different ones: ${avoidNames.join(', ')}.`
+      : '',
     continueFrom
-      ? `The previous part above may use words harder than these rules allow — it was written to a different setting. Do NOT match its vocabulary. These rules win, even where that makes this part noticeably plainer than the last one.`
+      ? `You may introduce at most ONE new named character, and only if this part genuinely needs them.`
+      : `Use at most ${MAX_CAST} named characters — two or three is better. Give them names natural for native ${deck.language} speakers, and refer to them by name, never as "the man" or "my friend". Return every personal name used in the characterNames array.`,
+    lengthSpec(lengthWords),
+    vocabHint(deck.language, band),
+    continueFrom
+      ? `The previous part above may use words harder than this band allows — do NOT match its vocabulary; the band wins, even where that makes this part plainer than the last.`
       : '',
-    `IMPORTANT — register: use casual, everyday conversational ${deck.language}, the way people actually talk in daily life. Prefer informal forms over formal ones (for example, in Indonesian say "aku", not "saya"). No formal, literary, or textbook language.`,
-    `STYLE — dialogue-first: tell the story mainly through conversation. At least half of the words should be inside spoken lines, as short, natural back-and-forth exchanges between the characters; keep narration to brief connective sentences. Always wrap spoken lines in quotation marks “…” (never dashes), so dialogue is machine-detectable.`,
-    // "Make it specific" and "use only common words" pull against each other,
-    // and specificity used to win: it is concrete and checkable at the moment of
-    // writing, where "is this word common?" is a judgement call. So the detail
-    // is now chosen for what it can be said WITH — a zip, a crease, a crevice
-    // are all off the table, and the scene loses nothing by picking a plainer
-    // thing to notice.
-    `TEXTURE: each scene gets exactly ONE concrete physical detail — a smell, a sound, something someone is holding — in a single short sentence. One per scene, never a descriptive paragraph, and specific ("the rice was still too hot to hold") rather than general ("it was a nice day").`,
-    `But it must be specific in COMMON words: pick a detail you can name with the vocabulary allowed above. If the exact word for it would be a hard word, notice something else instead. A physical detail must never be the reason a hard word enters the story.`,
-    // A learner reading in a second language cannot hold a large cast in their
-    // head: every extra name is another thing to decode. The plan already caps
-    // it; this keeps the writing pass from quietly adding walk-on names.
-    `CHARACTERS: refer to the people above by the names the plan gives them — never as "the man", "my friend", "the seller" and so on. Do NOT name anyone the plan does not name: everyone else stays unnamed and off-stage, mentioned in passing at most. Return every personal name used in the story in the characterNames array.`,
-    // The bank is a preference, not a second ceiling. The common-word band
-    // above already decides how hard the story is; this decides which of the
-    // easy words it reaches for first, so the reader keeps meeting their own
-    // vocabulary. Told as a limit instead, it produced contorted prose working
-    // around perfectly ordinary words the learner happened not to have carded.
-    `THE LEARNER'S WORD BANK — a preference, not a limit. Within the common words allowed above, reach for these first: they are exactly what the reader is learning, and meeting them in a story is the point of it.`,
-    knownWords.length > 0
-      ? `Known words — use these freely and often: ${knownWords.join(', ')}`
-      : '',
+    `REGISTER — casual, everyday conversational ${deck.language}, the way people actually talk in daily life (in Indonesian say "aku", not "saya"). No formal, literary or textbook language. Wrap all spoken lines in quotation marks “…”, never dashes.`,
+    `THE LEARNER'S WORD BANK — a preference, not a limit: within the band, reach for these words first.`,
+    knownWords.length > 0 ? `Known words — use freely: ${knownWords.join(', ')}` : '',
     learningWords.length > 0
-      ? `Words being learned — weave in as many of these as possible for practice: ${learningWords.join(', ')}`
+      ? `Words being learned — weave in as many as fit naturally: ${learningWords.join(', ')}`
       : '',
-    `Where the story needs something the bank does not cover, just use the most common everyday ${deck.language} word for it. Do NOT contort a sentence to avoid an ordinary word, and do NOT reach past the band above to find one.`,
-    // Deliberately the gentlest instruction in the prompt. The whole point of
-    // a re-encounter is meeting the word in a story that is going somewhere;
-    // told any more firmly, the model writes a sentence that exists only to
-    // hold the word, and the reader learns that the word is filler.
     recurWords.length > 0
-      ? `DUE FOR ANOTHER MEETING — the reader met these in earlier stories and it is about time they saw them again: ${recurWords.join(', ')}. Use whichever of them fall naturally into what the plan already has happening, and leave out any that don't. This is the lowest priority on this page: never add a scene, a line or a detail just to fit one in, and never bend a sentence around one. A good story with none of them beats a worse story with all of them.`
+      ? `Words the reader is due to meet again — use whichever fall naturally into the story, and leave out any that don't. Never bend a sentence around one: ${recurWords.join(', ')}`
       : '',
     focusWords.length > 0
-      ? `PLOT-CRITICAL VOCABULARY: these are words the learner keeps forgetting — ${focusWords.join(', ')}. Each one must appear at least three times, in different sentences and different situations, and at least one of them must matter to the plot (it names the thing someone wants, the task that keeps going wrong, the person everyone is waiting for). Never draw attention to them or define them in the text; just make the story impossible to follow without them.`
+      ? `Words the learner keeps forgetting — each should appear a few times, in different sentences, and at least one should matter to the story. Never draw attention to them or define them: ${focusWords.join(', ')}`
       : '',
-    ending === 'land'
-      ? `ENDING — this story ends here, properly: ${plan.ending} Land it as a scene the reader watches, not as a summary. The last line should be small and concrete — a gesture, an object, something someone says — and it should feel like the right place to stop. Do NOT add a moral, a lesson, a look back over what happened, or a line telling the reader how anyone has changed.`
-      : ending === 'payoff'
-        ? `ENDING — this part pays something off: ${plan.ending} Show the answer HAPPENING, as a scene the reader watches — never as a character explaining it or a narrator summarising it. Then let the very last line raise a new question. Do not wrap the whole story up: nobody goes home, nothing turns out fine, nobody learns a lesson.`
-        : `ENDING — do NOT resolve the story. Land it here: ${plan.ending} The last line must be a hook — an interruption, a reveal, an arrival, an unanswered question, or a decision whose outcome the reader cannot guess. Never end with everyone going home, everything turning out fine, a lesson learned, or a summary of what happened. Stop at the moment of maximum "wait, what?" — mid-scene is good, mid-sentence is not.`,
-    `THE BIBLE: also return "bible" — the state of the story world after this part${continueFrom ? ', updated from the bible above (carry forward everything still true, add what this part established, and drop questions this part answered)' : ''}. "logline" is ONE English sentence recapping what happened, written so it can be shown to the reader as "Previously…" before the next part. "cast" lists every named character with their role and what they want; "places" the locations used; "facts" the concrete details a later part must stay consistent with; "openThreads" the questions this part leaves unanswered${
-      ending === 'land'
-        ? ' — for a story that has ended properly this is often empty, and empty is correct: never invent a question just to have one'
-        : ' — including the one your ending hook just raised'
-    }.`,
-    `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story and the bible. Write the story in ${deck.language} only — it is translated and glossed separately afterwards, so do not include any English or define anything here. Spend everything on the story itself.`,
+    continueFrom
+      ? `ENDING — end this part at a natural stopping point. If the story is plainly not finished, stop somewhere that makes the reader want the next part; if this part brings the story to its true end, let it end properly. No moral, no summary.`
+      : `ENDING — end the story properly: somewhere that feels earned and concrete, a scene the reader watches rather than a summary. No moral, no lesson, no looking back over what happened. If the story honestly leaves a question open, that is fine — but never cut off mid-scene for effect.`,
+    `THE BIBLE: also return "bible" — the state of the story world after this part${continueFrom ? ', updated from the bible above (carry forward everything still true, add what this part established, drop questions it answered)' : ''}. "logline" is ONE English sentence recapping what happened, shown to the reader as "Previously…" before the next part. "cast" lists every named character with role and want; "places" the locations; "facts" the concrete details a later part must stay consistent with; "openThreads" the questions left open, if any — never invent one just to have one.`,
+    `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story and the bible. Write the story in ${deck.language} only — it is translated and glossed separately afterwards. Spend everything on the story itself.`,
   ]
     .filter(Boolean)
     .join('\n')
 
-  // The plot is already settled, so this pass renders rather than invents —
-  // and it is the longest output in the chain, which is what has to fit.
+  // The one creative call: pro model, story in one go.
   let prose = await step(
     'write',
     'Writing',
@@ -1508,7 +1116,6 @@ export async function generateStory(opts: {
             story: prose,
             missingWords: Math.max(40, lengthWords - have),
             band,
-            ending,
             onMeta,
           }),
         (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
@@ -1575,7 +1182,7 @@ export async function generateStory(opts: {
 
   const total = steps.reduce((sum, s) => sum + (s.ms ?? 0), 0)
   console.log(`[story] done in ${(total / 1000).toFixed(1)}s`, steps)
-  return { ...prose, translation, glossary, premise: plan.premise, summary }
+  return { ...prose, translation, glossary, summary }
 }
 
 const MNEMONIC_SCHEMA = {
