@@ -120,8 +120,15 @@ describe('pickSerialEnding', () => {
     for (let i = 0; i < 100; i++) expect(pickSerialEnding(0)).toBe('hook')
   })
 
-  it('sometimes resolves and sometimes hooks while tension is open', () => {
-    const drawn = new Set(Array.from({ length: 300 }, () => pickSerialEnding(2)))
+  it('never resolves trouble that opened only last part — arcs get room to breathe', () => {
+    for (let i = 0; i < 100; i++) expect(pickSerialEnding(3, 1)).toBe('hook')
+  })
+
+  it('sometimes resolves and sometimes hooks once tension has aged', () => {
+    const drawn = new Set(Array.from({ length: 300 }, () => pickSerialEnding(2, 2)))
     expect(drawn).toEqual(new Set(['hook', 'resolve']))
+    // Omitted age counts as old enough.
+    const bare = new Set(Array.from({ length: 300 }, () => pickSerialEnding(2)))
+    expect(bare).toEqual(new Set(['hook', 'resolve']))
   })
 })

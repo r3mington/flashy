@@ -434,8 +434,14 @@ const MAX_CAST = 4
  *  the whole mechanism is this function. */
 export type SerialEnding = 'hook' | 'resolve'
 
-export function pickSerialEnding(openThreads: number): SerialEnding {
+/** `troubleAge` is how many consecutive parts the current tension has been
+ *  open, counting the part being continued. Trouble that opened only last
+ *  part always survives this one — the eleven-part test run resolved its
+ *  mother-in-law arc a single part after raising it, and an arc needs at
+ *  least two parts of tension before paying off feels like anything. */
+export function pickSerialEnding(openThreads: number, troubleAge = 2): SerialEnding {
   if (openThreads === 0) return 'hook'
+  if (troubleAge < 2) return 'hook'
   return Math.random() < 1 / 3 ? 'resolve' : 'hook'
 }
 
@@ -984,6 +990,9 @@ export async function generateStory(opts: {
   /** How this part ends. Rolled from the thread's open tension when not
    *  given (see `pickSerialEnding`); a caller (or the lab) may force it. */
   ending?: SerialEnding
+  /** Consecutive parts the current trouble has been open (see
+   *  `pickSerialEnding`). Omitted = old enough to resolve. */
+  troubleAge?: number
   /** Words the learner keeps forgetting — worked into the plot on purpose so
    *  they're met repeatedly, in context, instead of only on a flashcard. */
   focusWords?: string[]
@@ -998,7 +1007,9 @@ export async function generateStory(opts: {
 }): Promise<Story> {
   const { deck, knownWords, learningWords, vocabLevel, topic, lengthWords } = opts
   const { avoidThemes = [], avoidNames = [], continueFrom, focusWords = [] } = opts
-  const ending = opts.ending ?? pickSerialEnding(continueFrom?.bible?.openThreads?.length ?? 0)
+  const ending =
+    opts.ending ??
+    pickSerialEnding(continueFrom?.bible?.openThreads?.length ?? 0, opts.troubleAge)
   const { recurWords = [] } = opts
 
   const bible = continueFrom?.bible
@@ -1121,13 +1132,13 @@ export async function generateStory(opts: {
     // This is a serial: most parts end on tension, every third or so pays it
     // off, and the reader's own steer outranks either.
     ending === 'resolve'
-      ? `ENDING — this part SETTLES things: answer the questions the story has been carrying, shown as a scene the reader watches, and land the part properly. No moral, no summary, no looking back. Nothing needs saving for later — the next part will bring something new. (If the reader's request above asks for something else, the request wins.)`
+      ? `ENDING — this part SETTLES things: answer the questions the story has been carrying, shown as a scene the reader watches, and land the part properly. A resolution changes something or costs something — a truth admitted, a promise made, a price paid; nobody simply turns out to have been nice all along. No moral, no summary, no looking back. Nothing needs saving for later — the next part will bring something new. (If the reader's request above asks for something else, the request wins.)`
       : `ENDING — this is a serial part: end on genuine unresolved tension. Something has just happened, arrived or been discovered, and the reader must not yet learn how it lands. Stop at the moment the next part becomes necessary — but end at a natural beat, never cut mid-scene for effect. (If the reader's request above asks for something else, the request wins.)`,
     `THE BIBLE: also return "bible" — the state of the story world after this part${continueFrom ? ', updated from the bible above (carry forward everything still true, add what this part established, drop questions it answered)' : ''}. "logline" is ONE English sentence recapping what happened, shown to the reader as "Previously…" before the next part. "cast" lists every named character with role and want; "places" the locations; "facts" the concrete details a later part must stay consistent with; "openThreads" the questions left open${
       ending === 'resolve'
         ? ', if any — after a part that settles its story this is often empty, and empty is correct: never invent a question just to have one'
         : ' — including the one your ending just raised'
-    }.`,
+    }. Keep the bible lean: list in "cast" only the people who still matter to the story (drop walk-ons), and keep "facts" to at most the 8 a later part must not contradict.`,
     `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story and the bible. Write the story in ${deck.language} only — it is translated and glossed separately afterwards. Spend everything on the story itself.`,
   ]
     .filter(Boolean)

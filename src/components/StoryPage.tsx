@@ -566,6 +566,18 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       // pairings and settings shouldn't be replayed, and how many parts there
       // are decides whether this one pays a running question off, leaves
       // everything open, or (for a first story) simply ends.
+      // How long the thread's current trouble has been open: the streak of
+      // consecutive parts, ending at the newest, whose bible still carried
+      // open threads. Feeds the ending roll — young trouble always survives.
+      let troubleAge = 0
+      if (from) {
+        const rootId = from.parentId ?? from.id
+        const thread = (savedStories ?? [])
+          .filter((s) => s.id === rootId || s.parentId === rootId)
+          .sort((a, b) => a.createdAt - b.createdAt)
+        for (const part of thread)
+          troubleAge = (part.bible?.openThreads?.length ?? 0) > 0 ? troubleAge + 1 : 0
+      }
       // Words met in earlier stories whose spacing says it is time to meet
       // them again — still new, or still in study. Known words are not
       // re-encounters, just words. The open story is none, so nothing is
@@ -604,6 +616,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         topic: from ? undefined : topic || undefined,
         lengthWords: length,
         onProgress: setSteps,
+        troubleAge: from ? troubleAge : undefined,
         focusWords,
         recurWords,
         // Steer fresh stories away from themes already covered (recent first).

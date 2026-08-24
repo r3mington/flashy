@@ -131,9 +131,14 @@ if (cmd === 'full' || cmd === 'continue') {
         }
       : undefined,
     ending: (process.env.ENDING as 'hook' | 'resolve' | undefined) || undefined,
+    troubleAge: prev
+      ? (prev.openStreak ?? ((prev.bible?.openThreads?.length ?? 0) > 0 ? 1 : 0))
+      : undefined,
     onProgress: () => {},
   })
-  save(cmd, { topic: prev ? ((process.env.TOPIC || prev.topic) ?? null) : (arg1 ?? null), ...story })
+  const prevStreak = prev ? (prev.openStreak ?? ((prev.bible?.openThreads?.length ?? 0) > 0 ? 1 : 0)) : 0
+  const openStreak = (story.bible?.openThreads?.length ?? 0) > 0 ? prevStreak + 1 : 0
+  save(cmd, { topic: prev ? ((process.env.TOPIC || prev.topic) ?? null) : (arg1 ?? null), openStreak, ...story })
   console.log(`\n===== ${story.title} =====\n\n${story.story}\n\n----- summary -----\n${story.summary}\n\n----- translation -----\n${story.translation}`)
 } else if (cmd === 'bare') {
   // The stripped pipeline the user proposes: one prompt, no plan, no angle,
