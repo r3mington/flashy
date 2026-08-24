@@ -972,12 +972,14 @@ export async function generateStory(opts: {
   avoidNames?: string[]
   /** Continue this existing story instead of starting a fresh one. `direction`
    *  is the reader's optional steer for what should happen next, `bible` the
-   *  world state the previous part left behind. */
+   *  world state the previous part left behind, `topic` what the reader asked
+   *  for when the thread began — the genre anchor. */
   continueFrom?: {
     title: string
     story: string
     direction?: string
     bible?: StoryBible
+    topic?: string
   }
   /** How this part ends. Rolled from the thread's open tension when not
    *  given (see `pickSerialEnding`); a caller (or the lab) may force it. */
@@ -1070,7 +1072,17 @@ export async function generateStory(opts: {
       ? `THE READER ASKED FOR THIS NEXT: "${continueFrom.direction.trim()}". It must actually happen in this part — starting early, not teased for the end.`
       : '',
     continueFrom && (bible?.openThreads?.length ?? 0) === 0
-      ? `The previous part settled its story. This part starts NEW trouble for these people — a fresh want, problem or arrival — and it should start early, not in the final lines.`
+      ? `The previous part settled its story. This part starts NEW trouble for these people — a fresh want, problem or arrival — and it should start early, not in the final lines. It must be a DIFFERENT KIND of trouble from what this thread has already played: reread the part above, and if its tension came from a secret, an illness or a message, find another door in.`
+      : '',
+    // Serials drift, and some drift is the fun — but six parts in, "a love
+    // story" had become a kidnapping thriller, and the model's cheapest
+    // escalation (news withheld, then delivered by phone) had run twice.
+    // Both lines are soft; the reader's steer still outranks everything.
+    continueFrom?.topic?.trim()
+      ? `THE KIND OF STORY: the reader asked for "${continueFrom.topic.trim()}" when this began, and every part stays that kind of story — the trouble, the turns and the pleasures should all belong to it.`
+      : '',
+    continueFrom
+      ? `VARY THE MACHINERY: if this thread has already delivered a twist by phone call, message or photo, deliver this part's turn another way — in person, in the room, in something the reader watches happen.`
       : '',
     !continueFrom && topic?.trim()
       ? `THE READER ASKED FOR: "${topic.trim()}". This is the whole brief — the story must genuinely BE this, not merely mention it. If it names a genre (a love story, a mystery, a ghost story), deliver that genre's real pleasures at this reading level.`

@@ -633,6 +633,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               story: from.story,
               direction: steer || undefined,
               bible: from.bible,
+              // The thread root's topic — what the reader asked for when the
+              // thread began — anchors every part to that kind of story.
+              topic: (savedStories ?? []).find((s) => s.id === (from.parentId ?? from.id))?.topic,
             }
           : undefined,
       })

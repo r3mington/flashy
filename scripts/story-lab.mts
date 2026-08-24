@@ -122,12 +122,18 @@ if (cmd === 'full' || cmd === 'continue') {
     avoidThemes: prev ? undefined : avoidThemes,
     avoidNames: prev ? undefined : avoidNames,
     continueFrom: prev
-      ? { title: prev.title, story: prev.story, direction: arg2 || undefined, bible: prev.bible }
+      ? {
+          title: prev.title,
+          story: prev.story,
+          direction: arg2 || undefined,
+          bible: prev.bible,
+          topic: process.env.TOPIC || prev.topic || undefined,
+        }
       : undefined,
     ending: (process.env.ENDING as 'hook' | 'resolve' | undefined) || undefined,
     onProgress: () => {},
   })
-  save(cmd, story)
+  save(cmd, { topic: prev ? ((process.env.TOPIC || prev.topic) ?? null) : (arg1 ?? null), ...story })
   console.log(`\n===== ${story.title} =====\n\n${story.story}\n\n----- summary -----\n${story.summary}\n\n----- translation -----\n${story.translation}`)
 } else if (cmd === 'bare') {
   // The stripped pipeline the user proposes: one prompt, no plan, no angle,
