@@ -4,6 +4,7 @@ import {
   SIMPLIFY_CHUNK_WORDS,
   groupParagraphs,
   clipWords,
+  pickSerialEnding,
   splitForGlossary,
   swappedWords,
 } from './ai'
@@ -111,5 +112,16 @@ describe('clipWords', () => {
   it('normalises stray whitespace and survives an empty summary', () => {
     expect(clipWords('  one   two  ', 5)).toBe('one two')
     expect(clipWords('', 5)).toBe('')
+  })
+})
+
+describe('pickSerialEnding', () => {
+  it('always builds new tension when nothing is open — a fresh part, or one after a resolution', () => {
+    for (let i = 0; i < 100; i++) expect(pickSerialEnding(0)).toBe('hook')
+  })
+
+  it('sometimes resolves and sometimes hooks while tension is open', () => {
+    const drawn = new Set(Array.from({ length: 300 }, () => pickSerialEnding(2)))
+    expect(drawn).toEqual(new Set(['hook', 'resolve']))
   })
 })

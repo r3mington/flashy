@@ -422,6 +422,23 @@ type StoryProse = Omit<Story, 'glossary' | 'translation' | 'summary'>
  *  language is slow enough that a fourth name costs more than it adds. */
 const MAX_CAST = 4
 
+/** How a serial part ends: on tension, or by settling it.
+ *
+ *  The reader reads serials, so the cadence is a TV season's: most parts end
+ *  on something genuinely unresolved, roughly every third part pays the
+ *  tension off, and a part that follows a resolution opens NEW trouble —
+ *  which is why zero open threads always hooks. The roll is one number
+ *  because the old ending machinery's mistake was not the idea but the
+ *  elaboration: three modes, planned endings, and rules that outranked the
+ *  reader's own steer. Here the steer always wins (the prompt says so), and
+ *  the whole mechanism is this function. */
+export type SerialEnding = 'hook' | 'resolve'
+
+export function pickSerialEnding(openThreads: number): SerialEnding {
+  if (openThreads === 0) return 'hook'
+  return Math.random() < 1 / 3 ? 'resolve' : 'hook'
+}
+
 /** Roughly how many words a sentence of dialogue-led prose runs to. Used to
  *  turn a word target into a sentence count, which models hit far more
  *  reliably than a word count they can't actually compute. */
@@ -896,9 +913,12 @@ async function extendStory(opts: {
   story: StoryProse
   missingWords: number
   band: VocabBand
+  /** The ending mode the part was written for — the continuation becomes the
+   *  new ending, so it has to land the same way. */
+  ending: SerialEnding
   onMeta?: (m: CallMeta) => void
 }): Promise<StoryProse> {
-  const { deck, story, missingWords, band, onMeta } = opts
+  const { deck, story, missingWords, band, ending, onMeta } = opts
   const prompt = [
     `Below is a story in ${deck.language} written for a language learner. It stopped too early — it needs about ${missingWords} more words.`,
     `Story so far, titled "${story.title}":\n${story.story}`,
@@ -911,7 +931,9 @@ async function extendStory(opts: {
     `IMPORTANT — register: casual, everyday spoken ${deck.language}, matching the story above. Keep dialogue inside quotation marks “…”.`,
     vocabSpec(deck.language, band),
     `Lean on the vocabulary the story above already uses — the reader has just read it.`,
-    `ENDING — the continuation carries the story to its own ending: land it somewhere that feels like the right place to stop, concrete and earned. No moral, no summary, no line telling the reader how anyone has changed.`,
+    ending === 'resolve'
+      ? `ENDING — the continuation settles the story: answer what it has been carrying and land it properly, concrete and earned. No moral, no summary.`
+      : `ENDING — the continuation must still end on genuine unresolved tension, at a natural beat: the reader must be left needing the next part.`,
     `Return: "story" (the continuation text only), "characterNames" (any personal names appearing in the continuation), and "bible" (the world state after the continuation: logline, cast, places, facts, openThreads).`,
   ].join('\n')
 
@@ -957,6 +979,9 @@ export async function generateStory(opts: {
     direction?: string
     bible?: StoryBible
   }
+  /** How this part ends. Rolled from the thread's open tension when not
+   *  given (see `pickSerialEnding`); a caller (or the lab) may force it. */
+  ending?: SerialEnding
   /** Words the learner keeps forgetting — worked into the plot on purpose so
    *  they're met repeatedly, in context, instead of only on a flashcard. */
   focusWords?: string[]
@@ -971,6 +996,7 @@ export async function generateStory(opts: {
 }): Promise<Story> {
   const { deck, knownWords, learningWords, vocabLevel, topic, lengthWords } = opts
   const { avoidThemes = [], avoidNames = [], continueFrom, focusWords = [] } = opts
+  const ending = opts.ending ?? pickSerialEnding(continueFrom?.bible?.openThreads?.length ?? 0)
   const { recurWords = [] } = opts
 
   const bible = continueFrom?.bible
@@ -1043,6 +1069,9 @@ export async function generateStory(opts: {
     continueFrom?.direction?.trim()
       ? `THE READER ASKED FOR THIS NEXT: "${continueFrom.direction.trim()}". It must actually happen in this part — starting early, not teased for the end.`
       : '',
+    continueFrom && (bible?.openThreads?.length ?? 0) === 0
+      ? `The previous part settled its story. This part starts NEW trouble for these people — a fresh want, problem or arrival — and it should start early, not in the final lines.`
+      : '',
     !continueFrom && topic?.trim()
       ? `THE READER ASKED FOR: "${topic.trim()}". This is the whole brief — the story must genuinely BE this, not merely mention it. If it names a genre (a love story, a mystery, a ghost story), deliver that genre's real pleasures at this reading level.`
       : '',
@@ -1077,10 +1106,16 @@ export async function generateStory(opts: {
     focusWords.length > 0
       ? `Words the learner keeps forgetting — each should appear a few times, in different sentences, and at least one should matter to the story. Never draw attention to them or define them: ${focusWords.join(', ')}`
       : '',
-    continueFrom
-      ? `ENDING — end this part at a natural stopping point. If the story is plainly not finished, stop somewhere that makes the reader want the next part; if this part brings the story to its true end, let it end properly. No moral, no summary.`
-      : `ENDING — end the story properly: somewhere that feels earned and concrete, a scene the reader watches rather than a summary. No moral, no lesson, no looking back over what happened. If the story honestly leaves a question open, that is fine — but never cut off mid-scene for effect.`,
-    `THE BIBLE: also return "bible" — the state of the story world after this part${continueFrom ? ', updated from the bible above (carry forward everything still true, add what this part established, drop questions it answered)' : ''}. "logline" is ONE English sentence recapping what happened, shown to the reader as "Previously…" before the next part. "cast" lists every named character with role and want; "places" the locations; "facts" the concrete details a later part must stay consistent with; "openThreads" the questions left open, if any — never invent one just to have one.`,
+    // This is a serial: most parts end on tension, every third or so pays it
+    // off, and the reader's own steer outranks either.
+    ending === 'resolve'
+      ? `ENDING — this part SETTLES things: answer the questions the story has been carrying, shown as a scene the reader watches, and land the part properly. No moral, no summary, no looking back. Nothing needs saving for later — the next part will bring something new. (If the reader's request above asks for something else, the request wins.)`
+      : `ENDING — this is a serial part: end on genuine unresolved tension. Something has just happened, arrived or been discovered, and the reader must not yet learn how it lands. Stop at the moment the next part becomes necessary — but end at a natural beat, never cut mid-scene for effect. (If the reader's request above asks for something else, the request wins.)`,
+    `THE BIBLE: also return "bible" — the state of the story world after this part${continueFrom ? ', updated from the bible above (carry forward everything still true, add what this part established, drop questions it answered)' : ''}. "logline" is ONE English sentence recapping what happened, shown to the reader as "Previously…" before the next part. "cast" lists every named character with role and want; "places" the locations; "facts" the concrete details a later part must stay consistent with; "openThreads" the questions left open${
+      ending === 'resolve'
+        ? ', if any — after a part that settles its story this is often empty, and empty is correct: never invent a question just to have one'
+        : ' — including the one your ending just raised'
+    }.`,
     `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story and the bible. Write the story in ${deck.language} only — it is translated and glossed separately afterwards. Spend everything on the story itself.`,
   ]
     .filter(Boolean)
@@ -1116,6 +1151,7 @@ export async function generateStory(opts: {
             story: prose,
             missingWords: Math.max(40, lengthWords - have),
             band,
+            ending,
             onMeta,
           }),
         (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,

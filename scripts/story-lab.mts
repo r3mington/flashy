@@ -124,6 +124,7 @@ if (cmd === 'full' || cmd === 'continue') {
     continueFrom: prev
       ? { title: prev.title, story: prev.story, direction: arg2 || undefined, bible: prev.bible }
       : undefined,
+    ending: (process.env.ENDING as 'hook' | 'resolve' | undefined) || undefined,
     onProgress: () => {},
   })
   save(cmd, story)
