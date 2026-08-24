@@ -30,3 +30,6 @@ dist-ssr
 # vercel
 .vercel
 .env*
+
+# story-lab output
+.story-lab
