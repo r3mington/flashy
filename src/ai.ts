@@ -604,41 +604,110 @@ const EXTEND_SCHEMA = {
 
 const TRANSLATION_SCHEMA = {
   type: 'OBJECT',
-  properties: { translation: { type: 'STRING' }, summary: { type: 'STRING' } },
-  required: ['translation', 'summary'],
+  properties: { translation: { type: 'STRING' } },
+  required: ['translation'],
 }
 
 /** Longest the plot summary may run. Short enough to be read before the
  *  story without becoming a second story. */
 export const SUMMARY_MAX_WORDS = 50
 
-/** Translate the finished story into English, in one pass over the final text.
- *  Split out of the writing call because it doubled that call's output for
- *  something mechanical — and doing it last means extensions cost nothing here
- *  and the English reads as one piece rather than as spliced fragments. */
+/** Words per translation call. The output is a whole English text, about as
+ *  long as its input, so this sits with the simplifier rather than with the
+ *  glossary — and the whole story in one call is what used to run past the
+ *  function's budget on a long part. */
+export const TRANSLATE_CHUNK_WORDS = 400
+
+const SUMMARY_SCHEMA = {
+  type: 'OBJECT',
+  properties: { summary: { type: 'STRING' } },
+  required: ['summary'],
+}
+
+/** Translate the finished story into English, over the final text. Split out of
+ *  the writing call because it doubled that call's output for something
+ *  mechanical — and doing it last means extensions cost nothing here.
+ *
+ *  Long stories are translated in parallel pieces, split on paragraph
+ *  boundaries so joining them back reproduces the story's shape exactly. The
+ *  summary is its own small call over the whole story: it is the one part that
+ *  needs to see all of it, and it is far too short to be worth carrying inside
+ *  a piece that might fail. */
 async function translateStory(
   deck: Deck,
   story: string,
   onMeta?: (m: CallMeta) => void,
 ): Promise<{ translation: string; summary: string }> {
-  const prompt = [
-    `Translate this ${deck.language} story into natural English. Return the whole translation as one string in "translation".`,
-    `Keep the paragraph breaks of the original, keep dialogue inside quotation marks “…”, and translate every line — do not summarise, abridge or add anything.`,
-    `Write English a person would actually write: idiomatic, not a word-for-word calque of the ${deck.language}.`,
-    // The summary is made here, from the text as it finally stands, rather
-    // than in the writing pass: extensions and the vocabulary edit both
-    // change the story after it is written, and a summary of the draft can
-    // end up describing a scene that was cut.
-    `Also return "summary": the plot of this story in English, at most ${SUMMARY_MAX_WORDS} words. It is shown to the learner BEFORE they read, so they can spend their attention on the language rather than on working out what is happening. Plain and concrete — who, where, what happens — naming the characters. No suspense-building, no questions, no commentary on the story.`,
+  const langCode = langCodeFor(deck.language)
+  const chunks = groupParagraphs(story, langCode, TRANSLATE_CHUNK_WORDS)
+
+  const promptFor = (chunk: string) =>
+    [
+      chunks.length > 1
+        ? `Translate this EXTRACT from a ${deck.language} story into natural English. Other extracts are handled separately — translate only the text below, all of it, and nothing else. Return it as one string in "translation".`
+        : `Translate this ${deck.language} story into natural English. Return the whole translation as one string in "translation".`,
+      `Keep the paragraph breaks of the original, keep dialogue inside quotation marks “…”, and translate every line — do not summarise, abridge or add anything.`,
+      `Write English a person would actually write: idiomatic, not a word-for-word calque of the ${deck.language}.`,
+      `Text:\n${chunk}`,
+    ].join('\n')
+
+  // The summary is made here, from the text as it finally stands, rather than
+  // in the writing pass: extensions and the vocabulary edit both change the
+  // story after it is written, and a summary of the draft can end up
+  // describing a scene that was cut.
+  const summaryPrompt = [
+    `Below is a finished story in ${deck.language}, for a language learner.`,
+    `Return "summary": the plot of this story in English, at most ${SUMMARY_MAX_WORDS} words. It is shown to the learner BEFORE they read, so they can spend their attention on the language rather than on working out what is happening. Plain and concrete — who, where, what happens — naming the characters. No suspense-building, no questions, no commentary on the story.`,
     `Story:\n${story}`,
   ].join('\n')
 
-  const parsed = await callGeminiJson<{ translation: string; summary: string }>(
-    prompt,
-    TRANSLATION_SCHEMA,
-    { label: 'translate', onMeta },
-  )
-  return { translation: parsed.translation ?? '', summary: clipWords(parsed.summary ?? '', SUMMARY_MAX_WORDS) }
+  const metas: CallMeta[] = []
+  const collect = (m: CallMeta) => metas.push(m)
+
+  const [pieces, summary] = await Promise.all([
+    Promise.all(
+      chunks.map((chunk, i) =>
+        callGeminiJson<{ translation: string }>(promptFor(chunk), TRANSLATION_SCHEMA, {
+          label: chunks.length > 1 ? `translate-${i + 1}/${chunks.length}` : 'translate',
+          onMeta: collect,
+        })
+          .then((r) => (r.translation ?? '').trim())
+          // One piece missing costs the reader that stretch of English; the
+          // whole pass throwing costs them the story.
+          .catch((e) => {
+            console.warn(`[story] translate piece ${i + 1} failed`, e)
+            return ''
+          }),
+      ),
+    ),
+    callGeminiJson<{ summary: string }>(summaryPrompt, SUMMARY_SCHEMA, {
+      label: 'summary',
+      onMeta: collect,
+    })
+      .then((r) => r.summary ?? '')
+      .catch((e) => {
+        console.warn('[story] summary failed — the story opens without one', e)
+        return ''
+      }),
+  ])
+
+  const sum = (pick: (m: CallMeta) => number | undefined) =>
+    metas.reduce((n, m) => n + (pick(m) ?? 0), 0)
+  onMeta?.({
+    model: metas[0]?.model,
+    thinking: metas[0]?.thinking,
+    // The pieces ran together, so the pass cost the slowest of them, not the sum.
+    ms: Math.max(0, ...metas.map((m) => m.ms ?? 0)),
+    promptTokens: sum((m) => m.promptTokens),
+    outputTokens: sum((m) => m.outputTokens),
+    thoughtTokens: sum((m) => m.thoughtTokens),
+    passes: chunks.length + 1,
+  })
+
+  return {
+    translation: pieces.filter(Boolean).join('\n\n'),
+    summary: clipWords(summary, SUMMARY_MAX_WORDS),
+  }
 }
 
 /** Cut a text to its first `max` words. The model is asked for the limit and
@@ -1218,12 +1287,21 @@ export async function generateStory(opts: {
   // Translate and gloss last, once each, over the text as it finally stands —
   // so extensions cost nothing extra here, the English reads as one piece, and
   // no word of the story goes unglossed.
-  const { translation, summary } = await step(
-    'translate',
-    'Translating',
-    (onMeta) => translateStory(deck, prose.story, onMeta),
-    (t) => `${countWords(t.translation, 'en')} words`,
-  )
+  // Like the glossary below, the English is worth less than the story it
+  // explains: a part that is written, extended and simplified is not thrown
+  // away because the translation pass didn't come back.
+  let translation = ''
+  let summary = ''
+  try {
+    ;({ translation, summary } = await step(
+      'translate',
+      'Translating',
+      (onMeta) => translateStory(deck, prose.story, onMeta),
+      (t) => `${countWords(t.translation, 'en')} words`,
+    ))
+  } catch {
+    console.warn('[story] translation failed — the story stands untranslated')
+  }
 
   // The glossary is the one pass that may fail without costing the reader the
   // story. It is the largest output and it runs last, so a story that is fully

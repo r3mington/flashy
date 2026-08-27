@@ -1,11 +1,13 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { sessionCookie } from './_lib/auth.js'
+import { sessionCookie } from '../api/_lib/auth.js'
 
 /** The handler keeps what it learned for the life of a warm instance, so each
  *  test needs its own copy. */
 async function freshHandler() {
+  // Lives outside api/ deliberately: Vercel compiles everything under api/ as a
+  // deployable function, and a test file has no business being one.
   vi.resetModules()
-  return (await import('./generate.js')).default
+  return (await import('../api/generate.js')).default
 }
 
 const SECRET = 'test-secret'
