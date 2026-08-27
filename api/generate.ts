@@ -122,25 +122,38 @@ class UpstreamError extends Error {
  *  for the rest of the warm instance.
  *
  *  'fast' tries LOW before giving up on the level: not every model accepts
- *  MINIMAL, and the end of this chain is `null` — no thinking config at all,
- *  which means the model's DEFAULT thinking. On the pro model that default is
- *  slow enough to time the function out, so falling all the way through is the
- *  one outcome worth spending an extra rung to avoid. */
-const THINKING_CONFIGS: Record<'fast' | 'quality', (object | null)[]> = {
-  fast: [{ thinkingLevel: 'MINIMAL' }, { thinkingLevel: 'LOW' }, { thinkingBudget: 0 }, null],
-  quality: [{ thinkingLevel: 'HIGH' }, null],
+ *  MINIMAL. The last rung, `null`, is no thinking config at all — the model's
+ *  DEFAULT thinking, which on a pro model is slow enough to eat the entire
+ *  function budget. So the pro chain stops one rung short: a request that runs
+ *  out of cheap configs there is better off on the fast model than on a pro
+ *  model left to think for as long as it likes. */
+const CHEAP_THINKING = [{ thinkingLevel: 'MINIMAL' }, { thinkingLevel: 'LOW' }, { thinkingBudget: 0 }]
+
+function chainFor(tier: Tier, mode: 'fast' | 'quality'): (object | null)[] {
+  if (mode === 'quality') return [{ thinkingLevel: 'HIGH' }, null]
+  return tier === 'pro' ? CHEAP_THINKING : [...CHEAP_THINKING, null]
 }
 
-/** The platform kills the function at its maxDuration (90s — see vercel.json),
+/** The platform kills the function at its maxDuration (120s — see vercel.json),
  *  and a killed function returns an opaque 504 having burned the whole budget
  *  on nothing. Stop short of that ourselves, so what's left can still be spent
  *  on an answer. Keep this a few seconds under the vercel.json figure. */
-const FUNCTION_BUDGET_MS = 85_000
+const FUNCTION_BUDGET_MS = 110_000
 
-/** Held back from a pro call so a flash-tier rescue still fits. Generous
- *  against the ~16s a flash story actually takes, because a rescue that gets
- *  cut off itself is the one failure this whole arrangement exists to avoid. */
-const RESCUE_MS = 25_000
+/** Held back from a pro call so a flash-tier rescue still fits. Sized against
+ *  what the pipeline's slowest flash passes actually take (a 1,000-word story
+ *  has run to ~50s), not against its best case: a rescue that gets cut off
+ *  itself is the one failure this whole arrangement exists to prevent. */
+const RESCUE_MS = 50_000
+
+/** How long a tier stays skipped after it proves it can't answer inside the
+ *  budget. A story is a dozen calls; paying the pro model's full slice on every
+ *  one of them, to time out every time, is how a slow model turns one failure
+ *  into a failed generation. */
+const SLOW_COOLDOWN_MS = 10 * 60_000
+
+/** When each tier is worth trying again. */
+const slowUntil: Record<Tier, number> = { fast: 0, pro: 0 }
 
 /** Which rung of the chain currently works, per model class — the tiers are
  *  different model generations and don't necessarily accept the same configs,
@@ -179,7 +192,10 @@ async function callModel(
   } catch (e) {
     const name = (e as Error)?.name
     if (name === 'TimeoutError' || name === 'AbortError') {
-      throw new UpstreamError(504, `${model} did not answer within ${Math.round(timeoutMs / 1000)}s.`)
+      throw new UpstreamError(
+        504,
+        `${model} did not answer within ${Math.round(timeoutMs / 1000)}s.`,
+      )
     }
     throw e
   }
@@ -226,7 +242,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Outside the try: a failure needs to tell the client whether the fast-tier
   // fallback was already spent, so it doesn't go and spend it a second time.
-  let rescued = false
+  // A pro tier still in its cooldown starts there — the toll it charges to
+  // fail again is the whole point of remembering.
+  let rescued = tier === 'pro' && Date.now() < slowUntil.pro
+  if (rescued) {
+    console.warn(JSON.stringify({ at: 'generate/skip-pro', label, until: slowUntil.pro }))
+  }
 
   try {
     let data
@@ -237,8 +258,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // budget left to go there: once we fall back, `configs` and `chain` follow
     // the model down to the fast tier so a rejected config is remembered
     // against the model that actually rejected it.
-    let configs = THINKING_CONFIGS[mode]
-    let chain = `${tier}:${mode}`
+    let configs = chainFor(rescued ? 'fast' : tier, mode)
+    let chain = `${rescued ? 'fast' : tier}:${mode}`
     // Two independent things can be wrong with a request: the model, and the
     // thinking config. Each has its own recovery — re-pick, or step down the
     // chain — and the model is checked first, because an unavailable model also
@@ -273,16 +294,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           } catch {
             throw e // Discovery failed too; the original error is the useful one.
           }
-        } else if (tooSlow && !rescued && tier === 'pro') {
-          // The pro model ate its slice, or won't take the request at all right
-          // now. A plainer story from the fast model beats a 504 the reader can
-          // do nothing with, and there is still time in the budget for one.
-          console.warn(JSON.stringify({ at: 'generate/rescue', label, model, why: e.message }))
-          rescued = true
-          configs = THINKING_CONFIGS.fast
-          chain = 'fast:fast'
         } else if (e instanceof UpstreamError && e.status === 400 && i < configs.length - 1) {
           workingConfig[chain] = i + 1
+        } else if (!rescued && tier === 'pro' && (tooSlow || (e instanceof UpstreamError && e.status === 400))) {
+          // The pro model ate its slice, won't take the request right now, or
+          // has run out of cheap thinking configs — and the only rung left
+          // there is the expensive one that caused the timeout in the first
+          // place. A plainer story from the fast model beats a 504 the reader
+          // can do nothing with, and there is still budget for one.
+          console.warn(JSON.stringify({ at: 'generate/rescue', label, model, why: e.message }))
+          if (tooSlow) slowUntil.pro = Date.now() + SLOW_COOLDOWN_MS
+          rescued = true
+          configs = chainFor('fast', mode)
+          chain = `fast:${mode}`
         } else {
           throw e
         }

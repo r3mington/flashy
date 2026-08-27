@@ -129,6 +129,51 @@ describe('timeout resilience', () => {
   })
 })
 
+describe('a pro model that can only think expensively', () => {
+  it('moves to the fast model rather than letting it think by default', async () => {
+    const tried: { model: string; thinking: object | null }[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: any) => {
+        const model = /models\/(.+):generateContent$/.exec(String(url))![1]
+        tried.push({ model, thinking: JSON.parse(init.body).generationConfig.thinkingConfig ?? null })
+        if (/pro/.test(model)) return fail(400, 'Unknown name "thinkingLevel": Cannot find field.')
+        return ok('{"ok":true}')
+      }),
+    )
+    const { req, res, sent } = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'pro', effort: 'minimal' })
+    await (await freshHandler())(req, res)
+    expect(sent.status).toBe(200)
+    // Every pro attempt asked for cheap thinking; none fell through to the
+    // model's default, which is the config that eats the whole budget.
+    const onPro = tried.filter((t) => /pro/.test(t.model))
+    expect(onPro.length).toBeGreaterThan(1)
+    expect(onPro.every((t) => t.thinking !== null)).toBe(true)
+    expect(tried.at(-1)!.model).toBe('gemini-flash-latest')
+  })
+
+  it('stops paying the pro toll for the rest of the story once it has timed out', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const model = /models\/(.+):generateContent$/.exec(String(url))![1]
+        calls.push(model)
+        if (/pro/.test(model)) timedOut()
+        return ok('{"ok":true}')
+      }),
+    )
+    const handler = await freshHandler()
+    const first = reqRes()
+    await handler(first.req, first.res)
+    const second = reqRes()
+    await handler(second.req, second.res)
+    expect(second.sent.status).toBe(200)
+    // The second call never touches pro: one timeout is enough to learn from.
+    expect(calls).toEqual(['gemini-pro-latest', 'gemini-flash-latest', 'gemini-flash-latest'])
+  })
+})
+
 describe('model resilience', () => {
   it('takes the replacement the error names when a model is retired', async () => {
     const calls = stubFetch((model) =>
