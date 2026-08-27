@@ -8,6 +8,9 @@ const BASE = 'https://generativelanguage.googleapis.com/v1beta'
  *  model has to actually plan: inventing a story's plot, and writing it. */
 type Tier = 'fast' | 'pro'
 
+/** Aliases Google keeps pointed at the current generation, so a model retiring
+ *  doesn't need a code change here. If one of these ever stops working the
+ *  handler discovers a replacement at runtime. */
 const PREFERRED_MODEL: Record<Tier, string> = {
   fast: 'gemini-flash-latest',
   pro: 'gemini-pro-latest',
@@ -17,8 +20,38 @@ const PREFERRED_MODEL: Record<Tier, string> = {
 // the key can actually access.
 const resolvedModel: Record<Tier, string | null> = { fast: null, pro: null }
 
+/** Models this instance has watched refuse a request — retired, or never
+ *  enabled for this key. A re-pick must never hand one of these back, which is
+ *  the difference between recovering and retrying the same dead name forever. */
+const deadModels = new Set<string>()
+
+/** Shapes of model that can't write a story, whatever their tier. */
+const NOT_FOR_STORIES = /lite|image|tts|live|audio|embedding|vision|robotics|computer-use/
+
+/** Roughly how new a model is, from its name: gemini-3.1-pro → 3.1. Used to
+ *  rank, so discovery lands on the newest model the key can reach rather than
+ *  whichever one the list happens to mention first. */
+function generation(name: string): number {
+  const m = /(\d+)(?:[.-](\d+))?/.exec(name.replace(/^gemini-?/, ''))
+  if (!m) return 0
+  return Number(m[1]) + Number(m[2] ?? 0) / 10
+}
+
+function rank(name: string): number {
+  let score = generation(name) * 10
+  // A `-latest` alias tracks whatever Google promotes next, so it stays right
+  // for longer than any pinned id — worth more than being one version ahead.
+  if (/-latest$/.test(name)) score += 1000
+  if (/preview|-exp|experimental/.test(name)) score -= 50
+  if (/-\d{3}$/.test(name)) score -= 5 // dated snapshots are the first to retire
+  return score
+}
+
+const newestFirst = (pool: string[]): string | undefined =>
+  [...pool].sort((a, b) => rank(b) - rank(a))[0]
+
 async function pickAvailableModel(apiKey: string, tier: Tier): Promise<string> {
-  const res = await fetch(`${BASE}/models?pageSize=200`, {
+  const res = await fetch(`${BASE}/models?pageSize=1000`, {
     headers: { 'x-goog-api-key': apiKey },
   })
   if (!res.ok) throw new UpstreamError(res.status, `Could not list available models (${res.status})`)
@@ -27,16 +60,50 @@ async function pickAvailableModel(apiKey: string, tier: Tier): Promise<string> {
   const usable = models
     .filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
     .map((m) => m.name.replace(/^models\//, ''))
+    .filter((n) => /^gemini/.test(n) && !deadModels.has(n))
   const want = tier === 'pro' ? /pro/ : /flash/
   const pick =
-    usable.find((n) => want.test(n) && !/lite|preview|image|tts|live|exp/.test(n)) ??
-    usable.find((n) => want.test(n)) ??
+    newestFirst(usable.filter((n) => want.test(n) && !NOT_FOR_STORIES.test(n))) ??
+    newestFirst(usable.filter((n) => want.test(n))) ??
     // A key with no pro access still gets a story — a flash one is better than
     // an error the reader can do nothing about.
-    usable.find((n) => /flash/.test(n)) ??
-    usable[0]
+    newestFirst(usable.filter((n) => /flash/.test(n) && !NOT_FOR_STORIES.test(n))) ??
+    newestFirst(usable)
   if (!pick) throw new UpstreamError(500, 'No usable Gemini model found for this API key.')
+  console.log(JSON.stringify({ at: 'generate/repick', tier, pick, dead: [...deadModels] }))
   return pick
+}
+
+/** Upstream's way of saying "that model isn't yours to call": retired, renamed,
+ *  or not on this key's allowlist. Deliberately narrower than "mentions a
+ *  model" — a rejected thinking config also names the model, and mistaking one
+ *  for the other sends the retry down the wrong branch. */
+const MODEL_GONE = /no longer available|is not available|not found|does not exist|unknown model|deprecated|has been retired/i
+
+function isModelUnavailable(e: unknown): boolean {
+  if (!(e instanceof UpstreamError)) return false
+  if (e.status === 404) return true
+  return (e.status === 400 || e.status === 403) && /model/i.test(e.message) && MODEL_GONE.test(e.message)
+}
+
+/** Upstream usually names both halves of the story: the model that died and the
+ *  one to use instead ("...no longer available. Please update your code to use
+ *  models/x"). Everything before that hand-off is dead — including the id an
+ *  alias resolved to, which is often the only place the real name appears — and
+ *  the first id after it is a hint worth taking before going to discovery.
+ *  Returns that hint, if there is a usable one of the right class. */
+const HANDOFF = /update your code|please use|switch to|instead|we recommend/i
+
+function noteDeadModel(called: string, tier: Tier, e: unknown): string | null {
+  deadModels.add(called)
+  if (!(e instanceof UpstreamError)) return null
+  const at = e.message.search(HANDOFF)
+  const gone = at === -1 ? e.message : e.message.slice(0, at)
+  const handoff = at === -1 ? '' : e.message.slice(at)
+  for (const m of gone.matchAll(/models\/([\w.-]+)/g)) deadModels.add(m[1])
+  const hint = /models\/([\w.-]+)/.exec(handoff)?.[1]
+  const wanted = tier === 'pro' ? /pro/ : /flash/
+  return hint && !deadModels.has(hint) && wanted.test(hint) ? hint : null
 }
 
 class UpstreamError extends Error {
@@ -139,25 +206,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let model = resolvedModel[tier] ?? PREFERRED_MODEL[tier]
     let thinkingUsed: object | null = null
     let retries = 0
-    // Walk the thinking-config chain: a 400 usually means this model generation
-    // doesn't accept that config shape, so advance to the next and remember it.
+    // Two independent things can be wrong with a request: the model, and the
+    // thinking config. Each has its own recovery — re-pick, or step down the
+    // chain — and the model is checked first, because an unavailable model also
+    // returns a 400 and would otherwise burn the whole chain (and poison it for
+    // every later request on this instance) without touching the real problem.
+    const maxAttempts = configs.length + 3
     for (let attempt = 0; ; attempt++) {
       const i = Math.min(workingConfig[chain] ?? 0, configs.length - 1)
+      model = resolvedModel[tier] ?? PREFERRED_MODEL[tier]
+      thinkingUsed = configs[i]
+      retries = attempt
       try {
-        model = resolvedModel[tier] ?? PREFERRED_MODEL[tier]
-        thinkingUsed = configs[i]
-        retries = attempt
         data = await callModel(apiKey, model, prompt, schema, configs[i])
         break
       } catch (e) {
-        const badArgument = e instanceof UpstreamError && e.status === 400 && i < configs.length - 1
-        const modelProblem =
-          e instanceof UpstreamError && (e.status === 404 || /model/i.test(e.message))
-        if (badArgument && attempt < configs.length) {
+        if (attempt >= maxAttempts) throw e
+        if (isModelUnavailable(e)) {
+          const hint = noteDeadModel(model, tier, e)
+          try {
+            resolvedModel[tier] = hint ?? (await pickAvailableModel(apiKey, tier))
+          } catch {
+            throw e // Discovery failed too; the original error is the useful one.
+          }
+        } else if (e instanceof UpstreamError && e.status === 400 && i < configs.length - 1) {
           workingConfig[chain] = i + 1
-        } else if (modelProblem && attempt < configs.length + 1) {
-          // Model not available for this account? Discover one that is and retry.
-          resolvedModel[tier] = await pickAvailableModel(apiKey, tier)
         } else {
           throw e
         }
