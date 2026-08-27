@@ -62,7 +62,9 @@ async function callGeminiJson<T>(
     // does not respect it reliably. A pro call that runs out of time still has
     // somewhere to go: the same prompt on the fast model. A plainer story beats
     // no story, and the trace records which model actually answered.
-    const ranOutOfTime = e instanceof ApiError && (e.status === 504 || e.status === 502)
+    // The server spends its own budget on a fast-tier rescue first and says so;
+    // repeating it here would only cost the reader another minute of waiting.
+    const ranOutOfTime = e instanceof ApiError && (e.status === 504 || e.status === 502) && !e.rescued
     if (ranOutOfTime && tier === 'pro') {
       console.warn(`[story] ${opts.label ?? 'call'} timed out on pro — retrying on fast`)
       return postJson<T>(prompt, schema, { ...opts, tier: 'fast' })
@@ -108,13 +110,15 @@ async function postJson<T>(
   }
   if (!res.ok) {
     let message = `Request failed (${res.status})`
+    let rescued = false
     try {
       const err = await res.json()
       message = err?.error ?? message
+      rescued = err?.rescued === true
     } catch {
       /* keep generic message */
     }
-    throw new ApiError(res.status, message)
+    throw new ApiError(res.status, message, rescued)
   }
   const body = await res.json()
   if (body.meta) opts.onMeta?.(body.meta as CallMeta)
@@ -1720,9 +1724,12 @@ export async function gradeTranslation(opts: {
 
 export class ApiError extends Error {
   status: number
+  /** Whether the server already fell back to the fast model for this request. */
+  rescued: boolean
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, rescued = false) {
     super(message)
     this.status = status
+    this.rescued = rescued
   }
 }

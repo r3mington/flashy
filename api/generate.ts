@@ -131,6 +131,17 @@ const THINKING_CONFIGS: Record<'fast' | 'quality', (object | null)[]> = {
   quality: [{ thinkingLevel: 'HIGH' }, null],
 }
 
+/** The platform kills the function at its maxDuration (90s — see vercel.json),
+ *  and a killed function returns an opaque 504 having burned the whole budget
+ *  on nothing. Stop short of that ourselves, so what's left can still be spent
+ *  on an answer. Keep this a few seconds under the vercel.json figure. */
+const FUNCTION_BUDGET_MS = 85_000
+
+/** Held back from a pro call so a flash-tier rescue still fits. Generous
+ *  against the ~16s a flash story actually takes, because a rescue that gets
+ *  cut off itself is the one failure this whole arrangement exists to avoid. */
+const RESCUE_MS = 25_000
+
 /** Which rung of the chain currently works, per model class — the tiers are
  *  different model generations and don't necessarily accept the same configs,
  *  so one tier's 400 must not push the other down its chain. */
@@ -142,22 +153,36 @@ async function callModel(
   prompt: string,
   schema: object,
   thinkingConfig: object | null,
+  timeoutMs: number,
 ) {
-  const res = await fetch(`${BASE}/models/${model}:generateContent`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': apiKey,
-    },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema: schema,
-        ...(thinkingConfig ? { thinkingConfig } : {}),
+  let res: Response
+  try {
+    res = await fetch(`${BASE}/models/${model}:generateContent`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
       },
-    }),
-  })
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: schema,
+          ...(thinkingConfig ? { thinkingConfig } : {}),
+        },
+      }),
+      // Cutting the call off ourselves is the whole point: a call left to run
+      // into the platform's wall takes the function down with it, and there is
+      // nothing left to fall back with.
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch (e) {
+    const name = (e as Error)?.name
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      throw new UpstreamError(504, `${model} did not answer within ${Math.round(timeoutMs / 1000)}s.`)
+    }
+    throw e
+  }
   if (!res.ok) {
     let message = `Request failed (${res.status})`
     try {
@@ -191,8 +216,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // the user's toggle asks for it.
   const mode: 'fast' | 'quality' =
     effort === 'high' ? 'quality' : effort === 'minimal' ? 'fast' : thinking === true ? 'quality' : 'fast'
-  const configs = THINKING_CONFIGS[mode]
-  const chain = `${tier}:${mode}`
   const label = typeof req.body?.label === 'string' ? req.body.label : 'call'
   const started = Date.now()
   // Logged before the work starts, so a request that times out still leaves a
@@ -201,11 +224,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     JSON.stringify({ at: 'generate/start', label, tier, mode, promptChars: prompt.length }),
   )
 
+  // Outside the try: a failure needs to tell the client whether the fast-tier
+  // fallback was already spent, so it doesn't go and spend it a second time.
+  let rescued = false
+
   try {
     let data
     let model = resolvedModel[tier] ?? PREFERRED_MODEL[tier]
     let thinkingUsed: object | null = null
     let retries = 0
+    // A pro call that runs long has somewhere to go, but only while there is
+    // budget left to go there: once we fall back, `configs` and `chain` follow
+    // the model down to the fast tier so a rejected config is remembered
+    // against the model that actually rejected it.
+    let configs = THINKING_CONFIGS[mode]
+    let chain = `${tier}:${mode}`
     // Two independent things can be wrong with a request: the model, and the
     // thinking config. Each has its own recovery — re-pick, or step down the
     // chain — and the model is checked first, because an unavailable model also
@@ -213,22 +246,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // every later request on this instance) without touching the real problem.
     const maxAttempts = configs.length + 3
     for (let attempt = 0; ; attempt++) {
+      const useTier: Tier = rescued ? 'fast' : tier
       const i = Math.min(workingConfig[chain] ?? 0, configs.length - 1)
-      model = resolvedModel[tier] ?? PREFERRED_MODEL[tier]
+      model = resolvedModel[useTier] ?? PREFERRED_MODEL[useTier]
       thinkingUsed = configs[i]
       retries = attempt
+      const left = FUNCTION_BUDGET_MS - (Date.now() - started)
+      // Hold a flash-sized slice back while a fallback is still possible; once
+      // there's nothing left to fall back to, spend everything on this call.
+      const holdBack = tier === 'pro' && !rescued && left > RESCUE_MS * 2
+      const slice = holdBack ? left - RESCUE_MS : left
+      if (slice < 2_000) {
+        throw new UpstreamError(504, 'Ran out of time before the model answered.')
+      }
       try {
-        data = await callModel(apiKey, model, prompt, schema, configs[i])
+        data = await callModel(apiKey, model, prompt, schema, configs[i], slice)
         break
       } catch (e) {
+        const tooSlow =
+          e instanceof UpstreamError && (e.status === 504 || e.status === 503 || e.status === 429)
         if (attempt >= maxAttempts) throw e
         if (isModelUnavailable(e)) {
-          const hint = noteDeadModel(model, tier, e)
+          const hint = noteDeadModel(model, useTier, e)
           try {
-            resolvedModel[tier] = hint ?? (await pickAvailableModel(apiKey, tier))
+            resolvedModel[useTier] = hint ?? (await pickAvailableModel(apiKey, useTier))
           } catch {
             throw e // Discovery failed too; the original error is the useful one.
           }
+        } else if (tooSlow && !rescued && tier === 'pro') {
+          // The pro model ate its slice, or won't take the request at all right
+          // now. A plainer story from the fast model beats a 504 the reader can
+          // do nothing with, and there is still time in the budget for one.
+          console.warn(JSON.stringify({ at: 'generate/rescue', label, model, why: e.message }))
+          rescued = true
+          configs = THINKING_CONFIGS.fast
+          chain = 'fast:fast'
         } else if (e instanceof UpstreamError && e.status === 400 && i < configs.length - 1) {
           workingConfig[chain] = i + 1
         } else {
@@ -252,6 +304,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       thoughtTokens: usage.thoughtsTokenCount,
       finishReason: data?.candidates?.[0]?.finishReason,
       retries,
+      ...(rescued ? { rescued: true } : {}),
     }
     console.log(JSON.stringify({ at: 'generate/done', label, tier, ...meta }))
     return res.status(200).json({ data: JSON.parse(text), meta })
@@ -261,7 +314,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Don't leak upstream auth details; map key problems to a server error.
       const status = e.status === 401 || e.status === 403 ? 500 : e.status
       console.error(JSON.stringify({ at: 'generate/fail', label, tier, ms, status, message: e.message }))
-      return res.status(status).json({ error: e.message })
+      return res.status(status).json({ error: e.message, ...(rescued ? { rescued: true } : {}) })
     }
     console.error(
       JSON.stringify({
@@ -272,6 +325,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         message: e instanceof Error ? e.message : String(e),
       }),
     )
-    return res.status(500).json({ error: 'Generation failed.' })
+    return res.status(500).json({ error: 'Generation failed.', ...(rescued ? { rescued: true } : {}) })
   }
 }

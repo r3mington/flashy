@@ -66,6 +66,67 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+/** What fetch throws when an AbortSignal.timeout fires. */
+const timedOut = () => {
+  const e = new Error('The operation was aborted due to timeout')
+  e.name = 'TimeoutError'
+  throw e
+}
+
+describe('timeout resilience', () => {
+  it('rescues a too-slow pro call on the fast model rather than dying at the wall', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const model = /models\/(.+):generateContent$/.exec(String(url))![1]
+        calls.push(model)
+        if (/pro/.test(model)) timedOut()
+        return ok('{"ok":true}')
+      }),
+    )
+    const { req, res, sent } = reqRes()
+    await (await freshHandler())(req, res)
+    expect(sent.status).toBe(200)
+    expect(calls).toEqual(['gemini-pro-latest', 'gemini-flash-latest'])
+    expect(sent.body.meta.rescued).toBe(true)
+  })
+
+  it('gives up once the fast model has had its turn too, and says so', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        calls.push(/models\/(.+):generateContent$/.exec(String(url))![1])
+        return timedOut()
+      }),
+    )
+    const { req, res, sent } = reqRes()
+    await (await freshHandler())(req, res)
+    expect(sent.status).toBe(504)
+    // The flag is what stops the client spending another minute on the same
+    // fallback the server just tried.
+    expect(sent.body.rescued).toBe(true)
+    expect(calls).toEqual(['gemini-pro-latest', 'gemini-flash-latest'])
+  })
+
+  it('leaves a fast-tier request to use the whole budget', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        calls.push(/models\/(.+):generateContent$/.exec(String(url))![1])
+        return timedOut()
+      }),
+    )
+    const { req, res, sent } = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
+    await (await freshHandler())(req, res)
+    expect(sent.status).toBe(504)
+    expect(calls).toEqual(['gemini-flash-latest'])
+    expect(sent.body.rescued).toBeUndefined()
+  })
+})
+
 describe('model resilience', () => {
   it('takes the replacement the error names when a model is retired', async () => {
     const calls = stubFetch((model) =>
