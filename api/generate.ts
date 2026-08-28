@@ -60,7 +60,7 @@ async function pickAvailableModel(apiKey: string, tier: Tier): Promise<string> {
   const usable = models
     .filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
     .map((m) => m.name.replace(/^models\//, ''))
-    .filter((n) => /^gemini/.test(n) && !deadModels.has(n))
+    .filter((n) => /^gemini/.test(n) && !deadModels.has(n) && !isCool(n))
   const want = tier === 'pro' ? /pro/ : /flash/
   const pick =
     newestFirst(usable.filter((n) => want.test(n) && !NOT_FOR_STORIES.test(n))) ??
@@ -70,7 +70,15 @@ async function pickAvailableModel(apiKey: string, tier: Tier): Promise<string> {
     newestFirst(usable.filter((n) => /flash/.test(n) && !NOT_FOR_STORIES.test(n))) ??
     newestFirst(usable)
   if (!pick) throw new UpstreamError(500, 'No usable Gemini model found for this API key.')
-  console.log(JSON.stringify({ at: 'generate/repick', tier, pick, dead: [...deadModels] }))
+  console.log(
+    JSON.stringify({
+      at: 'generate/repick',
+      tier,
+      pick,
+      dead: [...deadModels],
+      benched: Object.keys(coolUntil).filter(isCool),
+    }),
+  )
   return pick
 }
 
@@ -127,7 +135,12 @@ class UpstreamError extends Error {
  *  function budget. So the pro chain stops one rung short: a request that runs
  *  out of cheap configs there is better off on the fast model than on a pro
  *  model left to think for as long as it likes. */
-const CHEAP_THINKING = [{ thinkingLevel: 'MINIMAL' }, { thinkingLevel: 'LOW' }, { thinkingBudget: 0 }]
+// Order matters, and it is about tokens: MINIMAL where a model takes it, then
+// the 2.5-era way of saying the same thing, and only then LOW — which is real
+// reasoning and bills for it (a top-up pass was measured at 10,592 thought
+// tokens on LOW). A model that rejects a rung costs one 400 and half a second,
+// remembered for the rest of the instance.
+const CHEAP_THINKING = [{ thinkingLevel: 'MINIMAL' }, { thinkingBudget: 0 }, { thinkingLevel: 'LOW' }]
 
 function chainFor(tier: Tier, mode: 'fast' | 'quality'): (object | null)[] {
   if (mode === 'quality') return [{ thinkingLevel: 'HIGH' }, null]
@@ -155,14 +168,47 @@ const RESCUE_MS = 70_000
  *  is spent than to start a call that cannot finish. */
 const MIN_SLICE_MS = 8_000
 
-/** How long a tier stays skipped after it proves it can't answer inside the
- *  budget. A story is a dozen calls; paying the pro model's full slice on every
- *  one of them, to time out every time, is how a slow model turns one failure
- *  into a failed generation. */
+/** The longest one attempt may run while another is still affordable. Measured:
+ *  a healthy model writes a 1,000-word story in 33–37s, while the overloaded
+ *  ones simply never answered. The cap sits between those, so a bad day is
+ *  spotted in a minute and the budget buys a different model instead of more
+ *  waiting. Without it, one busy model can spend everything before the second
+ *  gets a turn — which is exactly what happened at 290s. */
+const MAX_ATTEMPT_MS = 60_000
+
+/** How long a model stays skipped after it proves it can't answer inside the
+ *  budget. A story is a dozen calls; paying the same model's full slice on
+ *  every one of them, to time out every time, is how one slow model turns into
+ *  a failed generation.
+ *
+ *  Per MODEL, not per tier, because that is where the problem actually lives:
+ *  measured against this key, `gemini-flash-latest` took 101 seconds over two
+ *  sentences (and 503'd on the next try) while `gemini-3.6-flash` answered the
+ *  same prompt in 2.2. Nothing about the tier was wrong — one model was busy. */
 const SLOW_COOLDOWN_MS = 10 * 60_000
 
-/** When each tier is worth trying again. */
-const slowUntil: Record<Tier, number> = { fast: 0, pro: 0 }
+/** When each model is worth trying again. */
+const coolUntil: Record<string, number> = {}
+
+/** What an alias turned out to point at, learned from `modelVersion` on a
+ *  successful response. Without it, cooling `gemini-flash-latest` and then
+ *  picking `gemini-3.7-flash` just queues behind the same busy model. */
+const resolvesTo: Record<string, string> = {}
+
+function isCool(model: string): boolean {
+  return (coolUntil[model] ?? 0) > Date.now()
+}
+
+/** Bench a model, and with it every name known to mean the same model. */
+function coolDown(model: string, label: string, why: string) {
+  const until = Date.now() + SLOW_COOLDOWN_MS
+  const same = new Set([model, resolvesTo[model]].filter(Boolean) as string[])
+  for (const [alias, target] of Object.entries(resolvesTo)) {
+    if (target === model || target === resolvesTo[model]) same.add(alias)
+  }
+  for (const name of same) coolUntil[name] = until
+  console.warn(JSON.stringify({ at: 'generate/cooldown', label, benched: [...same], why }))
+}
 
 /** Which rung of the chain currently works, per model class — the tiers are
  *  different model generations and don't necessarily accept the same configs,
@@ -228,7 +274,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) return res.status(500).json({ error: 'Server is missing GEMINI_API_KEY.' })
 
-  const { prompt, schema, thinking, tier: rawTier, effort, budgetMs } = req.body ?? {}
+  const { prompt, schema, thinking, tier: rawTier, effort, budgetMs, preferModel } = req.body ?? {}
   if (typeof prompt !== 'string' || !prompt || typeof schema !== 'object' || !schema) {
     return res.status(400).json({ error: 'Expected { prompt, schema }.' })
   }
@@ -257,12 +303,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Outside the try: a failure needs to tell the client whether the fast-tier
   // fallback was already spent, so it doesn't go and spend it a second time.
-  // A pro tier still in its cooldown starts there — the toll it charges to
-  // fail again is the whole point of remembering.
-  let rescued = tier === 'pro' && Date.now() < slowUntil.pro
-  if (rescued) {
-    console.warn(JSON.stringify({ at: 'generate/skip-pro', label, until: slowUntil.pro }))
+  // A pro model still benched starts on the fast tier instead — the toll it
+  // charges to fail again is the whole point of remembering.
+  // A model the caller has seen answer quickly, from an earlier session this
+  // instance knows nothing about. Cold starts otherwise begin every time on the
+  // `-latest` alias — the most-used endpoint, and so the likeliest to be under
+  // load. Ignored if it has since died or been benched here.
+  if (typeof preferModel === 'string' && /^[\w.-]{1,64}$/.test(preferModel)) {
+    const wanted = tier === 'pro' ? /pro/ : /flash/
+    if (wanted.test(preferModel) && !deadModels.has(preferModel) && !isCool(preferModel)) {
+      resolvedModel[tier] ??= preferModel
+    }
   }
+  let rescued = tier === 'pro' && isCool(resolvedModel.pro ?? PREFERRED_MODEL.pro)
+  if (rescued) console.warn(JSON.stringify({ at: 'generate/skip-pro', label }))
 
   try {
     let data
@@ -285,6 +339,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const useTier: Tier = rescued ? 'fast' : tier
       const i = Math.min(workingConfig[chain] ?? 0, configs.length - 1)
       model = resolvedModel[useTier] ?? PREFERRED_MODEL[useTier]
+      if (isCool(model)) {
+        // Benched since we last resolved this tier: find something else rather
+        // than queue behind a model already known to be struggling.
+        try {
+          model = resolvedModel[useTier] = await pickAvailableModel(apiKey, useTier)
+        } catch {
+          // Nothing else on this tier. Better a slow answer than none: serve
+          // the benched model and let the deadline decide.
+        }
+      }
       thinkingUsed = configs[i]
       retries = attempt
       const left = budget - (Date.now() - started)
@@ -293,7 +357,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // handing everything to the attempt most likely to overrun.
       const reserve = Math.min(RESCUE_MS, Math.floor(left / 2))
       const holdBack = tier === 'pro' && !rescued && left - reserve >= MIN_SLICE_MS
-      const slice = holdBack ? left - reserve : left
+      const share = holdBack ? left - reserve : left
+      // Cap it while there would still be time for another attempt afterwards.
+      const slice =
+        left > MAX_ATTEMPT_MS + MIN_SLICE_MS ? Math.min(share, MAX_ATTEMPT_MS) : share
       if (slice < MIN_SLICE_MS) {
         throw new UpstreamError(504, 'Ran out of time before the model answered.')
       }
@@ -313,14 +380,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         } else if (e instanceof UpstreamError && e.status === 400 && i < configs.length - 1) {
           workingConfig[chain] = i + 1
-        } else if (!rescued && tier === 'pro' && (tooSlow || (e instanceof UpstreamError && e.status === 400))) {
-          // The pro model ate its slice, won't take the request right now, or
-          // has run out of cheap thinking configs — and the only rung left
-          // there is the expensive one that caused the timeout in the first
-          // place. A plainer story from the fast model beats a 504 the reader
-          // can do nothing with, and there is still budget for one.
+        } else if (tooSlow) {
+          // Not the tier's fault and not the request's: this model is busy, or
+          // slower right now than the work deserves. Bench it — for this call
+          // and for the rest of the story — and let the next attempt pick
+          // something else. Dropping a pro request to the fast class at the
+          // same time, since the story is late already.
+          coolDown(model, label, e.message)
+          if (!rescued && tier === 'pro') {
+            rescued = true
+            configs = chainFor('fast', mode)
+            chain = `fast:${mode}`
+          } else {
+            // Already on the fast class, so the only move left is a different
+            // model. If there isn't one, retrying the benched model is just the
+            // same wait again — give the caller the error instead.
+            try {
+              resolvedModel[useTier] = await pickAvailableModel(apiKey, useTier)
+            } catch {
+              throw e
+            }
+          }
+        } else if (!rescued && tier === 'pro' && e instanceof UpstreamError && e.status === 400) {
+          // Out of cheap thinking configs on pro, and the only rung left there
+          // is the expensive one. A plainer story from the fast model beats a
+          // slow one that never arrives.
           console.warn(JSON.stringify({ at: 'generate/rescue', label, model, why: e.message }))
-          if (tooSlow) slowUntil.pro = Date.now() + SLOW_COOLDOWN_MS
           rescued = true
           configs = chainFor('fast', mode)
           chain = `fast:${mode}`
@@ -332,6 +417,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text
     if (!text) return res.status(502).json({ error: 'The model returned no usable output.' })
 
+    // `modelVersion` names what actually served the request, so an alias can be
+    // benched together with the model behind it.
+    if (typeof data?.modelVersion === 'string' && data.modelVersion !== model) {
+      resolvesTo[model] = data.modelVersion
+    }
     const usage = data?.usageMetadata ?? {}
     // What the call actually cost and how it was configured. `thoughtTokens` is
     // the one that explains a slow call: it is the reasoning the model did

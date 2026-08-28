@@ -12,6 +12,39 @@ export interface Suggestion {
   roman?: string
 }
 
+/** How long a remembered model stays worth asking for. Long enough that the
+ *  reader isn't rediscovering the field every session, short enough that a
+ *  model retired or overtaken in the meantime doesn't stick. */
+const MODEL_MEMORY_MS = 7 * 24 * 60 * 60_000
+
+/** Fast enough to be worth asking for again. Above this the model answered, but
+ *  not in a way anyone would choose to repeat. */
+const MODEL_PROMPT_MS = 60_000
+
+/** The model that last answered this tier quickly, if it is still fresh. */
+async function preferredModel(tier: 'fast' | 'pro'): Promise<string | undefined> {
+  try {
+    const seen = (await db.settings.get('app'))?.aiModels?.[tier]
+    return seen && Date.now() - seen.at < MODEL_MEMORY_MS ? seen.name : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Remember what answered PROMPTLY, so the next cold server can start there.
+ *  A model that answered eventually is not a recommendation — it is the thing
+ *  this whole arrangement is trying to move away from. */
+async function rememberModel(tier: 'fast' | 'pro', name?: string, ms?: number) {
+  if (!name || (ms ?? 0) > MODEL_PROMPT_MS) return
+  try {
+    const cur = (await db.settings.get('app'))?.aiModels ?? {}
+    if (cur[tier]?.name === name && Date.now() - (cur[tier]?.at ?? 0) < 60_000) return
+    await db.settings.update('app', { aiModels: { ...cur, [tier]: { name, at: Date.now() } } })
+  } catch {
+    /* a forgotten preference costs one slow call, not a story */
+  }
+}
+
 /** Whether the user has opted into slower, higher-quality "thinking" for AI
  *  calls. Read straight from the settings store so callers don't have to thread
  *  it through. Defaults to off (fast) if unset or unreadable. */
@@ -120,6 +153,7 @@ async function postJson<T>(
   },
 ): Promise<T> {
   const thinking = await thinkingEnabled()
+  const preferModel = await preferredModel(opts.tier)
   let res: Response
   try {
     res = await fetch('/api/generate', {
@@ -133,6 +167,7 @@ async function postJson<T>(
         effort: opts.effort,
         label: opts.label,
         budgetMs: opts.budgetMs,
+        preferModel,
       }),
     })
   } catch {
@@ -158,7 +193,13 @@ async function postJson<T>(
     throw new ApiError(res.status, message, rescued)
   }
   const body = await res.json()
-  if (body.meta) opts.onMeta?.(body.meta as CallMeta)
+  if (body.meta) {
+    opts.onMeta?.(body.meta as CallMeta)
+    // Whatever answered quickly is the best guess for what will answer next time —
+    // including when the server had to go looking for it.
+    const meta = body.meta as CallMeta
+    void rememberModel(opts.tier, meta.model, meta.ms)
+  }
   return body.data as T
 }
 
@@ -457,7 +498,7 @@ const STORY_SCHEMA = {
 
 /** The prose half of a story — what the writing call returns. Translation and
  *  glossary are added afterwards, each by its own pass. */
-type StoryProse = Omit<Story, 'glossary' | 'translation' | 'summary'>
+export type StoryProse = Omit<Story, 'glossary' | 'translation' | 'summary'>
 
 /** Most named characters a first part may introduce. Reading in a second
  *  language is slow enough that a fourth name costs more than it adds. */
@@ -828,10 +869,27 @@ async function glossaryFor(opts: {
   deck: Deck
   story: StoryProse
   bankWords: string[]
+  /** Entries this reader already has from earlier parts of the same thread.
+   *  Any that this part uses again are reused verbatim instead of being asked
+   *  for a second time — by part five, a serial is paying to define "dan" and
+   *  "yang" over and over. The saved story still ends up with a complete
+   *  glossary; the difference is only in what we ask the model for. */
+  known?: GlossaryEntry[]
   onMeta?: (m: CallMeta) => void
 }): Promise<GlossaryEntry[]> {
-  const { deck, story, bankWords, onMeta } = opts
-  const chunks = splitForGlossary(story.story, langCodeFor(deck.language))
+  const { deck, story, bankWords, known = [], onMeta } = opts
+  const langCode = langCodeFor(deck.language)
+  const chunks = splitForGlossary(story.story, langCode)
+
+  // Only the ones this part actually uses: the rest would be dead weight in
+  // the prompt and in the saved record alike.
+  const used = new Set(tokenizeWords(story.story, langCode).map((w) => w.toLowerCase()))
+  const reused = new Map<string, GlossaryEntry>()
+  for (const entry of known) {
+    const key = entry.word?.trim().toLowerCase()
+    if (key && used.has(key) && !reused.has(key)) reused.set(key, entry)
+  }
+  const alreadyGlossed = [...reused.values()].map((e) => e.word)
 
   const promptFor = (chunk: string) =>
     [
@@ -844,6 +902,9 @@ async function glossaryFor(opts: {
       bankWords.length > 0
         ? `The learner's word bank: ${bankWords.join(', ')}. Set isNew=true only for content words (nouns, verbs, adjectives, adverbs) outside this bank. Function words are never isNew, and neither are personal names${story.characterNames?.length ? ` (${story.characterNames.join(', ')})` : ''}.`
         : `Set isNew=true only for content words (nouns, verbs, adjectives, adverbs); function words and personal names are never isNew.`,
+      alreadyGlossed.length > 0
+        ? `SKIP these words — the reader already has them from earlier parts of this story, and an entry for any of them is wasted: ${alreadyGlossed.join(', ')}. Every OTHER word of the text still needs one.`
+        : '',
       ROMAN_RULE(deck.language, 'every glossary entry'),
       MEMORY_RULE(deck.language),
       FREQ_RULE(deck.language),
@@ -878,7 +939,9 @@ async function glossaryFor(opts: {
 
   // First mention of a word wins: the pieces share one bank list, so they agree
   // about what is new, and the earliest use is the one the reader meets first.
-  const merged = new Map<string, GlossaryEntry>()
+  // The reused entries go in first — they are the reader's existing wording for
+  // a word they have already met, and a fresh entry would only differ.
+  const merged = new Map<string, GlossaryEntry>(reused)
   for (const list of lists) {
     for (const entry of list) {
       const key = entry.word?.trim().toLowerCase()
@@ -886,6 +949,12 @@ async function glossaryFor(opts: {
     }
   }
   return [...merged.values()]
+}
+
+const AUDIT_SCHEMA = {
+  type: 'OBJECT',
+  properties: { words: { type: 'ARRAY', items: { type: 'STRING' } } },
+  required: ['words'],
 }
 
 const SIMPLIFY_SCHEMA = {
@@ -976,6 +1045,51 @@ async function simplifyStory(opts: {
   const { deck, story, band, characterNames, onMeta } = opts
   const langCode = langCodeFor(deck.language)
   const chunks = groupParagraphs(story, langCode, SIMPLIFY_CHUNK_WORDS)
+  const metas: CallMeta[] = []
+
+  // Ask what is actually wrong before rewriting anything. The answer is a short
+  // list of words; a rewrite is the whole story again, in output tokens, and
+  // most of the time it comes back changed in no way at all — the run that
+  // prompted this reported "0 words swapped out" after sixty seconds of it.
+  // One cheap call tells us which chunks are worth rewriting, if any.
+  const audit = await callGeminiJson<{ words: string[] }>(
+    [
+      // Deliberately not `vocabSpec`: that one is written at whoever is
+      // WRITING the story ("build the story from…", "before you return…"), and
+      // this call writes nothing. Same band, stated as a test to apply.
+      `Below is a story in ${deck.language} written for a language learner at ${band.cefr}. This reader knows roughly the ${band.commonWords} most common words of ${deck.language} — ordinary spoken vocabulary, the words a graded reader at that level uses.`,
+      `Return "words": every word in the story that falls OUTSIDE that — literary, formal, technical, bookish, written-register, or merely uncommon. For each one ask: would someone a few months into learning ${deck.language} know this word? If not, list it.`,
+      `Use the exact form the word takes in the text. Do not list names of people or places${characterNames.length > 0 ? ` (${characterNames.join(', ')})` : ''}. Do not list words that are inside the vocabulary — a list padded with ordinary words costs the reader a rewrite they did not need.`,
+      langCode === 'id'
+        ? `Also list any of these, which are always too formal here whatever their frequency: beliau, tersebut, sehingga, namun, oleh karena itu, adapun, dengan demikian, seraya, sembari — and any word where a commoner synonym exists (mendadak→tiba-tiba, sunyi→sepi, menatap→melihat, gerbang→pintu, ransel→tas).`
+        : '',
+      `If every word is inside the vocabulary, return an empty list. That is a normal answer, not a failure.`,
+      `Story:\n${story}`,
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    AUDIT_SCHEMA,
+    { label: 'audit', budgetMs: CHUNK_BUDGET_MS, tries: CHUNK_TRIES, onMeta: (m) => metas.push(m) },
+  ).catch((e) => {
+    // Without the audit we don't know which chunks are clean, so rewrite them
+    // all — the old behaviour, and still correct, just dearer.
+    console.warn('[story] vocabulary audit failed — simplifying every chunk', e)
+    return { words: [] as string[], failed: true }
+  })
+  const auditFailed = 'failed' in audit
+  const offenders = new Set(
+    (audit.words ?? []).map((w) => w.trim().toLowerCase()).filter(Boolean),
+  )
+  // A chunk with nothing above the band is already what the rewrite would
+  // return. Left alone it costs nothing and cannot come back damaged.
+  const offendersIn = (chunk: string) => [
+    ...new Set(tokenizeWords(chunk, langCode).filter((w) => offenders.has(w.toLowerCase()))),
+  ]
+  const needsWork = (chunk: string) => auditFailed || offendersIn(chunk).length > 0
+  if (!auditFailed && offenders.size === 0) {
+    onMeta?.({ ...metas[0], passes: 1 })
+    return story
+  }
 
   const promptFor = (chunk: string) =>
     [
@@ -992,33 +1106,39 @@ async function simplifyStory(opts: {
       `• Keep the length. Replacing one hard word with three easy ones is right; dropping the sentence is not.`,
       `• Where a sentence can only be said with a hard word, change what is DESCRIBED rather than what happens — a plainer object, a different detail — so the plot still runs exactly as before.`,
       `• Where a sentence is already simple enough, leave it alone word for word.`,
+      // The audit already found them, and a rewrite told what to fix is both
+      // more accurate and less tempted to rewrite what is fine.
+      offendersIn(chunk).length > 0
+        ? `THE WORDS TO REPLACE, found in this extract: ${offendersIn(chunk).join(', ')}. Replace each of them; leave the rest of the text as it is.`
+        : '',
       `Return the complete edited text in "text": the whole extract, not a summary, and not only the parts you changed.`,
       `Text:\n${chunk}`,
     ]
       .filter(Boolean)
       .join('\n')
 
-  const metas: CallMeta[] = []
   const edited = await Promise.all(
     chunks.map((chunk, i) =>
-      callGeminiJson<{ text: string }>(promptFor(chunk), SIMPLIFY_SCHEMA, {
-        label: chunks.length > 1 ? `simplify-${i + 1}/${chunks.length}` : 'simplify',
-        budgetMs: CHUNK_BUDGET_MS,
-        tries: CHUNK_TRIES,
-        onMeta: (m) => metas.push(m),
-      })
-        .then((r) => {
-          const text = (r.text ?? '').trim()
-          if (countWords(text, langCode) < countWords(chunk, langCode) * SIMPLIFY_MIN_KEPT) {
-            console.warn(`[story] simplify piece ${i + 1} came back short — keeping the original`)
-            return chunk
-          }
-          return text
-        })
-        .catch((e) => {
-          console.warn(`[story] simplify piece ${i + 1} failed — keeping the original`, e)
-          return chunk
-        }),
+      !needsWork(chunk)
+        ? Promise.resolve(chunk)
+        : callGeminiJson<{ text: string }>(promptFor(chunk), SIMPLIFY_SCHEMA, {
+            label: chunks.length > 1 ? `simplify-${i + 1}/${chunks.length}` : 'simplify',
+            budgetMs: CHUNK_BUDGET_MS,
+            tries: CHUNK_TRIES,
+            onMeta: (m) => metas.push(m),
+          })
+            .then((r) => {
+              const text = (r.text ?? '').trim()
+              if (countWords(text, langCode) < countWords(chunk, langCode) * SIMPLIFY_MIN_KEPT) {
+                console.warn(`[story] simplify piece ${i + 1} came back short — keeping the original`)
+                return chunk
+              }
+              return text
+            })
+            .catch((e) => {
+              console.warn(`[story] simplify piece ${i + 1} failed — keeping the original`, e)
+              return chunk
+            }),
     ),
   )
 
@@ -1031,7 +1151,8 @@ async function simplifyStory(opts: {
     promptTokens: sum((m) => m.promptTokens),
     outputTokens: sum((m) => m.outputTokens),
     thoughtTokens: sum((m) => m.thoughtTokens),
-    passes: chunks.length,
+    // The audit plus however many chunks actually had something to fix.
+    passes: 1 + chunks.filter(needsWork).length,
   })
 
   return edited.join('\n\n')
@@ -1070,7 +1191,10 @@ async function extendStory(opts: {
   ].join('\n')
 
   const more = await callGeminiJson<Omit<StoryProse, 'title'>>(prompt, EXTEND_SCHEMA, {
-    tier: 'pro',
+    // Continuing a text that already exists, to a stated length, in a voice
+    // the prompt hands over verbatim — mechanical work next to inventing the
+    // story, and the pass that most often runs. It doesn't need the pro model.
+    tier: 'fast',
     effort: 'minimal',
     label: 'extend',
     // A top-up is optional and there can be three of them. It doesn't get the
@@ -1126,7 +1250,68 @@ const LENGTH_TOLERANCE = 0.9
 /** Cap on top-up passes — each one is another round-trip. */
 const MAX_EXTENSIONS = 2
 
-export async function generateStory(opts: {
+/** A running trace of one generation: the passes, in order, with what each
+ *  produced and what it cost. Shared by the two halves of a generation, so the
+ *  annotation passes appear in the same list as the writing ones.
+ *
+ *  Made by `createTrace` rather than declared inside the generator because the
+ *  story is now handed to the reader before the last passes finish — the two
+ *  halves are separate calls, and this is what still joins them. */
+export interface Trace {
+  steps: StoryStep[]
+  step: <T>(
+    key: string,
+    label: string,
+    run: (onMeta: (m: CallMeta) => void) => Promise<T>,
+    detail?: (result: T) => string,
+  ) => Promise<T>
+}
+
+export function createTrace(onProgress?: (steps: StoryStep[]) => void): Trace {
+  const steps: StoryStep[] = []
+  const emit = () => onProgress?.(steps.map((s) => ({ ...s })))
+
+
+  /** Run one pass inside the trace: time it, record what it produced, and log
+   *  it. A pass that throws is recorded before the error propagates, so a
+   *  failed generation still says which pass died and how long it took. */
+  async function step<T>(
+    key: string,
+    label: string,
+    run: (onMeta: (m: CallMeta) => void) => Promise<T>,
+    detail?: (result: T) => string,
+  ): Promise<T> {
+    const s: StoryStep = { key, label, startedAt: Date.now() }
+    steps.push(s)
+    emit()
+    try {
+      const result = await run((m) => {
+        s.meta = m
+      })
+      s.ms = Date.now() - s.startedAt
+      s.ok = true
+      s.detail = detail?.(result)
+      emit()
+      console.log(`[story] ${key} ${(s.ms / 1000).toFixed(1)}s`, {
+        detail: s.detail,
+        ...s.meta,
+      })
+      return result
+    } catch (e) {
+      s.ms = Date.now() - s.startedAt
+      s.ok = false
+      s.error = e instanceof Error ? e.message : String(e)
+      emit()
+      console.error(`[story] ${key} failed after ${(s.ms / 1000).toFixed(1)}s`, s.error)
+      throw e
+    }
+  }
+
+  return { steps, step }
+}
+
+export async function writeStoryDraft(
+  opts: {
   deck: Deck
   knownWords: string[]
   learningWords: string[]
@@ -1163,10 +1348,13 @@ export async function generateStory(opts: {
    *  spacing is what matters, and a story bent to fit a word in teaches the
    *  word worse than a story that left it out. */
   recurWords?: string[]
-  /** Called with the running trace whenever a pass starts or finishes, so the
-   *  UI can show what the wait is for and what each pass cost. */
-  onProgress?: (steps: StoryStep[]) => void
-}): Promise<Story> {
+    /** Called with the running trace whenever a pass starts or finishes, so the
+     *  UI can show what the wait is for and what each pass cost. */
+    onProgress?: (steps: StoryStep[]) => void
+  },
+  /** Passed when the caller runs both halves and wants one shared trace. */
+  trace?: Trace,
+): Promise<StoryProse> {
   const { deck, knownWords, learningWords, vocabLevel, topic, lengthWords } = opts
   const { avoidThemes = [], avoidNames = [], continueFrom, focusWords = [] } = opts
   const ending =
@@ -1178,43 +1366,7 @@ export async function generateStory(opts: {
   const langCode = langCodeFor(deck.language)
   const band = bandFor(vocabLevel)
 
-  const steps: StoryStep[] = []
-  const emit = () => opts.onProgress?.(steps.map((s) => ({ ...s })))
-
-  /** Run one pass inside the trace: time it, record what it produced, and log
-   *  it. A pass that throws is recorded before the error propagates, so a
-   *  failed generation still says which pass died and how long it took. */
-  async function step<T>(
-    key: string,
-    label: string,
-    run: (onMeta: (m: CallMeta) => void) => Promise<T>,
-    detail?: (result: T) => string,
-  ): Promise<T> {
-    const s: StoryStep = { key, label, startedAt: Date.now() }
-    steps.push(s)
-    emit()
-    try {
-      const result = await run((m) => {
-        s.meta = m
-      })
-      s.ms = Date.now() - s.startedAt
-      s.ok = true
-      s.detail = detail?.(result)
-      emit()
-      console.log(`[story] ${key} ${(s.ms / 1000).toFixed(1)}s`, {
-        detail: s.detail,
-        ...s.meta,
-      })
-      return result
-    } catch (e) {
-      s.ms = Date.now() - s.startedAt
-      s.ok = false
-      s.error = e instanceof Error ? e.message : String(e)
-      emit()
-      console.error(`[story] ${key} failed after ${(s.ms / 1000).toFixed(1)}s`, s.error)
-      throw e
-    }
-  }
+  const { step } = trace ?? createTrace(opts.onProgress)
 
   // One writing call, and the topic — or the thread being continued — is the
   // whole brief. This replaced a planning pass and a rolled four-way "angle"
@@ -1399,6 +1551,30 @@ export async function generateStory(opts: {
     console.warn('[story] simplify failed — the story stands as written')
   }
 
+  return prose
+}
+
+/** The passes that explain a finished story: its English, its summary and its
+ *  glossary. Separated from the writing because the reader does not have to
+ *  wait for them — the story is saved and readable the moment the prose is
+ *  done, and these fill in behind it. Nothing here can fail in a way that
+ *  costs the reader the story, because by the time it runs the story is
+ *  already on disk. */
+export async function annotateStory(
+  opts: {
+    deck: Deck
+    prose: StoryProse
+    /** The reader's own words, for deciding what counts as new. */
+    bankWords: string[]
+    /** Glossary entries from earlier parts of this thread (see `glossaryFor`). */
+    knownGlossary?: GlossaryEntry[]
+    onProgress?: (steps: StoryStep[]) => void
+  },
+  trace?: Trace,
+): Promise<{ translation: string; summary: string; glossary: GlossaryEntry[] }> {
+  const { deck, prose, bankWords, knownGlossary } = opts
+  const { step } = trace ?? createTrace(opts.onProgress)
+
   // Translate and gloss last, over the text as it finally stands — so
   // extensions cost nothing extra here and no word of the story goes unglossed.
   // They read the same finished text and neither needs the other's output, so
@@ -1423,7 +1599,7 @@ export async function generateStory(opts: {
       'glossary',
       'Looking up the words',
       (onMeta) =>
-        glossaryFor({ deck, story: prose, bankWords: [...knownWords, ...learningWords], onMeta }),
+        glossaryFor({ deck, story: prose, bankWords, known: knownGlossary, onMeta }),
       (g) => `${g.length} entries`,
     ).catch((): GlossaryEntry[] => {
       console.warn('[story] glossary failed — the story stands, words resolve on tap instead')
@@ -1431,7 +1607,28 @@ export async function generateStory(opts: {
     }),
   ])
   const { translation, summary } = translated
+  return { translation, summary, glossary }
+}
 
+/** Both halves, in order — one story, fully annotated, in one await. What the
+ *  story lab and any caller that has nothing to do with a half-finished story
+ *  wants; the app itself runs the halves separately so the reader can start
+ *  reading at the end of the first one. */
+export async function generateStory(
+  opts: Parameters<typeof writeStoryDraft>[0] & { knownGlossary?: GlossaryEntry[] },
+): Promise<Story> {
+  const trace = createTrace(opts.onProgress)
+  const prose = await writeStoryDraft(opts, trace)
+  const { translation, summary, glossary } = await annotateStory(
+    {
+      deck: opts.deck,
+      prose,
+      bankWords: [...opts.knownWords, ...opts.learningWords],
+      knownGlossary: opts.knownGlossary,
+    },
+    trace,
+  )
+  const { steps } = trace
   // Wall clock, not the sum of the passes: the last two ran together.
   const total = Math.max(...steps.map((s) => s.startedAt + (s.ms ?? 0))) - steps[0].startedAt
   console.log(`[story] done in ${(total / 1000).toFixed(1)}s`, steps)

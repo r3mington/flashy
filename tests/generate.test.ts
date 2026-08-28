@@ -129,6 +129,137 @@ describe('timeout resilience', () => {
   })
 })
 
+describe('the caller\'s remembered model', () => {
+  it('starts there instead of on the busy alias', async () => {
+    const calls = stubFetch(() => ok('{"ok":true}'))
+    const { req, res, sent } = reqRes({
+      prompt: 'x',
+      schema: { type: 'object' },
+      tier: 'fast',
+      preferModel: 'gemini-3.6-flash',
+    })
+    await (await freshHandler())(req, res)
+    expect(sent.status).toBe(200)
+    expect(calls).toEqual(['gemini-3.6-flash'])
+  })
+
+  it('ignores a hint for the wrong class, or one this instance has benched', async () => {
+    const calls = stubFetch(() => ok('{"ok":true}'))
+    const handler = await freshHandler()
+    // A flash model cannot answer a pro request.
+    const wrong = reqRes({
+      prompt: 'x',
+      schema: { type: 'object' },
+      tier: 'pro',
+      preferModel: 'gemini-3.6-flash',
+    })
+    await handler(wrong.req, wrong.res)
+    expect(calls).toEqual(['gemini-pro-latest'])
+  })
+
+  it('refuses a hint that isn\'t a model name', async () => {
+    const calls = stubFetch(() => ok('{"ok":true}'))
+    const { req, res } = reqRes({
+      prompt: 'x',
+      schema: { type: 'object' },
+      tier: 'fast',
+      preferModel: '../../etc/passwd:generateContent?key=',
+    })
+    await (await freshHandler())(req, res)
+    expect(calls).toEqual(['gemini-flash-latest'])
+  })
+})
+
+describe('a model that is merely busy', () => {
+  it('moves to another model of the same class, and stays moved', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const gen = /models\/(.+):generateContent$/.exec(String(url))
+        if (!gen) {
+          return {
+            ok: true,
+            json: async () => ({
+              models: ['gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.5-flash'].map((n) => ({
+                name: `models/${n}`,
+                supportedGenerationMethods: ['generateContent'],
+              })),
+            }),
+          }
+        }
+        calls.push(gen[1])
+        // What the real API was doing when this was written: the newest flash
+        // sat for a minute and a half, an older one answered at once.
+        if (gen[1] === 'gemini-flash-latest') timedOut()
+        return ok('{"ok":true}')
+      }),
+    )
+    const handler = await freshHandler()
+    const first = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
+    await handler(first.req, first.res)
+    expect(first.sent.status).toBe(200)
+    expect(calls).toEqual(['gemini-flash-latest', 'gemini-3.6-flash'])
+
+    // The bench outlives the request: the next call doesn't pay the wait again.
+    const second = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
+    await handler(second.req, second.res)
+    expect(second.sent.status).toBe(200)
+    expect(calls).toEqual(['gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.6-flash'])
+  })
+
+  it('benches the model behind an alias too, once it knows what it is', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const gen = /models\/(.+):generateContent$/.exec(String(url))
+        if (!gen) {
+          return {
+            ok: true,
+            json: async () => ({
+              models: ['gemini-flash-latest', 'gemini-3.7-flash', 'gemini-3.6-flash'].map((n) => ({
+                name: `models/${n}`,
+                supportedGenerationMethods: ['generateContent'],
+              })),
+            }),
+          }
+        }
+        calls.push(gen[1])
+        // The alias answers once, naming what served it — then goes slow.
+        if (gen[1] === 'gemini-flash-latest') {
+          if (calls.filter((c) => c === 'gemini-flash-latest').length === 1) {
+            return {
+              ok: true,
+              json: async () => ({
+                candidates: [{ content: { parts: [{ text: '{"ok":true}' }] } }],
+                modelVersion: 'gemini-3.7-flash',
+                usageMetadata: {},
+              }),
+            }
+          }
+          timedOut()
+        }
+        return ok('{"ok":true}')
+      }),
+    )
+    const handler = await freshHandler()
+    for (let i = 0; i < 3; i++) {
+      const r = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
+      await handler(r.req, r.res)
+      expect(r.sent.status).toBe(200)
+    }
+    // Call 1 learns the alias is 3.7. Call 2 times out on it and benches both,
+    // so 3.7 is never tried on its own merits — it is the same busy model.
+    expect(calls).toEqual([
+      'gemini-flash-latest',
+      'gemini-flash-latest',
+      'gemini-3.6-flash',
+      'gemini-3.6-flash',
+    ])
+  })
+})
+
 describe('a pro model that can only think expensively', () => {
   it('moves to the fast model rather than letting it think by default', async () => {
     const tried: { model: string; thinking: object | null }[] = []

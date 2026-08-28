@@ -346,6 +346,12 @@ export interface AppSettings {
   storyControlsOpen: boolean
   /** Colour per kind of word in a story. */
   storyColors: StoryColors
+  /** The model that last answered quickly, per tier, and when. Sent back as a
+   *  hint on later requests: a cold server starts on the `-latest` alias, which
+   *  is the most-used endpoint and so the likeliest to be under load, and one
+   *  slow first call is what the reader actually feels. Expires, so a better
+   *  model that ships next month still gets found. */
+  aiModels?: Partial<Record<'fast' | 'pro', { name: string; at: number }>>
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {

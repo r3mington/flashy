@@ -19,7 +19,8 @@ import {
   defineWord,
   defineWords,
   generateMnemonic,
-  generateStory,
+  writeStoryDraft,
+  annotateStory,
   clipWords,
   ApiError,
   VOCAB_BANDS,
@@ -125,6 +126,11 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // marked known (the ones you haven't learnt yet).
   const [scope, setScope] = useState<'all' | 'learning'>('all')
   const [loading, setLoading] = useState(false)
+  /** Ids being annotated right now, so a story opened twice isn't annotated
+   *  twice. A ref, not state: it guards a call, it doesn't paint anything. */
+  const annotating = useRef(new Set<number>())
+  const [annotatingId, setAnnotatingId] = useState<number | null>(null)
+
   /** Which generation pass is running, so the wait has a visible reason
    *  rather than just a spinner that won't stop. */
   // The passes of the generation under way, with what each one cost. Kept after
@@ -606,7 +612,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             (savedStories ?? []).map((s) => s.createdAt),
             (k) => !allNames.has(k) && contentKeys.has(k) && (isNewWord(k) || isInStudy(k)),
           )
-      const result = await generateStory({
+      const draft = await writeStoryDraft({
         deck: deck!,
         // In 'learning' mode, don't seed the story with already-known words —
         // build it only from the ones still being learned.
@@ -652,15 +658,19 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             }
           : undefined,
       })
+      // Saved the moment the prose exists, before the passes that only
+      // explain it. Everything above this line is work that cannot be
+      // reproduced for free; below it is annotation, which can be redone
+      // whenever the story is next opened. So the story goes to disk here.
       const record: Omit<SavedStory, 'id'> = {
         deckId,
-        title: result.title,
-        story: result.story,
-        translation: result.translation,
-        glossary: result.glossary,
-        characterNames: result.characterNames,
-        bible: result.bible,
-        summary: result.summary,
+        title: draft.title,
+        story: draft.story,
+        translation: '',
+        glossary: [],
+        characterNames: draft.characterNames,
+        bible: draft.bible,
+        summary: '',
         focusWords: focusWords.length > 0 ? focusWords : undefined,
         chosen: from && steer ? steer : undefined,
         topic: from ? undefined : topic.trim() || undefined,
@@ -686,8 +696,50 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     }
   }
 
+  /** Fill in the English, the summary and the glossary of a story that is
+   *  already saved and already readable. Runs after generation, and again
+   *  whenever a story is opened without them — an annotation lost to a closed
+   *  tab or a failed pass is repaired by reading the story again, and the
+   *  reader waits for none of it. */
+  async function annotate(saved: SavedStory) {
+    if (!deck || annotating.current.has(saved.id)) return
+    annotating.current.add(saved.id)
+    setAnnotatingId(saved.id)
+    try {
+      // What the rest of this thread has already been glossed with: reused
+      // verbatim rather than asked for a second time.
+      const rootId = saved.parentId ?? saved.id
+      const knownGlossary = (savedStories ?? [])
+        .filter((s) => s.id !== saved.id && (s.parentId ?? s.id) === rootId)
+        .flatMap((s) => s.glossary ?? [])
+      const { translation, summary, glossary } = await annotateStory({
+        deck,
+        prose: {
+          title: saved.title,
+          story: saved.story,
+          characterNames: saved.characterNames ?? [],
+          bible: saved.bible ?? { logline: '', cast: [], places: [], facts: [], openThreads: [] },
+        },
+        bankWords: (cards ?? []).filter((c) => c.known || inRotation(c)).map((c) => c.word),
+        knownGlossary,
+      })
+      await db.stories.update(saved.id, { translation, summary, glossary })
+      setStory((cur) => (cur?.id === saved.id ? { ...cur, translation, summary, glossary } : cur))
+    } catch (e) {
+      // Nothing is lost: the story is on disk, words resolve on tap, and
+      // opening it again tries the whole thing once more.
+      console.warn('[story] annotation failed — reopening the story retries it', e)
+    } finally {
+      annotating.current.delete(saved.id)
+      setAnnotatingId((cur) => (cur === saved.id ? null : cur))
+    }
+  }
+
   function openStory(s: SavedStory) {
     setStory(s)
+    // A story saved without its annotations — just generated, or interrupted
+    // last time — gets them now, in the background, while it is read.
+    if (!s.translation && (s.glossary?.length ?? 0) === 0) void annotate(s)
     setShowTranslation(false)
     setSelected(null)
     // Land on the saved reading marker so "resume where I left off" is one tap.
@@ -1416,6 +1468,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             <p className="story-summary">
               <b>The story</b> {story.summary}
             </p>
+          )}
+          {/* The story arrives before the things that explain it. Say so, so a
+              missing summary or a word that takes a moment to define reads as
+              work still in progress rather than as something broken. */}
+          {annotatingId === story.id && (
+            <p className="story-annotating">Still looking up the words and the English…</p>
           )}
           {/* Who's who, in English. A part picked up days later starts with a
               cast the reader has half-forgotten — and names in an unfamiliar
