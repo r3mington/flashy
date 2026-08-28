@@ -650,11 +650,11 @@ const TRANSLATION_SCHEMA = {
 export const SUMMARY_MAX_WORDS = 50
 
 /** What one chunked call gets, and the reason it gets less than the whole
- *  budget: these asks are small, so a call still running at this point has
- *  stalled rather than being legitimately long — and cutting it short leaves
- *  room for the retry that usually succeeds. A piece that fails twice falls
- *  back to something readable rather than taking the pass down. */
-const CHUNK_BUDGET_MS = 40_000
+ *  budget: these asks are a few hundred words, so a call still running after
+ *  two minutes has stalled rather than being legitimately long — and cutting it
+ *  short leaves room for the retry that usually succeeds. A piece that fails
+ *  twice falls back to something readable rather than taking the pass down. */
+const CHUNK_BUDGET_MS = 120_000
 const CHUNK_TRIES = 2
 
 /** Words per translation call. The output is a whole English text, about as
@@ -1076,7 +1076,7 @@ async function extendStory(opts: {
     // A top-up is optional and there can be three of them. It doesn't get the
     // whole budget to stall in: the reader is waiting on a story they can
     // already read, and a length that falls short costs them less than the wait.
-    budgetMs: 60_000,
+    budgetMs: 150_000,
     onMeta,
   })
   return {

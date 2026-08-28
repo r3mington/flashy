@@ -1,6 +1,6 @@
 {
   "functions": {
-    "api/generate.ts": { "maxDuration": 120 }
+    "api/generate.ts": { "maxDuration": 300 }
   },
   "headers": [
     {

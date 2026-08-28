@@ -134,17 +134,22 @@ function chainFor(tier: Tier, mode: 'fast' | 'quality'): (object | null)[] {
   return tier === 'pro' ? CHEAP_THINKING : [...CHEAP_THINKING, null]
 }
 
-/** The platform kills the function at its maxDuration (120s — see vercel.json),
- *  and a killed function returns an opaque 504 having burned the whole budget
- *  on nothing. Stop short of that ourselves, so what's left can still be spent
- *  on an answer. Keep this a few seconds under the vercel.json figure. */
-const FUNCTION_BUDGET_MS = 110_000
+/** The one real constraint here is the platform's: the function is killed at
+ *  its maxDuration (300s — see vercel.json, and the ceiling of the plan), and a
+ *  killed function returns an opaque 504 having spent its tokens on output we
+ *  never receive. So the budget is set as high as the platform allows and cut a
+ *  few seconds short of the wall, purely so the handler — not the platform —
+ *  decides what happens when a model runs long. Waiting longer is cheaper than
+ *  timing out: a timeout bills for a story nobody reads, and then pays again
+ *  for the fallback that replaces it. */
+const FUNCTION_BUDGET_MS = 290_000
 
-/** Held back from a pro call so a flash-tier rescue still fits. Sized against
- *  what the pipeline's slowest flash passes actually take (a 1,000-word story
- *  has run to ~50s), not against its best case: a rescue that gets cut off
- *  itself is the one failure this whole arrangement exists to prevent. */
-const RESCUE_MS = 50_000
+/** Held back from a pro call so a flash-tier rescue still fits. Sized well past
+ *  what the pipeline's flash passes actually take (a 1,000-word story has run
+ *  to ~50s): a rescue that gets cut off itself is the one failure this whole
+ *  arrangement exists to prevent, and the pro attempt still keeps the lion's
+ *  share of the budget. */
+const RESCUE_MS = 70_000
 
 /** Nothing useful comes back from a slice this short — better to say the budget
  *  is spent than to start a call that cannot finish. */
