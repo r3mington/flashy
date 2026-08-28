@@ -1275,7 +1275,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     <span className="trace-mark" aria-hidden="true" />
                     <span className="trace-label">Total</span>
                     <span className="trace-time">
-                      {secs(steps.reduce((n, s) => n + (s.ms ?? 0), 0))}
+                      {secs(
+                        Math.max(...steps.map((s) => s.startedAt + (s.ms ?? 0))) - steps[0].startedAt,
+                      )}
                     </span>
                   </li>
                 )}
@@ -1769,9 +1771,14 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   ? `✦ Save for offline (${missing.length})`
                   : '✓ Ready offline'}
             </button>
-            <button className="btn ghost small" onClick={() => setShowTranslation((s) => !s)}>
-              {showTranslation ? 'Hide translation' : 'Show translation'}
-            </button>
+            {/* A story can arrive without its English: the translation pass is
+                allowed to fail rather than take the story down with it. Offer
+                the toggle only when there is something behind it. */}
+            {story.translation && (
+              <button className="btn ghost small" onClick={() => setShowTranslation((s) => !s)}>
+                {showTranslation ? 'Hide translation' : 'Show translation'}
+              </button>
+            )}
             <button
               className="btn ghost small"
               title="Write the next part of this story"

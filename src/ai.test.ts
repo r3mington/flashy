@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ApiError,
+  MIN_STORY_WORDS,
+  writeLadder,
+  worthRetrying,
   GLOSSARY_CHUNK_WORDS,
   SIMPLIFY_CHUNK_WORDS,
   groupParagraphs,
@@ -130,5 +134,58 @@ describe('pickSerialEnding', () => {
     // Omitted age counts as old enough.
     const bare = new Set(Array.from({ length: 300 }, () => pickSerialEnding(2)))
     expect(bare).toEqual(new Set(['hook', 'resolve']))
+  })
+})
+
+describe('writeLadder', () => {
+  it('gives ground in stages, on a faster model each time', () => {
+    const rungs = writeLadder(1000)
+    expect(rungs).toEqual([
+      { words: 1000, tier: 'pro' },
+      { words: 500, tier: 'fast' },
+      { words: 300, tier: 'fast' },
+    ])
+  })
+
+  it('never asks for a story too short to read', () => {
+    for (const length of [300, 500, 800, 1200, 2000]) {
+      for (const rung of writeLadder(length)) {
+        expect(rung.words).toBeGreaterThanOrEqual(Math.min(length, MIN_STORY_WORDS))
+      }
+    }
+  })
+
+  it('still gives a short request a second try, on the fast model', () => {
+    // Halving 400 lands under the floor, so there is no shorter ask to make —
+    // but a first attempt that timed out still deserves a second chance.
+    const rungs = writeLadder(400)
+    expect(rungs).toEqual([
+      { words: 400, tier: 'pro' },
+      { words: 400, tier: 'fast' },
+    ])
+  })
+
+  it('shrinks strictly — no rung repeats the ask above it', () => {
+    for (const length of [600, 900, 1500]) {
+      const words = writeLadder(length).map((r) => r.words)
+      expect(words).toEqual([...new Set(words)])
+      expect([...words].sort((a, b) => b - a)).toEqual(words)
+    }
+  })
+})
+
+describe('worthRetrying', () => {
+  it('retries what time or load caused', () => {
+    for (const status of [429, 500, 502, 503, 504]) {
+      expect(worthRetrying(new ApiError(status, 'nope'))).toBe(true)
+    }
+    // A network blip never reached the server — worth one more go.
+    expect(worthRetrying(new TypeError('Failed to fetch'))).toBe(true)
+  })
+
+  it('does not make the reader wait through a failure that will repeat', () => {
+    for (const status of [400, 401, 403, 404]) {
+      expect(worthRetrying(new ApiError(status, 'nope'))).toBe(false)
+    }
   })
 })

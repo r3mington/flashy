@@ -146,6 +146,10 @@ const FUNCTION_BUDGET_MS = 110_000
  *  itself is the one failure this whole arrangement exists to prevent. */
 const RESCUE_MS = 50_000
 
+/** Nothing useful comes back from a slice this short — better to say the budget
+ *  is spent than to start a call that cannot finish. */
+const MIN_SLICE_MS = 8_000
+
 /** How long a tier stays skipped after it proves it can't answer inside the
  *  budget. A story is a dozen calls; paying the pro model's full slice on every
  *  one of them, to time out every time, is how a slow model turns one failure
@@ -219,7 +223,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) return res.status(500).json({ error: 'Server is missing GEMINI_API_KEY.' })
 
-  const { prompt, schema, thinking, tier: rawTier, effort } = req.body ?? {}
+  const { prompt, schema, thinking, tier: rawTier, effort, budgetMs } = req.body ?? {}
   if (typeof prompt !== 'string' || !prompt || typeof schema !== 'object' || !schema) {
     return res.status(400).json({ error: 'Expected { prompt, schema }.' })
   }
@@ -233,11 +237,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const mode: 'fast' | 'quality' =
     effort === 'high' ? 'quality' : effort === 'minimal' ? 'fast' : thinking === true ? 'quality' : 'fast'
   const label = typeof req.body?.label === 'string' ? req.body.label : 'call'
+  // A caller that knows its ask is small can say so, and get its failure back
+  // in time to do something about it. Clamped: the budget is ours to enforce.
+  const budget = Math.min(
+    FUNCTION_BUDGET_MS,
+    Math.max(MIN_SLICE_MS, Number(budgetMs) || FUNCTION_BUDGET_MS),
+  )
   const started = Date.now()
   // Logged before the work starts, so a request that times out still leaves a
   // record of what it was attempting — the completion line never gets to run.
   console.log(
-    JSON.stringify({ at: 'generate/start', label, tier, mode, promptChars: prompt.length }),
+    JSON.stringify({ at: 'generate/start', label, tier, mode, budget, promptChars: prompt.length }),
   )
 
   // Outside the try: a failure needs to tell the client whether the fast-tier
@@ -272,12 +282,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       model = resolvedModel[useTier] ?? PREFERRED_MODEL[useTier]
       thinkingUsed = configs[i]
       retries = attempt
-      const left = FUNCTION_BUDGET_MS - (Date.now() - started)
-      // Hold a flash-sized slice back while a fallback is still possible; once
-      // there's nothing left to fall back to, spend everything on this call.
-      const holdBack = tier === 'pro' && !rescued && left > RESCUE_MS * 2
-      const slice = holdBack ? left - RESCUE_MS : left
-      if (slice < 2_000) {
+      const left = budget - (Date.now() - started)
+      // Hold a slice back while a fallback is still possible — never more than
+      // half of what's left, so a small budget still splits in two rather than
+      // handing everything to the attempt most likely to overrun.
+      const reserve = Math.min(RESCUE_MS, Math.floor(left / 2))
+      const holdBack = tier === 'pro' && !rescued && left - reserve >= MIN_SLICE_MS
+      const slice = holdBack ? left - reserve : left
+      if (slice < MIN_SLICE_MS) {
         throw new UpstreamError(504, 'Ran out of time before the model answered.')
       }
       try {

@@ -51,10 +51,45 @@ async function callGeminiJson<T>(
     effort?: 'minimal' | 'high'
     /** Name for this call in the server log and the on-screen trace. */
     label?: string
+    /** How long the server may spend on this call. Small asks say so, so their
+     *  failures come back in time to be retried rather than eating the whole
+     *  budget on one attempt. Omitted means the server's full budget. */
+    budgetMs?: number
+    /** How many times to attempt this call. Only worth more than one where the
+     *  ask is small enough that a second attempt still fits — see `budgetMs`. */
+    tries?: number
     onMeta?: (meta: CallMeta) => void
   } = {},
 ): Promise<T> {
   const tier = opts.tier ?? 'fast'
+  const tries = Math.max(1, opts.tries ?? 1)
+  for (let attempt = 1; attempt < tries; attempt++) {
+    try {
+      return await attemptCall<T>(prompt, schema, { ...opts, tier })
+    } catch (e) {
+      if (!worthRetrying(e)) throw e
+      console.warn(`[story] ${opts.label ?? 'call'} attempt ${attempt} failed — retrying`, e)
+      // A moment's pause: the common cause of a run of these is a tier under
+      // load, and coming straight back at it is how a retry makes that worse.
+      await new Promise((r) => setTimeout(r, 500 * attempt))
+    }
+  }
+  return attemptCall<T>(prompt, schema, { ...opts, tier })
+}
+
+/** One attempt, with the tier fallback the server can't make for us. */
+async function attemptCall<T>(
+  prompt: string,
+  schema: object,
+  opts: {
+    tier: 'fast' | 'pro'
+    effort?: 'minimal' | 'high'
+    label?: string
+    budgetMs?: number
+    onMeta?: (meta: CallMeta) => void
+  },
+): Promise<T> {
+  const tier = opts.tier
   try {
     return await postJson<T>(prompt, schema, { ...opts, tier })
   } catch (e) {
@@ -80,6 +115,7 @@ async function postJson<T>(
     tier: 'fast' | 'pro'
     effort?: 'minimal' | 'high'
     label?: string
+    budgetMs?: number
     onMeta?: (meta: CallMeta) => void
   },
 ): Promise<T> {
@@ -96,6 +132,7 @@ async function postJson<T>(
         tier: opts.tier,
         effort: opts.effort,
         label: opts.label,
+        budgetMs: opts.budgetMs,
       }),
     })
   } catch {
@@ -612,6 +649,14 @@ const TRANSLATION_SCHEMA = {
  *  story without becoming a second story. */
 export const SUMMARY_MAX_WORDS = 50
 
+/** What one chunked call gets, and the reason it gets less than the whole
+ *  budget: these asks are small, so a call still running at this point has
+ *  stalled rather than being legitimately long — and cutting it short leaves
+ *  room for the retry that usually succeeds. A piece that fails twice falls
+ *  back to something readable rather than taking the pass down. */
+const CHUNK_BUDGET_MS = 40_000
+const CHUNK_TRIES = 2
+
 /** Words per translation call. The output is a whole English text, about as
  *  long as its input, so this sits with the simplifier rather than with the
  *  glossary — and the whole story in one call is what used to run past the
@@ -669,6 +714,8 @@ async function translateStory(
       chunks.map((chunk, i) =>
         callGeminiJson<{ translation: string }>(promptFor(chunk), TRANSLATION_SCHEMA, {
           label: chunks.length > 1 ? `translate-${i + 1}/${chunks.length}` : 'translate',
+          budgetMs: CHUNK_BUDGET_MS,
+          tries: CHUNK_TRIES,
           onMeta: collect,
         })
           .then((r) => (r.translation ?? '').trim())
@@ -682,6 +729,8 @@ async function translateStory(
     ),
     callGeminiJson<{ summary: string }>(summaryPrompt, SUMMARY_SCHEMA, {
       label: 'summary',
+      budgetMs: CHUNK_BUDGET_MS,
+      tries: CHUNK_TRIES,
       onMeta: collect,
     })
       .then((r) => r.summary ?? '')
@@ -807,6 +856,8 @@ async function glossaryFor(opts: {
     chunks.map((chunk, i) =>
       callGeminiJson<{ glossary: GlossaryEntry[] }>(promptFor(chunk), GLOSSARY_SCHEMA, {
         label: chunks.length > 1 ? `glossary-${i + 1}/${chunks.length}` : 'glossary',
+        budgetMs: CHUNK_BUDGET_MS,
+        tries: CHUNK_TRIES,
         onMeta: (m) => metas.push(m),
       }).then((p) => p.glossary ?? []),
     ),
@@ -952,6 +1003,8 @@ async function simplifyStory(opts: {
     chunks.map((chunk, i) =>
       callGeminiJson<{ text: string }>(promptFor(chunk), SIMPLIFY_SCHEMA, {
         label: chunks.length > 1 ? `simplify-${i + 1}/${chunks.length}` : 'simplify',
+        budgetMs: CHUNK_BUDGET_MS,
+        tries: CHUNK_TRIES,
         onMeta: (m) => metas.push(m),
       })
         .then((r) => {
@@ -1020,6 +1073,10 @@ async function extendStory(opts: {
     tier: 'pro',
     effort: 'minimal',
     label: 'extend',
+    // A top-up is optional and there can be three of them. It doesn't get the
+    // whole budget to stall in: the reader is waiting on a story they can
+    // already read, and a length that falls short costs them less than the wait.
+    budgetMs: 60_000,
     onMeta,
   })
   return {
@@ -1030,6 +1087,38 @@ async function extendStory(opts: {
     ],
     bible: more.bible ?? story.bible,
   }
+}
+
+/** No story shorter than this is worth handing to a reader — below it there is
+ *  nothing to read, and the ladder has run out of ground to give. */
+export const MIN_STORY_WORDS = 300
+
+/** The lengths and tiers the writing pass tries, in order, until one answers.
+ *  Shrinking is the lever that actually works on a timeout: the call is slow
+ *  because of how much it has to write, so each rung halves the ask and drops
+ *  to the fast model. Rungs that would land under the floor are dropped, so a
+ *  request for a short story doesn't retry three times at the same size. */
+export function writeLadder(lengthWords: number): { words: number; tier: 'fast' | 'pro' }[] {
+  const rungs: { words: number; tier: 'fast' | 'pro' }[] = [{ words: lengthWords, tier: 'pro' }]
+  for (const share of [0.5, 0.3]) {
+    const words = Math.round(lengthWords * share)
+    if (words >= MIN_STORY_WORDS && words < (rungs.at(-1)?.words ?? 0)) {
+      rungs.push({ words, tier: 'fast' })
+    }
+  }
+  // However short the ask, the fast model gets one clean try at it.
+  if (rungs.length === 1) rungs.push({ words: lengthWords, tier: 'fast' })
+  return rungs
+}
+
+/** Whether a failed call is the kind another attempt might survive: the model
+ *  ran out of time, the tier is overloaded, or the server gave up. A missing
+ *  key, an expired session or a rejected prompt is none of those, and retrying
+ *  only makes the reader wait longer for the same message. Used both for the
+ *  writing ladder and for the chunked passes' retries. */
+export function worthRetrying(e: unknown): boolean {
+  if (!(e instanceof ApiError)) return true // a network blip: worth one more go
+  return e.status === 429 || e.status >= 500
 }
 
 /** How close to the requested length is close enough to stop topping up. */
@@ -1134,7 +1223,7 @@ export async function generateStory(opts: {
   // unrelated dimensions, and their enforcement showed in the prose. Variety
   // is now asked for with two non-binding avoid-lists instead, and judged by
   // reading the output (scripts/story-lab.mts).
-  const prompt = [
+  const promptFor = (words: number) => [
     continueFrom
       ? `Below is a story in ${deck.language} that a language learner has been reading. Write the NEXT PART of it: continue seamlessly from where it ends, with the same people, the same world and the same feel. Advance the story — something new happens; do not re-tell, recap or pad.`
       : `Write a short story in ${deck.language} for a language learner.`,
@@ -1185,7 +1274,7 @@ export async function generateStory(opts: {
     continueFrom
       ? `You may introduce at most ONE new named character, and only if this part genuinely needs them.`
       : `Use at most ${MAX_CAST} named characters — two or three is better. Give them names natural for native ${deck.language} speakers, and refer to them by name, never as "the man" or "my friend". Return every personal name used in the characterNames array.`,
-    lengthSpec(lengthWords),
+    lengthSpec(words),
     vocabHint(deck.language, band),
     continueFrom
       ? `The previous part above may use words harder than this band allows — do NOT match its vocabulary; the band wins, even where that makes this part plainer than the last.`
@@ -1217,24 +1306,50 @@ export async function generateStory(opts: {
     .filter(Boolean)
     .join('\n')
 
-  // The one creative call: pro model, story in one go.
-  let prose = await step(
-    'write',
-    'Writing',
-    (onMeta) =>
-      callGeminiJson<StoryProse>(prompt, STORY_SCHEMA, {
-        tier: 'pro',
-        effort: 'minimal',
-        label: 'write',
-        onMeta,
-      }),
-    (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
-  )
+  // The one creative call, and the only pass whose failure costs the reader the
+  // story — so it is the one that gets a ladder rather than a single try. Each
+  // rung asks for a shorter story on a faster model: length is what makes this
+  // call slow, a shorter draft is one the extension passes below can grow back,
+  // and a story that came out short still beats an error message.
+  let drafted: StoryProse | null = null
+  let shortened = false
+  for (const [i, rung] of writeLadder(lengthWords).entries()) {
+    try {
+      drafted = await step(
+        i === 0 ? 'write' : `write-${i}`,
+        i === 0 ? 'Writing' : `Writing a shorter part (about ${rung.words} words)`,
+        (onMeta) =>
+          callGeminiJson<StoryProse>(promptFor(rung.words), STORY_SCHEMA, {
+            tier: rung.tier,
+            effort: 'minimal',
+            label: i === 0 ? 'write' : `write-short-${i}`,
+            onMeta,
+          }),
+        (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
+      )
+      shortened = i > 0
+      break
+    } catch (e) {
+      // A key that isn't there, a session that expired, a prompt the model
+      // refuses — asking for the same thing more cheaply won't help, and the
+      // reader should hear the real reason without waiting through two more
+      // attempts. Only give ground on the failures that shrinking can fix.
+      if (!worthRetrying(e)) throw e
+      console.warn(`[story] write attempt ${i + 1} failed — asking for less`, e)
+    }
+  }
+  // Every rung threw something shrinkable, and the last one rethrows above, so
+  // this cannot be null — the check is here to say so to the type system.
+  if (!drafted) throw new Error('The story could not be written.')
+  let prose: StoryProse = drafted
 
   // Models can't count their own words, so a draft routinely lands well under
   // the requested length. Measure it the same way the reader does and, while
   // it's short, ask for the missing stretch and splice it on.
-  for (let pass = 0; pass < MAX_EXTENSIONS; pass++) {
+  // A draft that came from a shortened rung has further to travel, and it is
+  // the one case where the extra round-trip is clearly worth it.
+  const maxExtensions = MAX_EXTENSIONS + (shortened ? 1 : 0)
+  for (let pass = 0; pass < maxExtensions; pass++) {
     const have = countWords(prose.story, langCode)
     if (have >= lengthWords * LENGTH_TOLERANCE) break
     try {
@@ -1284,44 +1399,41 @@ export async function generateStory(opts: {
     console.warn('[story] simplify failed — the story stands as written')
   }
 
-  // Translate and gloss last, once each, over the text as it finally stands —
-  // so extensions cost nothing extra here, the English reads as one piece, and
-  // no word of the story goes unglossed.
-  // Like the glossary below, the English is worth less than the story it
-  // explains: a part that is written, extended and simplified is not thrown
-  // away because the translation pass didn't come back.
-  let translation = ''
-  let summary = ''
-  try {
-    ;({ translation, summary } = await step(
+  // Translate and gloss last, over the text as it finally stands — so
+  // extensions cost nothing extra here and no word of the story goes unglossed.
+  // They read the same finished text and neither needs the other's output, so
+  // they run together: the pair costs the slower of them instead of the sum.
+  //
+  // Both are best-effort, and for the same reason. They explain a story that
+  // already exists, and a part that is written, extended and simplified is not
+  // thrown away because the pass that was meant to annotate it didn't come
+  // back — the reader can still tap any word, because `defineWords` fills in
+  // whatever the glossary is missing, on demand, as they read.
+  const [translated, glossary] = await Promise.all([
+    step(
       'translate',
       'Translating',
       (onMeta) => translateStory(deck, prose.story, onMeta),
       (t) => `${countWords(t.translation, 'en')} words`,
-    ))
-  } catch {
-    console.warn('[story] translation failed — the story stands untranslated')
-  }
-
-  // The glossary is the one pass that may fail without costing the reader the
-  // story. It is the largest output and it runs last, so a story that is fully
-  // written and translated would otherwise be thrown away over its lookup
-  // table — and the reader can still tap any word, because `defineWords` fills
-  // in whatever the glossary is missing, on demand, as they read.
-  let glossary: GlossaryEntry[] = []
-  try {
-    glossary = await step(
+    ).catch(() => {
+      console.warn('[story] translation failed — the story stands untranslated')
+      return { translation: '', summary: '' }
+    }),
+    step(
       'glossary',
       'Looking up the words',
       (onMeta) =>
         glossaryFor({ deck, story: prose, bankWords: [...knownWords, ...learningWords], onMeta }),
       (g) => `${g.length} entries`,
-    )
-  } catch {
-    console.warn('[story] glossary failed — the story stands, words resolve on tap instead')
-  }
+    ).catch((): GlossaryEntry[] => {
+      console.warn('[story] glossary failed — the story stands, words resolve on tap instead')
+      return []
+    }),
+  ])
+  const { translation, summary } = translated
 
-  const total = steps.reduce((sum, s) => sum + (s.ms ?? 0), 0)
+  // Wall clock, not the sum of the passes: the last two ran together.
+  const total = Math.max(...steps.map((s) => s.startedAt + (s.ms ?? 0))) - steps[0].startedAt
   console.log(`[story] done in ${(total / 1000).toFixed(1)}s`, steps)
   return { ...prose, translation, glossary, summary }
 }
