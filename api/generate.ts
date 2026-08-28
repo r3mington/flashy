@@ -47,28 +47,43 @@ function rank(name: string): number {
   return score
 }
 
-const newestFirst = (pool: string[]): string | undefined =>
-  [...pool].sort((a, b) => rank(b) - rank(a))[0]
-
-async function pickAvailableModel(apiKey: string, tier: Tier): Promise<string> {
+/** Every model this key can actually call right now: alive, story-shaped, and
+ *  not currently benched. */
+async function listModels(apiKey: string): Promise<string[]> {
   const res = await fetch(`${BASE}/models?pageSize=1000`, {
     headers: { 'x-goog-api-key': apiKey },
   })
   if (!res.ok) throw new UpstreamError(res.status, `Could not list available models (${res.status})`)
   const data = await res.json()
   const models: { name: string; supportedGenerationMethods?: string[] }[] = data.models ?? []
-  const usable = models
+  return models
     .filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
     .map((m) => m.name.replace(/^models\//, ''))
     .filter((n) => /^gemini/.test(n) && !deadModels.has(n) && !isCool(n))
+}
+
+const byRank = (pool: string[]) => [...pool].sort((a, b) => rank(b) - rank(a))
+
+/** Models OF THIS CLASS, newest first. Strictly this class: a flash model is
+ *  not a slow pro model's understudy here, whatever the ranking says — the
+ *  caller decides when to change class, and it has to know that it did. */
+async function rankedModels(apiKey: string, tier: Tier): Promise<string[]> {
+  const usable = await listModels(apiKey)
   const want = tier === 'pro' ? /pro/ : /flash/
+  return [
+    ...new Set([
+      ...byRank(usable.filter((n) => want.test(n) && !NOT_FOR_STORIES.test(n))),
+      ...byRank(usable.filter((n) => want.test(n))),
+    ]),
+  ]
+}
+
+async function pickAvailableModel(apiKey: string, tier: Tier): Promise<string> {
   const pick =
-    newestFirst(usable.filter((n) => want.test(n) && !NOT_FOR_STORIES.test(n))) ??
-    newestFirst(usable.filter((n) => want.test(n))) ??
-    // A key with no pro access still gets a story — a flash one is better than
-    // an error the reader can do nothing about.
-    newestFirst(usable.filter((n) => /flash/.test(n) && !NOT_FOR_STORIES.test(n))) ??
-    newestFirst(usable)
+    (await rankedModels(apiKey, tier))[0] ??
+    // Only here, at the end of the line: a key with no pro access still gets a
+    // story, because a flash one beats an error the reader can do nothing about.
+    byRank((await listModels(apiKey)).filter((n) => !NOT_FOR_STORIES.test(n)))[0]
   if (!pick) throw new UpstreamError(500, 'No usable Gemini model found for this API key.')
   console.log(
     JSON.stringify({
@@ -112,6 +127,79 @@ function noteDeadModel(called: string, tier: Tier, e: unknown): string | null {
   const hint = /models\/([\w.-]+)/.exec(handoff)?.[1]
   const wanted = tier === 'pro' ? /pro/ : /flash/
   return hint && !deadModels.has(hint) && wanted.test(hint) ? hint : null
+}
+
+/** A model that has answered a real request in this instance. Until there is
+ *  one, the handler doesn't know which models are healthy right now — and the
+ *  expensive way to find out is to hand one a story and wait. */
+const proven: Record<Tier, string | null> = { fast: null, pro: null }
+
+/** How long the warm-up race waits. A healthy model answers a one-line prompt
+ *  in well under a second; anything still quiet at this point is queueing,
+ *  which is exactly what we are trying not to find out the expensive way. */
+const PING_MS = 12_000
+
+/** Ask several models for almost nothing, at once, and take whoever answers
+ *  first. Two dozen tokens buys what used to cost a minute of the budget and a
+ *  thrown-away story: proof that the model about to be given the real work is
+ *  awake. Losers are abandoned, not benched — being second to answer "hi" is
+ *  not evidence of anything. */
+/** How quickly the winner of a race has to answer for its class to be worth
+ *  using. A healthy model returns one short sentence in well under a second.
+ *  Measured: on a day when the pro fleet was loaded, the best pro model took
+ *  3.3s to answer the ping and then failed to write a story inside a minute —
+ *  the ping had already said so, and the story paid for it anyway. */
+const PING_HEALTHY_MS = 2_000
+
+async function raceForModel(
+  apiKey: string,
+  tier: Tier,
+  label: string,
+): Promise<{ model: string; ms: number } | null> {
+  let candidates: string[]
+  try {
+    candidates = await rankedModels(apiKey, tier)
+  } catch {
+    return null // Can't list models; the caller's existing pick still stands.
+  }
+  const first = resolvedModel[tier] ?? PREFERRED_MODEL[tier]
+  const field = [first, ...candidates.filter((m) => m !== first)]
+    .filter((m) => !deadModels.has(m) && !isCool(m))
+    .slice(0, 3)
+  if (field.length === 0) return null
+
+  const started = Date.now()
+  const stop = new AbortController()
+  const ping = async (model: string) => {
+    const res = await fetch(`${BASE}/models/${model}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: 'Write one short sentence.' }] }],
+        // Enough output that a model queueing real work has to reveal it, and
+        // few enough tokens that racing three of them costs nothing.
+        generationConfig: { maxOutputTokens: 24 },
+      }),
+      signal: AbortSignal.any([stop.signal, AbortSignal.timeout(PING_MS)]),
+    })
+    // Nothing but a clean answer counts. An earlier version let anything that
+    // wasn't a 5xx through, and promptly handed a story to a retired model
+    // that had answered the ping with a 404.
+    if (!res.ok) throw new UpstreamError(res.status, `${model} answered ${res.status}`)
+    return model
+  }
+
+  try {
+    const winner = await Promise.any(field.map(ping))
+    stop.abort()
+    const ms = Date.now() - started
+    console.log(JSON.stringify({ at: 'generate/warm', label, tier, winner, field, ms }))
+    return { model: winner, ms }
+  } catch {
+    stop.abort()
+    console.warn(JSON.stringify({ at: 'generate/warm-none', label, tier, field }))
+    return null
+  }
 }
 
 class UpstreamError extends Error {
@@ -329,6 +417,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // against the model that actually rejected it.
     let configs = chainFor(rescued ? 'fast' : tier, mode)
     let chain = `${rescued ? 'fast' : tier}:${mode}`
+
+    // Nothing here has answered a real request yet, so nothing here knows which
+    // models are healthy today. Find out for twenty tokens rather than for a
+    // story: the race commits the expensive call to a model that has just
+    // spoken. Once one has, later requests skip this entirely.
+    if (!proven[rescued ? 'fast' : tier]) {
+      let useTier: Tier = rescued ? 'fast' : tier
+      let winner = await raceForModel(apiKey, useTier, label)
+      // The race measures as well as chooses. A pro field whose quickest
+      // member is sluggish is a loaded pro field, and the story is better off
+      // on the fast tier than finding that out a minute from now.
+      if (useTier === 'pro' && (!winner || winner.ms > PING_HEALTHY_MS)) {
+        console.warn(
+          JSON.stringify({ at: 'generate/pro-loaded', label, ms: winner?.ms ?? null }),
+        )
+        rescued = true
+        useTier = 'fast'
+        configs = chainFor('fast', mode)
+        chain = `fast:${mode}`
+        winner = proven.fast ? null : await raceForModel(apiKey, 'fast', label)
+      }
+      if (winner) resolvedModel[useTier] = winner.model
+    }
+
     // Two independent things can be wrong with a request: the model, and the
     // thinking config. Each has its own recovery — re-pick, or step down the
     // chain — and the model is checked first, because an unavailable model also
@@ -417,6 +529,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text
     if (!text) return res.status(502).json({ error: 'The model returned no usable output.' })
 
+    proven[rescued ? 'fast' : tier] = model
     // `modelVersion` names what actually served the request, so an alias can be
     // benched together with the model behind it.
     if (typeof data?.modelVersion === 'string' && data.modelVersion !== model) {

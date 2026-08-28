@@ -21,6 +21,35 @@ const MODEL_MEMORY_MS = 7 * 24 * 60 * 60_000
  *  not in a way anyone would choose to repeat. */
 const MODEL_PROMPT_MS = 60_000
 
+/** How long the app avoids the pro tier after it has proved unusable. Short
+ *  enough that a passing spike doesn't cost a day of plainer stories, long
+ *  enough to cover the generation in front of the reader and the next one. */
+const TIER_TROUBLE_MS = 60 * 60_000
+
+/** Whether the pro tier is worth asking for right now. */
+async function tierIsTrouble(tier: 'fast' | 'pro'): Promise<boolean> {
+  if (tier !== 'pro') return false
+  try {
+    const at = (await db.settings.get('app'))?.aiTierTrouble?.pro ?? 0
+    return Date.now() - at < TIER_TROUBLE_MS
+  } catch {
+    return false
+  }
+}
+
+/** Remember that the pro tier let us down, so the next call doesn't queue
+ *  behind it too. Recorded from the server saying it had to rescue the request,
+ *  or from the request running out of time altogether. */
+async function noteTierTrouble(tier: 'fast' | 'pro') {
+  if (tier !== 'pro') return
+  try {
+    const cur = (await db.settings.get('app'))?.aiTierTrouble ?? {}
+    await db.settings.update('app', { aiTierTrouble: { ...cur, pro: Date.now() } })
+  } catch {
+    /* nothing to do about it */
+  }
+}
+
 /** The model that last answered this tier quickly, if it is still fresh. */
 async function preferredModel(tier: 'fast' | 'pro'): Promise<string | undefined> {
   try {
@@ -74,6 +103,8 @@ export interface CallMeta {
   retries?: number
   /** How many calls the pass took, when it was split into parallel pieces. */
   passes?: number
+  /** Whether the server had to abandon the tier that was asked for. */
+  rescued?: boolean
 }
 
 async function callGeminiJson<T>(
@@ -94,7 +125,11 @@ async function callGeminiJson<T>(
     onMeta?: (meta: CallMeta) => void
   } = {},
 ): Promise<T> {
-  const tier = opts.tier ?? 'fast'
+  // A pro request made during the pro tier's cooldown is a fast request. The
+  // server would have rescued it onto a fast model anyway, a minute later.
+  const asked = opts.tier ?? 'fast'
+  const tier = asked === 'pro' && (await tierIsTrouble('pro')) ? 'fast' : asked
+  if (tier !== asked) console.warn(`[story] ${opts.label ?? 'call'} skipping pro — it was trouble`)
   const tries = Math.max(1, opts.tries ?? 1)
   for (let attempt = 1; attempt < tries; attempt++) {
     try {
@@ -132,8 +167,9 @@ async function attemptCall<T>(
     // no story, and the trace records which model actually answered.
     // The server spends its own budget on a fast-tier rescue first and says so;
     // repeating it here would only cost the reader another minute of waiting.
-    const ranOutOfTime = e instanceof ApiError && (e.status === 504 || e.status === 502) && !e.rescued
-    if (ranOutOfTime && tier === 'pro') {
+    const ranOutOfTime = e instanceof ApiError && (e.status === 504 || e.status === 502)
+    if (e instanceof ApiError && (ranOutOfTime || e.rescued)) void noteTierTrouble(tier)
+    if (ranOutOfTime && !e.rescued && tier === 'pro') {
       console.warn(`[story] ${opts.label ?? 'call'} timed out on pro — retrying on fast`)
       return postJson<T>(prompt, schema, { ...opts, tier: 'fast' })
     }
@@ -199,6 +235,8 @@ async function postJson<T>(
     // including when the server had to go looking for it.
     const meta = body.meta as CallMeta
     void rememberModel(opts.tier, meta.model, meta.ms)
+    // The server got there, but only by abandoning the tier we asked for.
+    if (meta.rescued) void noteTierTrouble(opts.tier)
   }
   return body.data as T
 }
@@ -500,6 +538,11 @@ const STORY_SCHEMA = {
  *  glossary are added afterwards, each by its own pass. */
 export type StoryProse = Omit<Story, 'glossary' | 'translation' | 'summary'>
 
+/** Stories are read on a phone, and a wall of text is read by nobody. It also
+ *  matters mechanically: the passes that rewrite the story split it on
+ *  paragraphs, so a story returned as one block goes through in one call. */
+const PARAGRAPH_RULE = `SHAPE — break the story into paragraphs, separated by a BLANK LINE. A new paragraph for each new turn, each change of place, and each speaker's stretch of dialogue. Never return the story as one block of text.`
+
 /** Most named characters a first part may introduce. Reading in a second
  *  language is slow enough that a fourth name costs more than it adds. */
 const MAX_CAST = 4
@@ -725,7 +768,7 @@ async function translateStory(
   onMeta?: (m: CallMeta) => void,
 ): Promise<{ translation: string; summary: string }> {
   const langCode = langCodeFor(deck.language)
-  const chunks = groupParagraphs(story, langCode, TRANSLATE_CHUNK_WORDS)
+  const chunks = chunkForRewrite(story, langCode, TRANSLATE_CHUNK_WORDS)
 
   const promptFor = (chunk: string) =>
     [
@@ -752,7 +795,7 @@ async function translateStory(
 
   const [pieces, summary] = await Promise.all([
     Promise.all(
-      chunks.map((chunk, i) =>
+      chunks.map(({ text: chunk }, i) =>
         callGeminiJson<{ translation: string }>(promptFor(chunk), TRANSLATION_SCHEMA, {
           label: chunks.length > 1 ? `translate-${i + 1}/${chunks.length}` : 'translate',
           budgetMs: CHUNK_BUDGET_MS,
@@ -795,7 +838,11 @@ async function translateStory(
   })
 
   return {
-    translation: pieces.filter(Boolean).join('\n\n'),
+    // The English is its own text; pieces of one paragraph join back into one.
+    translation: pieces
+      .map((piece, i) => (piece ? `${i === 0 ? '' : chunks[i].sep}${piece}` : ''))
+      .join('')
+      .trim(),
     summary: clipWords(summary, SUMMARY_MAX_WORDS),
   }
 }
@@ -972,13 +1019,69 @@ export const SIMPLIFY_CHUNK_WORDS = 400
  *  something rather than simplifying it, and is thrown away. */
 const SIMPLIFY_MIN_KEPT = 0.6
 
+/** A chunk of a story to be rewritten, and the text that separated it from the
+ *  one before — a blank line between paragraphs, a space inside one. Carrying
+ *  the separator is what lets an oversized paragraph be split without inventing
+ *  a paragraph break when the pieces are joined back up. */
+export interface Chunk {
+  text: string
+  /** What goes before this chunk when rejoining. Empty for the first. */
+  sep: string
+}
+
+/** Split a story into pieces of at most `maxWords` for a pass whose output
+ *  REPLACES the text — so `chunks.map(c => c.sep + c.text).join('')` has to
+ *  reproduce the original exactly. Paragraph boundaries first; a single
+ *  paragraph over the budget is split on sentences and rejoined with a space,
+ *  because a model that returns a 999-word story as one paragraph (which
+ *  happens) would otherwise put the whole thing through in one call — the very
+ *  thing the splitting is here to prevent. */
+export function chunkForRewrite(
+  text: string,
+  langCode: string | null,
+  maxWords: number,
+): Chunk[] {
+  const chunks: Chunk[] = []
+  const paras = text
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+  for (const [i, para] of paras.entries()) {
+    const paraSep = i === 0 ? '' : '\n\n'
+    if (countWords(para, langCode) <= maxWords) {
+      const last = chunks.at(-1)
+      // Short paragraphs ride along with the one before, up to the budget.
+      if (last && i > 0 && countWords(`${last.text} ${para}`, langCode) <= maxWords) {
+        last.text = `${last.text}${paraSep}${para}`
+      } else {
+        chunks.push({ text: para, sep: paraSep })
+      }
+      continue
+    }
+    // Too big on its own: break it on sentence ends, and remember that the
+    // pieces are one paragraph so they come back as one.
+    let current = ''
+    let sep = paraSep
+    for (const sentence of para.split(/(?<=[.!?…”"])\s+/)) {
+      if (current && countWords(`${current} ${sentence}`, langCode) > maxWords) {
+        chunks.push({ text: current, sep })
+        sep = ' '
+        current = sentence
+      } else {
+        current = current ? `${current} ${sentence}` : sentence
+      }
+    }
+    if (current) chunks.push({ text: current, sep })
+  }
+  return chunks.length > 0 ? chunks : [{ text, sep: '' }]
+}
+
 /** Group whole paragraphs into chunks of at most `maxWords`.
  *
- *  Unlike `splitForGlossary` this never breaks a paragraph, so joining the
- *  chunks back with blank lines reproduces the story exactly. The glossary
- *  splitter cannot promise that and does not need to — it only reads the text.
- *  This one's output replaces it. A single paragraph over the budget becomes an
- *  oversized chunk of its own rather than being split. */
+ *  Unlike `splitForGlossary` this never breaks a paragraph. A single paragraph
+ *  over the budget becomes an oversized chunk of its own rather than being
+ *  split — which is why passes that replace the text use `chunkForRewrite`
+ *  instead, and this one is left to callers that only read it. */
 export function groupParagraphs(
   text: string,
   langCode: string | null,
@@ -1044,7 +1147,7 @@ async function simplifyStory(opts: {
 }): Promise<string> {
   const { deck, story, band, characterNames, onMeta } = opts
   const langCode = langCodeFor(deck.language)
-  const chunks = groupParagraphs(story, langCode, SIMPLIFY_CHUNK_WORDS)
+  const chunks = chunkForRewrite(story, langCode, SIMPLIFY_CHUNK_WORDS)
   const metas: CallMeta[] = []
 
   // Ask what is actually wrong before rewriting anything. The answer is a short
@@ -1082,7 +1185,7 @@ async function simplifyStory(opts: {
   )
   // A chunk with nothing above the band is already what the rewrite would
   // return. Left alone it costs nothing and cannot come back damaged.
-  const offendersIn = (chunk: string) => [
+  const offendersIn = (chunk: string): string[] => [
     ...new Set(tokenizeWords(chunk, langCode).filter((w) => offenders.has(w.toLowerCase()))),
   ]
   const needsWork = (chunk: string) => auditFailed || offendersIn(chunk).length > 0
@@ -1118,7 +1221,7 @@ async function simplifyStory(opts: {
       .join('\n')
 
   const edited = await Promise.all(
-    chunks.map((chunk, i) =>
+    chunks.map(({ text: chunk }, i) =>
       !needsWork(chunk)
         ? Promise.resolve(chunk)
         : callGeminiJson<{ text: string }>(promptFor(chunk), SIMPLIFY_SCHEMA, {
@@ -1152,10 +1255,10 @@ async function simplifyStory(opts: {
     outputTokens: sum((m) => m.outputTokens),
     thoughtTokens: sum((m) => m.thoughtTokens),
     // The audit plus however many chunks actually had something to fix.
-    passes: 1 + chunks.filter(needsWork).length,
+    passes: 1 + chunks.filter((c) => needsWork(c.text)).length,
   })
 
-  return edited.join('\n\n')
+  return edited.map((piece, i) => `${chunks[i].sep}${piece}`).join('')
 }
 
 /** Grow a story that came back short: hand the draft back and ask for the
@@ -1182,6 +1285,7 @@ async function extendStory(opts: {
     // missing, so it has no licence to grow the cast.
     `Do NOT introduce any new named character. Work with the people already in the story above.`,
     `IMPORTANT — register: casual, everyday spoken ${deck.language}, matching the story above. Keep dialogue inside quotation marks “…”.`,
+    PARAGRAPH_RULE,
     vocabSpec(deck.language, band),
     `Lean on the vocabulary the story above already uses — the reader has just read it.`,
     ending === 'resolve'
@@ -1348,6 +1452,10 @@ export async function writeStoryDraft(
    *  spacing is what matters, and a story bent to fit a word in teaches the
    *  word worse than a story that left it out. */
   recurWords?: string[]
+    /** Called with the story the moment it exists, before the passes that only
+     *  improve it. The caller saves it here, so nothing that has been written
+     *  can be lost to a top-up, a vocabulary edit or a closed tab. */
+    onDraft?: (prose: StoryProse) => void | Promise<void>
     /** Called with the running trace whenever a pass starts or finishes, so the
      *  UI can show what the wait is for and what each pass cost. */
     onProgress?: (steps: StoryStep[]) => void
@@ -1432,6 +1540,7 @@ export async function writeStoryDraft(
       ? `The previous part above may use words harder than this band allows — do NOT match its vocabulary; the band wins, even where that makes this part plainer than the last.`
       : '',
     `REGISTER — casual, everyday conversational ${deck.language}, the way people actually talk in daily life (in Indonesian say "aku", not "saya"). No formal, literary or textbook language. Wrap all spoken lines in quotation marks “…”, never dashes.`,
+    PARAGRAPH_RULE,
     `THE LEARNER'S WORD BANK — a preference, not a limit: within the band, reach for these words first.`,
     knownWords.length > 0 ? `Known words — use freely: ${knownWords.join(', ')}` : '',
     learningWords.length > 0
@@ -1494,6 +1603,9 @@ export async function writeStoryDraft(
   // this cannot be null — the check is here to say so to the type system.
   if (!drafted) throw new Error('The story could not be written.')
   let prose: StoryProse = drafted
+  // Everything above this line is irreplaceable; everything below it is
+  // improvement. Hand it over before going on.
+  await opts.onDraft?.(prose)
 
   // Models can't count their own words, so a draft routinely lands well under
   // the requested length. Measure it the same way the reader does and, while

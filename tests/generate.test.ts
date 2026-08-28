@@ -45,13 +45,32 @@ const fail = (status: number, message: string) => ({
 const RETIRED =
   'This model models/gemini-2.5-pro is no longer available to new users. Please update your code to use models/gemini-3.1-pro-preview for the latest features.'
 
+/** The warm-up race asks for almost nothing; that is how it is told apart from
+ *  a real call. Tests count the real ones. */
+const isPing = (init: any) => JSON.parse(init.body).generationConfig?.maxOutputTokens === 24
+
+/** The models list, as the race and the picker ask for it. */
+const listOf = (models: string[] = []) => ({
+  ok: true,
+  json: async () => ({
+    models: models.map((n) => ({
+      name: `models/${n}`,
+      supportedGenerationMethods: ['generateContent'],
+    })),
+  }),
+})
+
+/** Which model a generateContent URL is for, or null for the models list. */
+const modelIn = (url: string) => /models\/(.+):generateContent$/.exec(String(url))?.[1] ?? null
+
 /** Records every model id the handler tried to generate with, in order. */
 function stubFetch(reply: (model: string, calls: string[]) => any, models: string[] = []) {
   const calls: string[] = []
   const listed = { ok: true, json: async () => ({ models: models.map((n) => ({ name: `models/${n}`, supportedGenerationMethods: ['generateContent'] })) }) }
-  const fetchMock = vi.fn(async (url: string) => {
+  const fetchMock = vi.fn(async (url: string, init: any) => {
     const gen = /models\/(.+):generateContent$/.exec(String(url))
     if (!gen) return listed
+    if (isPing(init)) return ok('{}')
     calls.push(gen[1])
     return reply(gen[1], calls)
   })
@@ -80,8 +99,10 @@ describe('timeout resilience', () => {
     const calls: string[] = []
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
-        const model = /models\/(.+):generateContent$/.exec(String(url))![1]
+      vi.fn(async (url: string, init: any) => {
+        const model = modelIn(url)
+        if (!model) return listOf()
+        if (isPing(init)) return ok('{}')
         calls.push(model)
         if (/pro/.test(model)) timedOut()
         return ok('{"ok":true}')
@@ -98,8 +119,11 @@ describe('timeout resilience', () => {
     const calls: string[] = []
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
-        calls.push(/models\/(.+):generateContent$/.exec(String(url))![1])
+      vi.fn(async (url: string, init: any) => {
+        const model = modelIn(url)
+        if (!model) return listOf()
+        if (isPing(init)) return ok('{}')
+        calls.push(model)
         return timedOut()
       }),
     )
@@ -116,8 +140,11 @@ describe('timeout resilience', () => {
     const calls: string[] = []
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
-        calls.push(/models\/(.+):generateContent$/.exec(String(url))![1])
+      vi.fn(async (url: string, init: any) => {
+        const model = modelIn(url)
+        if (!model) return listOf()
+        if (isPing(init)) return ok('{}')
+        calls.push(model)
         return timedOut()
       }),
     )
@@ -127,6 +154,97 @@ describe('timeout resilience', () => {
     expect(calls).toEqual(['gemini-flash-latest'])
     expect(sent.body.rescued).toBeUndefined()
   })
+})
+
+describe('the warm-up race', () => {
+  it('sends the real work to a model that just answered, not to the busy alias', async () => {
+    const real: string[] = []
+    const pinged: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: any) => {
+        const gen = /models\/(.+):generateContent$/.exec(String(url))
+        if (!gen) {
+          return {
+            ok: true,
+            json: async () => ({
+              models: ['gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.5-flash'].map((n) => ({
+                name: `models/${n}`,
+                supportedGenerationMethods: ['generateContent'],
+              })),
+            }),
+          }
+        }
+        if (isPing(init)) {
+          pinged.push(gen[1])
+          // The overloaded one: 503 to the ping, exactly as it did in life.
+          if (gen[1] === 'gemini-flash-latest') return fail(503, 'high demand')
+          return ok('{}')
+        }
+        real.push(gen[1])
+        return ok('{"ok":true}')
+      }),
+    )
+    const handler = await freshHandler()
+    const { req, res, sent } = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
+    await handler(req, res)
+    expect(sent.status).toBe(200)
+    // Every candidate was asked; only the healthy one got the story.
+    expect(pinged).toContain('gemini-flash-latest')
+    expect(real).toEqual(['gemini-3.6-flash'])
+
+    // And the race doesn't run again once a model has answered for real.
+    const again = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
+    await handler(again.req, again.res)
+    expect(real).toEqual(['gemini-3.6-flash', 'gemini-3.6-flash'])
+    expect(pinged.filter((p) => p === 'gemini-3.6-flash')).toHaveLength(1)
+  })
+
+  it('falls through to the normal path when nothing answers the ping', async () => {
+    const real: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: any) => {
+        const gen = /models\/(.+):generateContent$/.exec(String(url))
+        if (!gen) return { ok: true, json: async () => ({ models: [] }) }
+        if (isPing(init)) return fail(503, 'high demand')
+        real.push(gen[1])
+        return ok('{"ok":true}')
+      }),
+    )
+    const { req, res, sent } = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
+    await (await freshHandler())(req, res)
+    // A race nobody wins costs a few tokens and changes nothing: the request
+    // still goes out, to the model it would have used anyway.
+    expect(sent.status).toBe(200)
+    expect(real).toEqual(['gemini-flash-latest'])
+  })
+})
+
+describe('a pro fleet under load', () => {
+  it('never sends the story to pro when the ping says the tier is queueing', async () => {
+    const real: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: any) => {
+        const model = modelIn(url)
+        if (!model) return listOf(['gemini-pro-latest', 'gemini-flash-latest'])
+        if (isPing(init)) {
+          // Pro answers, but slowly — the tell that it is queueing real work.
+          if (/pro/.test(model)) await new Promise((r) => setTimeout(r, 2100))
+          return ok('{}')
+        }
+        real.push(model)
+        return ok('{"ok":true}')
+      }),
+    )
+    const { req, res, sent } = reqRes()
+    await (await freshHandler())(req, res)
+    expect(sent.status).toBe(200)
+    // The minute that would have been spent finding this out is not spent.
+    expect(real).toEqual(['gemini-flash-latest'])
+    expect(sent.body.meta.rescued).toBe(true)
+  }, 10_000)
 })
 
 describe('the caller\'s remembered model', () => {
@@ -175,8 +293,9 @@ describe('a model that is merely busy', () => {
     const calls: string[] = []
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, init: any) => {
         const gen = /models\/(.+):generateContent$/.exec(String(url))
+        if (gen && isPing(init)) return ok('{}')
         if (!gen) {
           return {
             ok: true,
@@ -212,8 +331,9 @@ describe('a model that is merely busy', () => {
     const calls: string[] = []
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
+      vi.fn(async (url: string, init: any) => {
         const gen = /models\/(.+):generateContent$/.exec(String(url))
+        if (gen && isPing(init)) return ok('{}')
         if (!gen) {
           return {
             ok: true,
@@ -266,7 +386,9 @@ describe('a pro model that can only think expensively', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init: any) => {
-        const model = /models\/(.+):generateContent$/.exec(String(url))![1]
+        const model = modelIn(url)
+        if (!model) return listOf()
+        if (isPing(init)) return ok('{}')
         tried.push({ model, thinking: JSON.parse(init.body).generationConfig.thinkingConfig ?? null })
         if (/pro/.test(model)) return fail(400, 'Unknown name "thinkingLevel": Cannot find field.')
         return ok('{"ok":true}')
@@ -287,8 +409,10 @@ describe('a pro model that can only think expensively', () => {
     const calls: string[] = []
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (url: string) => {
-        const model = /models\/(.+):generateContent$/.exec(String(url))![1]
+      vi.fn(async (url: string, init: any) => {
+        const model = modelIn(url)
+        if (!model) return listOf()
+        if (isPing(init)) return ok('{}')
         calls.push(model)
         if (/pro/.test(model)) timedOut()
         return ok('{"ok":true}')
@@ -340,7 +464,9 @@ describe('model resilience', () => {
     const seen: object[] = []
     vi.stubGlobal(
       'fetch',
-      vi.fn(async (_url: string, init: any) => {
+      vi.fn(async (url: string, init: any) => {
+        if (!modelIn(url)) return listOf()
+        if (isPing(init)) return ok('{}')
         const cfg = JSON.parse(init.body).generationConfig.thinkingConfig ?? null
         seen.push(cfg)
         if (cfg) return fail(400, 'Unknown name "thinkingLevel": Cannot find field.')

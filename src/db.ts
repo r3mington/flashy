@@ -352,6 +352,11 @@ export interface AppSettings {
    *  slow first call is what the reader actually feels. Expires, so a better
    *  model that ships next month still gets found. */
   aiModels?: Partial<Record<'fast' | 'pro', { name: string; at: number }>>
+  /** When the pro tier last failed to deliver — timed out, or was rescued onto
+   *  a fast model by the server. For a while afterwards the app stops asking
+   *  for it, because the server's own memory of that dies with its instance
+   *  and the reader pays the discovery again on the next cold start. */
+  aiTierTrouble?: Partial<Record<'pro', number>>
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {

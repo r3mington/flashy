@@ -612,7 +612,35 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             (savedStories ?? []).map((s) => s.createdAt),
             (k) => !allNames.has(k) && contentKeys.has(k) && (isNewWord(k) || isInStudy(k)),
           )
+      // Filled in by onDraft, below: the row exists from the moment the story
+      // does, and the polish passes update it rather than deciding whether it
+      // gets saved at all.
+      let id: number | null = null
+      // Stamped once: the row is written twice, and the second write must not
+      // move the story's place in the reader's history.
+      const createdAt = Date.now()
+      const base = () => ({
+        deckId,
+        translation: '',
+        glossary: [],
+        summary: '',
+        focusWords: focusWords.length > 0 ? focusWords : undefined,
+        chosen: from && steer ? steer : undefined,
+        topic: from ? undefined : topic.trim() || undefined,
+        // Parts always attach to the thread's root, never to another part.
+        parentId: from ? (from.parentId ?? from.id) : undefined,
+        createdAt,
+      })
       const draft = await writeStoryDraft({
+        onDraft: async (first) => {
+          id = await db.stories.add({
+            ...base(),
+            title: first.title,
+            story: first.story,
+            characterNames: first.characterNames,
+            bible: first.bible,
+          })
+        },
         deck: deck!,
         // In 'learning' mode, don't seed the story with already-known words —
         // build it only from the ones still being learned.
@@ -658,27 +686,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             }
           : undefined,
       })
-      // Saved the moment the prose exists, before the passes that only
-      // explain it. Everything above this line is work that cannot be
-      // reproduced for free; below it is annotation, which can be redone
-      // whenever the story is next opened. So the story goes to disk here.
+      // The polish passes have run; write what they made of it. (If onDraft
+      // never fired the write itself failed, and there is nothing to save.)
       const record: Omit<SavedStory, 'id'> = {
-        deckId,
+        ...base(),
         title: draft.title,
         story: draft.story,
-        translation: '',
-        glossary: [],
         characterNames: draft.characterNames,
         bible: draft.bible,
-        summary: '',
-        focusWords: focusWords.length > 0 ? focusWords : undefined,
-        chosen: from && steer ? steer : undefined,
-        topic: from ? undefined : topic.trim() || undefined,
-        // Parts always attach to the thread's root, never to another part.
-        parentId: from ? (from.parentId ?? from.id) : undefined,
-        createdAt: Date.now(),
       }
-      const id = await db.stories.add(record)
+      if (id === null) id = await db.stories.add(record)
+      else await db.stories.update(id, record)
       setContinuing(null)
       setDirection('')
       openStory({ ...record, id })

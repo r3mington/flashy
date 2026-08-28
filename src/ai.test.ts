@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ApiError,
+  chunkForRewrite,
   MIN_STORY_WORDS,
   writeLadder,
   worthRetrying,
@@ -187,5 +188,39 @@ describe('worthRetrying', () => {
     for (const status of [400, 401, 403, 404]) {
       expect(worthRetrying(new ApiError(status, 'nope'))).toBe(false)
     }
+  })
+})
+
+describe('chunkForRewrite', () => {
+  const rejoin = (chunks: { text: string; sep: string }[]) =>
+    chunks.map((c) => c.sep + c.text).join('')
+
+  it('reproduces the story exactly when it is joined back up', () => {
+    const story = Array.from({ length: 5 }, (_, i) => para(120, `p${i}_`)).join('\n\n')
+    expect(rejoin(chunkForRewrite(story, 'id', 200))).toBe(story)
+  })
+
+  it('splits a story written as one huge paragraph, and joins it back as one', () => {
+    // What a model actually returned: 999 words, no blank line anywhere. Left
+    // whole it would go through the rewrite in a single call.
+    const oneBlock = Array.from({ length: 40 }, (_, i) => `Ini kalimat nomor ${i} di sini.`).join(' ')
+    const chunks = chunkForRewrite(oneBlock, 'id', 60)
+    expect(chunks.length).toBeGreaterThan(1)
+    expect(rejoin(chunks)).toBe(oneBlock)
+    // Every join inside the paragraph is a space, never a new paragraph.
+    expect(chunks.slice(1).every((c) => c.sep === ' ')).toBe(true)
+  })
+
+  it('keeps every chunk inside the budget where the text allows it', () => {
+    const story = Array.from({ length: 6 }, (_, i) => para(150, `p${i}_`)).join('\n\n')
+    for (const c of chunkForRewrite(story, 'id', 200)) {
+      expect(countWords(c.text, 'id')).toBeLessThanOrEqual(200)
+    }
+  })
+
+  it('loses no words', () => {
+    const story = `${para(300, 'a')}\n\n${para(90, 'b')}\n\n${para(200, 'c')}`
+    const chunks = chunkForRewrite(story, 'id', 150)
+    expect(chunks.reduce((n, c) => n + countWords(c.text, 'id'), 0)).toBe(countWords(story, 'id'))
   })
 })
