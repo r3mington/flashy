@@ -12,68 +12,6 @@ export interface Suggestion {
   roman?: string
 }
 
-/** How long a remembered model stays worth asking for. Long enough that the
- *  reader isn't rediscovering the field every session, short enough that a
- *  model retired or overtaken in the meantime doesn't stick. */
-const MODEL_MEMORY_MS = 7 * 24 * 60 * 60_000
-
-/** Fast enough to be worth asking for again. Above this the model answered, but
- *  not in a way anyone would choose to repeat. */
-const MODEL_PROMPT_MS = 60_000
-
-/** How long the app avoids the pro tier after it has proved unusable. Short
- *  enough that a passing spike doesn't cost a day of plainer stories, long
- *  enough to cover the generation in front of the reader and the next one. */
-const TIER_TROUBLE_MS = 60 * 60_000
-
-/** Whether the pro tier is worth asking for right now. */
-async function tierIsTrouble(tier: 'fast' | 'pro'): Promise<boolean> {
-  if (tier !== 'pro') return false
-  try {
-    const at = (await db.settings.get('app'))?.aiTierTrouble?.pro ?? 0
-    return Date.now() - at < TIER_TROUBLE_MS
-  } catch {
-    return false
-  }
-}
-
-/** Remember that the pro tier let us down, so the next call doesn't queue
- *  behind it too. Recorded from the server saying it had to rescue the request,
- *  or from the request running out of time altogether. */
-async function noteTierTrouble(tier: 'fast' | 'pro') {
-  if (tier !== 'pro') return
-  try {
-    const cur = (await db.settings.get('app'))?.aiTierTrouble ?? {}
-    await db.settings.update('app', { aiTierTrouble: { ...cur, pro: Date.now() } })
-  } catch {
-    /* nothing to do about it */
-  }
-}
-
-/** The model that last answered this tier quickly, if it is still fresh. */
-async function preferredModel(tier: 'fast' | 'pro'): Promise<string | undefined> {
-  try {
-    const seen = (await db.settings.get('app'))?.aiModels?.[tier]
-    return seen && Date.now() - seen.at < MODEL_MEMORY_MS ? seen.name : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/** Remember what answered PROMPTLY, so the next cold server can start there.
- *  A model that answered eventually is not a recommendation — it is the thing
- *  this whole arrangement is trying to move away from. */
-async function rememberModel(tier: 'fast' | 'pro', name?: string, ms?: number) {
-  if (!name || (ms ?? 0) > MODEL_PROMPT_MS) return
-  try {
-    const cur = (await db.settings.get('app'))?.aiModels ?? {}
-    if (cur[tier]?.name === name && Date.now() - (cur[tier]?.at ?? 0) < 60_000) return
-    await db.settings.update('app', { aiModels: { ...cur, [tier]: { name, at: Date.now() } } })
-  } catch {
-    /* a forgotten preference costs one slow call, not a story */
-  }
-}
-
 /** Whether the user has opted into slower, higher-quality "thinking" for AI
  *  calls. Read straight from the settings store so callers don't have to thread
  *  it through. Defaults to off (fast) if unset or unreadable. */
@@ -85,9 +23,6 @@ async function thinkingEnabled(): Promise<boolean> {
   }
 }
 
-/** All AI calls go through our /api/generate proxy — the Gemini key lives server-side.
- *  `tier` picks the class of model: everything defaults to the fast one, and the
- *  calls that have to plan rather than transcribe ask for 'pro' explicitly. */
 /** What one model call actually did, as reported by the server. Attached to the
  *  trace so a slow or failed generation can be read after the fact. */
 export interface CallMeta {
@@ -100,19 +35,26 @@ export interface CallMeta {
   /** Reasoning tokens burned before any output — usually why a call was slow. */
   thoughtTokens?: number
   finishReason?: string
-  retries?: number
   /** How many calls the pass took, when it was split into parallel pieces. */
   passes?: number
-  /** Whether the server had to abandon the tier that was asked for. */
+  /** Whether the server had to fall back to its second model. */
   rescued?: boolean
 }
 
+/** Which job a call is for, and how hard the model thinks about it. `story` is
+ *  the one creative call; everything else is `fast` work over text that already
+ *  exists. The server maps both to pinned models (see api/generate.ts). */
+type Tier = 'story' | 'fast'
+type Effort = 'minimal' | 'medium' | 'high'
+
+/** All AI calls go through our /api/generate proxy — the Gemini key lives
+ *  server-side, and so does the fallback to a second model. */
 async function callGeminiJson<T>(
   prompt: string,
   schema: object,
   opts: {
-    tier?: 'fast' | 'pro'
-    effort?: 'minimal' | 'high'
+    tier?: Tier
+    effort?: Effort
     /** Name for this call in the server log and the on-screen trace. */
     label?: string
     /** How long the server may spend on this call. Small asks say so, so their
@@ -125,71 +67,32 @@ async function callGeminiJson<T>(
     onMeta?: (meta: CallMeta) => void
   } = {},
 ): Promise<T> {
-  // A pro request made during the pro tier's cooldown is a fast request. The
-  // server would have rescued it onto a fast model anyway, a minute later.
-  const asked = opts.tier ?? 'fast'
-  const tier = asked === 'pro' && (await tierIsTrouble('pro')) ? 'fast' : asked
-  if (tier !== asked) console.warn(`[story] ${opts.label ?? 'call'} skipping pro — it was trouble`)
   const tries = Math.max(1, opts.tries ?? 1)
   for (let attempt = 1; attempt < tries; attempt++) {
     try {
-      return await attemptCall<T>(prompt, schema, { ...opts, tier })
+      return await postJson<T>(prompt, schema, opts)
     } catch (e) {
       if (!worthRetrying(e)) throw e
       console.warn(`[story] ${opts.label ?? 'call'} attempt ${attempt} failed — retrying`, e)
-      // A moment's pause: the common cause of a run of these is a tier under
-      // load, and coming straight back at it is how a retry makes that worse.
+      // A moment's pause: coming straight back at a loaded model makes it worse.
       await new Promise((r) => setTimeout(r, 500 * attempt))
     }
   }
-  return attemptCall<T>(prompt, schema, { ...opts, tier })
-}
-
-/** One attempt, with the tier fallback the server can't make for us. */
-async function attemptCall<T>(
-  prompt: string,
-  schema: object,
-  opts: {
-    tier: 'fast' | 'pro'
-    effort?: 'minimal' | 'high'
-    label?: string
-    budgetMs?: number
-    onMeta?: (meta: CallMeta) => void
-  },
-): Promise<T> {
-  const tier = opts.tier
-  try {
-    return await postJson<T>(prompt, schema, { ...opts, tier })
-  } catch (e) {
-    // The function has a hard 60-second budget, and the pro model's latency
-    // does not respect it reliably. A pro call that runs out of time still has
-    // somewhere to go: the same prompt on the fast model. A plainer story beats
-    // no story, and the trace records which model actually answered.
-    // The server spends its own budget on a fast-tier rescue first and says so;
-    // repeating it here would only cost the reader another minute of waiting.
-    const ranOutOfTime = e instanceof ApiError && (e.status === 504 || e.status === 502)
-    if (e instanceof ApiError && (ranOutOfTime || e.rescued)) void noteTierTrouble(tier)
-    if (ranOutOfTime && !e.rescued && tier === 'pro') {
-      console.warn(`[story] ${opts.label ?? 'call'} timed out on pro — retrying on fast`)
-      return postJson<T>(prompt, schema, { ...opts, tier: 'fast' })
-    }
-    throw e
-  }
+  return postJson<T>(prompt, schema, opts)
 }
 
 async function postJson<T>(
   prompt: string,
   schema: object,
   opts: {
-    tier: 'fast' | 'pro'
-    effort?: 'minimal' | 'high'
+    tier?: Tier
+    effort?: Effort
     label?: string
     budgetMs?: number
     onMeta?: (meta: CallMeta) => void
   },
 ): Promise<T> {
   const thinking = await thinkingEnabled()
-  const preferModel = await preferredModel(opts.tier)
   let res: Response
   try {
     res = await fetch('/api/generate', {
@@ -199,11 +102,10 @@ async function postJson<T>(
         prompt,
         schema,
         thinking,
-        tier: opts.tier,
+        tier: opts.tier ?? 'fast',
         effort: opts.effort,
         label: opts.label,
         budgetMs: opts.budgetMs,
-        preferModel,
       }),
     })
   } catch {
@@ -218,26 +120,16 @@ async function postJson<T>(
   }
   if (!res.ok) {
     let message = `Request failed (${res.status})`
-    let rescued = false
     try {
       const err = await res.json()
       message = err?.error ?? message
-      rescued = err?.rescued === true
     } catch {
       /* keep generic message */
     }
-    throw new ApiError(res.status, message, rescued)
+    throw new ApiError(res.status, message)
   }
   const body = await res.json()
-  if (body.meta) {
-    opts.onMeta?.(body.meta as CallMeta)
-    // Whatever answered quickly is the best guess for what will answer next time —
-    // including when the server had to go looking for it.
-    const meta = body.meta as CallMeta
-    void rememberModel(opts.tier, meta.model, meta.ms)
-    // The server got there, but only by abandoning the tier we asked for.
-    if (meta.rescued) void noteTierTrouble(opts.tier)
-  }
+  if (body.meta) opts.onMeta?.(body.meta as CallMeta)
   return body.data as T
 }
 
@@ -495,18 +387,22 @@ const GLOSSARY_SCHEMA = {
   required: ['glossary'],
 }
 
-/** The prose call's shape — no glossary, and no translation. Glossing every
- *  word of a story is several times more output than the story itself, and
- *  asking for both at once makes the two compete: the model that has to gloss
- *  what it writes writes less. The translation was split out for a blunter
- *  reason — it doubles the longest call's output, and on a 60-second function
- *  that is the difference between a story and a timeout. Both are separate
- *  passes over the finished text. */
+/** The writing call's shape: a title and the story, nothing else. Every other
+ *  thing a story needs — translation, glossary, names, the bible — is read off
+ *  the finished text by its own pass, so the one creative call spends all of
+ *  its attention on the story. */
 const STORY_SCHEMA = {
   type: 'OBJECT',
   properties: {
     title: { type: 'STRING' },
     story: { type: 'STRING' },
+  },
+  required: ['title', 'story'],
+}
+
+const BIBLE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
     characterNames: { type: 'ARRAY', items: { type: 'STRING' } },
     bible: {
       type: 'OBJECT',
@@ -531,21 +427,15 @@ const STORY_SCHEMA = {
       required: ['logline', 'cast', 'places', 'facts', 'openThreads'],
     },
   },
-  required: ['title', 'story', 'characterNames', 'bible'],
+  required: ['characterNames', 'bible'],
 }
 
-/** The prose half of a story — what the writing call returns. Translation and
- *  glossary are added afterwards, each by its own pass. */
+/** The prose half of a story: the text, and the record of its world.
+ *  Translation, summary and glossary are added afterwards, each by its own pass. */
 export type StoryProse = Omit<Story, 'glossary' | 'translation' | 'summary'>
 
-/** Stories are read on a phone, and a wall of text is read by nobody. It also
- *  matters mechanically: the passes that rewrite the story split it on
- *  paragraphs, so a story returned as one block goes through in one call. */
-const PARAGRAPH_RULE = `SHAPE — break the story into paragraphs, separated by a BLANK LINE. A new paragraph for each new turn, each change of place, and each speaker's stretch of dialogue. Never return the story as one block of text.`
-
-/** Most named characters a first part may introduce. Reading in a second
- *  language is slow enough that a fourth name costs more than it adds. */
-const MAX_CAST = 4
+/** What the writing call returns, before any other pass has read it. */
+export type StoryDraft = Pick<Story, 'title' | 'story'>
 
 /** How a serial part ends: on tension, or by settling it.
  *
@@ -568,27 +458,6 @@ export function pickSerialEnding(openThreads: number, troubleAge = 2): SerialEnd
   if (openThreads === 0) return 'hook'
   if (troubleAge < 2) return 'hook'
   return Math.random() < 1 / 3 ? 'resolve' : 'hook'
-}
-
-/** Roughly how many words a sentence of dialogue-led prose runs to. Used to
- *  turn a word target into a sentence count, which models hit far more
- *  reliably than a word count they can't actually compute. */
-const WORDS_PER_SENTENCE = 9
-
-/** The length instruction. A bare word count is the one thing a language model
- *  cannot verify about its own draft, so it reliably lands short; anchoring the
- *  target to countable structure — sentences and scenes — and asking a little
- *  above target is what actually moves the length. */
-function lengthSpec(lengthWords: number): string {
-  const sentences = Math.round(lengthWords / WORDS_PER_SENTENCE)
-  const scenes = Math.max(2, Math.round(lengthWords / 120))
-  return [
-    `LENGTH — a hard requirement, and the one writers of these stories most often get wrong by stopping early.`,
-    `Target: ${lengthWords}–${Math.round(lengthWords * 1.25)} words.`,
-    `Because words are hard to count, hit it structurally instead: write about ${sentences} sentences (never fewer than ${Math.round(sentences * 0.9)}), spread over ${scenes} ${scenes === 1 ? 'scene' : 'distinct scenes'} — a change of place, of time, or of who is present marks a new scene.`,
-    `A story of two or three exchanges is far too short. Give the plot enough turns to fill the length: keep the scene going past the first answer, let characters disagree, interrupt, change their minds.`,
-    `When you think you are finished, check the sentence count and keep writing if it is short.`,
-  ].join(' ')
 }
 
 /** How hard the story's vocabulary may be.
@@ -674,53 +543,34 @@ const ID_STORY_BANNED = [
   `Take the commonest synonym every single time, never the more exact or more elegant one: "tiba-tiba" not "mendadak", "sepi" not "sunyi", "melihat" not "menatap", "orang tua" not "tetua", "pintu" not "gerbang", "tas" not "ransel", "keluar dari" not "menyembul".`,
 ]
 
-/** The writing pass's vocabulary line: the band, stated plainly and briefly.
+/** The vocabulary rules for the simplify pass: a ceiling on which words may
+ *  exist at all, never a quota over how many are new. Only the edit gets these —
+ *  enforced while writing, they bend the prose.
  *
- *  Deliberately NOT the full `vocabSpec`. That block — six rules and a
- *  re-read ritual — is enforcement machinery, and enforcement while writing
- *  bends the prose: the writer reaches for a circumlocution mid-sentence and
- *  the sentence shows it. Writing gets the register; the simplify pass, which
- *  edits one word at a time with nothing to trade against, gets the rules. */
-function vocabHint(language: string, band: VocabBand): string {
-  return `VOCABULARY — ${band.cefr}: build the story from roughly the ${band.commonWords} most common words of ${language}, in simple sentences — the register of a graded reader. Where two words mean nearly the same thing, take the commoner one. A few words above the band are acceptable when the story needs them; a plainer word is always preferred.`
-}
-
-/** The vocabulary instruction: a ceiling on which words may exist at all, never
- *  a quota over how many are new.
- *
- *  Three of these lines exist because of specific words that got through at the
- *  easiest band. Narration, because the dialogue came back simple and the prose
- *  around it did not. Physical description, because a story told to make its
- *  details SPECIFIC will reach for the exact word for a thing, and the exact
- *  word for a thing is nearly always a rare one — that single pull produced
- *  most of the hard vocabulary in the story that prompted this. And the
- *  re-read, because the same self-check is what makes the dialogue writer's
- *  much stricter word-bank rule hold. */
+ *  Narration is named because the dialogue came back simple and the prose
+ *  around it did not. There is deliberately no rule against specific detail:
+ *  an earlier one told the editor to swap a detail for a plainer one, and the
+ *  details were the part of the story worth keeping. A hard word for a thing
+ *  becomes a few easy words for the same thing. */
 function vocabSpec(language: string, band: VocabBand): string {
   const rules = [
-    `Build the story from the ${band.commonWords} most common words of ${language} — the everyday words a native speaker uses in ordinary conversation, the vocabulary of a graded reader at this level.`,
+    `Keep to the ${band.commonWords} most common words of ${language} — the everyday words a native speaker uses in ordinary conversation, the vocabulary of a graded reader at this level.`,
     `Whenever a word would be literary, formal, technical, bookish or merely uncommon, it is out of bounds: say the same thing with a plainer word, or with several simple words in place of one hard one. A story that says something a little more plainly than you intended is correct; a story with a word the reader cannot read is not.`,
     `Where two words mean nearly the same thing, always take the commoner one — the word a child would use, not the more precise or more literary one.`,
     `This applies to NARRATION as much as to dialogue. Narration is where hard words creep back in once the dialogue is simple.`,
-    `PHYSICAL DETAIL is where this rule is usually lost. Naming an object, texture or gesture exactly nearly always means a rare word. Do not reach for the exact word: describe the thing in simple words, or choose a different detail that common words can name. A precise description is never worth a word the reader cannot read.`,
     `Test every word: would someone a few months into learning ${language} know it? If not, replace it.`,
   ]
   if (langCodeFor(language) === 'id') rules.push(...ID_STORY_BANNED)
   return [
-    `VOCABULARY — ${band.cefr}. The difficulty dial for this story, and the requirement most easily lost while writing.`,
+    `VOCABULARY — ${band.cefr}.`,
     ...rules.map((r) => `• ${r}`),
-    `• BEFORE YOU RETURN: re-read the finished story word by word and replace every word that breaks these rules. Do this last, and do it properly — it matters more than any other check.`,
   ].join('\n')
 }
 
 const EXTEND_SCHEMA = {
   type: 'OBJECT',
-  properties: {
-    story: { type: 'STRING' },
-    characterNames: STORY_SCHEMA.properties.characterNames,
-    bible: STORY_SCHEMA.properties.bible,
-  },
-  required: ['story', 'bible'],
+  properties: { story: { type: 'STRING' } },
+  required: ['story'],
 }
 
 const TRANSLATION_SCHEMA = {
@@ -1142,10 +992,9 @@ async function simplifyStory(opts: {
   deck: Deck
   story: string
   band: VocabBand
-  characterNames: string[]
   onMeta?: (m: CallMeta) => void
 }): Promise<string> {
-  const { deck, story, band, characterNames, onMeta } = opts
+  const { deck, story, band, onMeta } = opts
   const langCode = langCodeFor(deck.language)
   const chunks = chunkForRewrite(story, langCode, SIMPLIFY_CHUNK_WORDS)
   const metas: CallMeta[] = []
@@ -1162,7 +1011,7 @@ async function simplifyStory(opts: {
       // this call writes nothing. Same band, stated as a test to apply.
       `Below is a story in ${deck.language} written for a language learner at ${band.cefr}. This reader knows roughly the ${band.commonWords} most common words of ${deck.language} — ordinary spoken vocabulary, the words a graded reader at that level uses.`,
       `Return "words": every word in the story that falls OUTSIDE that — literary, formal, technical, bookish, written-register, or merely uncommon. For each one ask: would someone a few months into learning ${deck.language} know this word? If not, list it.`,
-      `Use the exact form the word takes in the text. Do not list names of people or places${characterNames.length > 0 ? ` (${characterNames.join(', ')})` : ''}. Do not list words that are inside the vocabulary — a list padded with ordinary words costs the reader a rewrite they did not need.`,
+      `Use the exact form the word takes in the text. Do not list names of people or places. Do not list words that are inside the vocabulary — a list padded with ordinary words costs the reader a rewrite they did not need.`,
       langCode === 'id'
         ? `Also list any of these, which are always too formal here whatever their frequency: beliau, tersebut, sehingga, namun, oleh karena itu, adapun, dengan demikian, seraya, sembari — and any word where a commoner synonym exists (mendadak→tiba-tiba, sunyi→sepi, menatap→melihat, gerbang→pintu, ransel→tas).`
         : '',
@@ -1203,11 +1052,9 @@ async function simplifyStory(opts: {
       `HOW TO EDIT — this is a vocabulary edit, not a rewrite:`,
       `• Keep the events, the people, the order and the meaning exactly as they are. Add nothing, cut nothing, and improve nothing.`,
       `• Keep every paragraph break, and keep all dialogue inside “…”.`,
-      characterNames.length > 0
-        ? `• Keep these names spelled exactly as they are: ${characterNames.join(', ')}.`
-        : '',
+      `• Keep every name of a person or place spelled exactly as it is.`,
       `• Keep the length. Replacing one hard word with three easy ones is right; dropping the sentence is not.`,
-      `• Where a sentence can only be said with a hard word, change what is DESCRIBED rather than what happens — a plainer object, a different detail — so the plot still runs exactly as before.`,
+      `• Keep every detail. Where a hard word names something specific, say the same specific thing in a few easy words rather than swapping in a plainer detail.`,
       `• Where a sentence is already simple enough, leave it alone word for word.`,
       // The audit already found them, and a rewrite told what to fix is both
       // more accurate and less tempted to rewrite what is fine.
@@ -1261,89 +1108,91 @@ async function simplifyStory(opts: {
   return edited.map((piece, i) => `${chunks[i].sep}${piece}`).join('')
 }
 
+/** The language-level line shared by the writing and extension prompts. It
+ *  constrains the LANGUAGE and says outright that the story is not to be
+ *  simplified with it: left to itself, a model asked for a story "for a
+ *  language learner" writes a children's story. */
+function levelSpec(language: string, band: VocabBand): string {
+  const casual = langCodeFor(language) === 'id' ? ` ("aku", not "saya")` : ''
+  return `It is for an adult reading ${language} at ${band.cefr}. Keep the LANGUAGE at that level: roughly the ${band.commonWords} most common words, short sentences, casual spoken ${language}${casual}, dialogue in “…”. Don't simplify the STORY — write something an adult would want to finish.`
+}
+
+function endingSpec(ending: SerialEnding): string {
+  return ending === 'resolve'
+    ? `End by settling the story, in a scene the reader watches, and let it change or cost someone something. No moral, no summary.`
+    : `End on something unresolved, so the reader needs the next part — at a natural beat, not mid-scene.`
+}
+
 /** Grow a story that came back short: hand the draft back and ask for the
- *  missing stretch, then splice it on. The continuation carries its own
- *  ending, so the bible from this pass replaces the earlier one. */
+ *  missing stretch, then splice it on. */
 async function extendStory(opts: {
   deck: Deck
-  story: StoryProse
+  story: StoryDraft
   missingWords: number
   band: VocabBand
-  /** The ending mode the part was written for — the continuation becomes the
-   *  new ending, so it has to land the same way. */
+  /** The continuation becomes the new ending, so it has to land the same way. */
   ending: SerialEnding
   onMeta?: (m: CallMeta) => void
-}): Promise<StoryProse> {
+}): Promise<StoryDraft> {
   const { deck, story, missingWords, band, ending, onMeta } = opts
   const prompt = [
-    `Below is a story in ${deck.language} written for a language learner. It stopped too early — it needs about ${missingWords} more words.`,
+    `Below is a story in ${deck.language}. It stopped too early and needs about ${missingWords} more words.`,
     `Story so far, titled "${story.title}":\n${story.story}`,
-    `Write ONLY the continuation: the text that follows on directly from the last line, in the same voice, tense and register, with the same characters. Do not repeat, recap or rewrite any of the above, and do not start a new story. Write it in ${deck.language} only — no English.`,
-    lengthSpec(missingWords),
-    `The continuation must carry the story forward with real events — a new turn, a complication, an arrival — not filler description or small talk stretched out.`,
-    // This is a top-up of one part, not a new part: length is the only thing
-    // missing, so it has no licence to grow the cast.
-    `Do NOT introduce any new named character. Work with the people already in the story above.`,
-    `IMPORTANT — register: casual, everyday spoken ${deck.language}, matching the story above. Keep dialogue inside quotation marks “…”.`,
-    PARAGRAPH_RULE,
-    vocabSpec(deck.language, band),
-    `Lean on the vocabulary the story above already uses — the reader has just read it.`,
-    ending === 'resolve'
-      ? `ENDING — the continuation settles the story: answer what it has been carrying and land it properly, concrete and earned. No moral, no summary.`
-      : `ENDING — the continuation must still end on genuine unresolved tension, at a natural beat: the reader must be left needing the next part.`,
-    `Return: "story" (the continuation text only), "characterNames" (any personal names appearing in the continuation), and "bible" (the world state after the continuation: logline, cast, places, facts, openThreads).`,
+    `Write ONLY the continuation, following on from the last line in the same voice, with the same people (no new named characters). Move the story forward with real events — a new turn, a complication — not description or small talk. Do not repeat or recap anything above.`,
+    levelSpec(deck.language, band),
+    endingSpec(ending),
+    `Separate paragraphs with a blank line. Return the continuation alone, in ${deck.language}, in "story".`,
   ].join('\n')
 
-  const more = await callGeminiJson<Omit<StoryProse, 'title'>>(prompt, EXTEND_SCHEMA, {
-    // Continuing a text that already exists, to a stated length, in a voice
-    // the prompt hands over verbatim — mechanical work next to inventing the
-    // story, and the pass that most often runs. It doesn't need the pro model.
-    tier: 'fast',
-    effort: 'minimal',
+  const more = await callGeminiJson<{ story: string }>(prompt, EXTEND_SCHEMA, {
     label: 'extend',
-    // A top-up is optional and there can be three of them. It doesn't get the
-    // whole budget to stall in: the reader is waiting on a story they can
-    // already read, and a length that falls short costs them less than the wait.
+    // A top-up is optional: the reader is waiting on a story they could already
+    // read, and a length that falls short costs them less than the wait.
     budgetMs: 150_000,
     onMeta,
   })
-  return {
-    ...story,
-    story: `${story.story.trimEnd()}\n\n${more.story.trim()}`,
-    characterNames: [
-      ...new Set([...(story.characterNames ?? []), ...(more.characterNames ?? [])]),
-    ],
-    bible: more.bible ?? story.bible,
-  }
+  return { ...story, story: `${story.story.trimEnd()}\n\n${(more.story ?? '').trim()}` }
 }
 
-/** No story shorter than this is worth handing to a reader — below it there is
- *  nothing to read, and the ladder has run out of ground to give. */
-export const MIN_STORY_WORDS = 300
+const EMPTY_BIBLE: StoryBible = { logline: '', cast: [], places: [], facts: [], openThreads: [] }
 
-/** The lengths and tiers the writing pass tries, in order, until one answers.
- *  Shrinking is the lever that actually works on a timeout: the call is slow
- *  because of how much it has to write, so each rung halves the ask and drops
- *  to the fast model. Rungs that would land under the floor are dropped, so a
- *  request for a short story doesn't retry three times at the same size. */
-export function writeLadder(lengthWords: number): { words: number; tier: 'fast' | 'pro' }[] {
-  const rungs: { words: number; tier: 'fast' | 'pro' }[] = [{ words: lengthWords, tier: 'pro' }]
-  for (const share of [0.5, 0.3]) {
-    const words = Math.round(lengthWords * share)
-    if (words >= MIN_STORY_WORDS && words < (rungs.at(-1)?.words ?? 0)) {
-      rungs.push({ words, tier: 'fast' })
-    }
-  }
-  // However short the ask, the fast model gets one clean try at it.
-  if (rungs.length === 1) rungs.push({ words: lengthWords, tier: 'fast' })
-  return rungs
+/** Read the story world off the finished text: who is in it, and what a later
+ *  part must stay consistent with. Split out of the writing call so the writer
+ *  only writes — bookkeeping is a reader's job, and a cheap one. */
+async function extractBible(opts: {
+  deck: Deck
+  story: string
+  /** The world before this part, when it continues a serial. */
+  previous?: StoryBible
+  onMeta?: (m: CallMeta) => void
+}): Promise<{ characterNames: string[]; bible: StoryBible }> {
+  const { deck, story, previous, onMeta } = opts
+  const prompt = [
+    previous
+      ? `Below is the latest part of a serial story in ${deck.language}. Update the record of its world so the next part stays consistent.`
+      : `Below is a story in ${deck.language}. Record the state of its world so a next part could stay consistent with it.`,
+    previous
+      ? `The record before this part — carry forward what is still true, add what this part established, drop the questions it answered:\n${JSON.stringify(previous)}`
+      : '',
+    `Return "characterNames": every personal name used in the story, spelled exactly as in the text.`,
+    `And "bible": "logline" — ONE English sentence recapping what happened in this ${previous ? 'part' : 'story'}, shown to the reader as "Previously…" before the next part; "cast" — the named characters who still matter, each with their role and what they want; "places" — the locations; "facts" — at most 8 concrete details a later part must not contradict; "openThreads" — the questions the story leaves open. If it settles everything, openThreads is empty — never invent one.`,
+    `Story:\n${story}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+  const out = await callGeminiJson<{ characterNames: string[]; bible: StoryBible }>(
+    prompt,
+    BIBLE_SCHEMA,
+    { label: 'bible', budgetMs: CHUNK_BUDGET_MS, tries: CHUNK_TRIES, onMeta },
+  )
+  return { characterNames: out.characterNames ?? [], bible: out.bible ?? EMPTY_BIBLE }
 }
 
 /** Whether a failed call is the kind another attempt might survive: the model
  *  ran out of time, the tier is overloaded, or the server gave up. A missing
  *  key, an expired session or a rejected prompt is none of those, and retrying
- *  only makes the reader wait longer for the same message. Used both for the
- *  writing ladder and for the chunked passes' retries. */
+ *  only makes the reader wait longer for the same message. Used for the
+ *  chunked passes' retries. */
 export function worthRetrying(e: unknown): boolean {
   if (!(e instanceof ApiError)) return true // a network blip: worth one more go
   return e.status === 429 || e.status >= 500
@@ -1353,6 +1202,10 @@ export function worthRetrying(e: unknown): boolean {
 const LENGTH_TOLERANCE = 0.9
 /** Cap on top-up passes — each one is another round-trip. */
 const MAX_EXTENSIONS = 2
+
+/** Most words from the reader's bank handed to the writer. A handful it can
+ *  actually use; hundreds only pull every story toward the same topics. */
+const MAX_WANTED_WORDS = 20
 
 /** A running trace of one generation: the passes, in order, with what each
  *  produced and what it cost. Shared by the two halves of a generation, so the
@@ -1416,46 +1269,43 @@ export function createTrace(onProgress?: (steps: StoryStep[]) => void): Trace {
 
 export async function writeStoryDraft(
   opts: {
-  deck: Deck
-  knownWords: string[]
-  learningWords: string[]
-  /** How hard the story's vocabulary may be (see `VOCAB_BANDS`). */
-  vocabLevel: VocabLevel
-  topic?: string
-  lengthWords: number
-  /** Premises/topics of the learner's previous stories — steer clear of their themes. */
-  avoidThemes?: string[]
-  /** Character names the learner's recent stories used — the plan picks new ones. */
-  avoidNames?: string[]
-  /** Continue this existing story instead of starting a fresh one. `direction`
-   *  is the reader's optional steer for what should happen next, `bible` the
-   *  world state the previous part left behind, `topic` what the reader asked
-   *  for when the thread began — the genre anchor. */
-  continueFrom?: {
-    title: string
-    story: string
-    direction?: string
-    bible?: StoryBible
+    deck: Deck
+    /** The words being learned. The writer sees a sample of these, not all. */
+    learningWords: string[]
+    /** How hard the story's vocabulary may be (see `VOCAB_BANDS`). */
+    vocabLevel: VocabLevel
     topic?: string
-  }
-  /** How this part ends. Rolled from the thread's open tension when not
-   *  given (see `pickSerialEnding`); a caller (or the lab) may force it. */
-  ending?: SerialEnding
-  /** Consecutive parts the current trouble has been open (see
-   *  `pickSerialEnding`). Omitted = old enough to resolve. */
-  troubleAge?: number
-  /** Words the learner keeps forgetting — worked into the plot on purpose so
-   *  they're met repeatedly, in context, instead of only on a flashcard. */
-  focusWords?: string[]
-  /** Words the learner met in earlier stories and is due to meet again (see
-   *  `dueForRecurrence`). Unlike focus words these are a preference only: the
-   *  spacing is what matters, and a story bent to fit a word in teaches the
-   *  word worse than a story that left it out. */
-  recurWords?: string[]
+    lengthWords: number
+    /** Summaries of the learner's previous stories — steer clear of their themes. */
+    avoidThemes?: string[]
+    /** Character names the learner's recent stories used — pick new ones. */
+    avoidNames?: string[]
+    /** Continue this existing story instead of starting a fresh one. `direction`
+     *  is the reader's optional steer for what should happen next, `bible` the
+     *  world state the previous part left behind, `topic` what the reader asked
+     *  for when the thread began — the genre anchor. */
+    continueFrom?: {
+      title: string
+      story: string
+      direction?: string
+      bible?: StoryBible
+      topic?: string
+    }
+    /** How this part ends. Rolled from the thread's open tension when not
+     *  given (see `pickSerialEnding`); a caller (or the lab) may force it. */
+    ending?: SerialEnding
+    /** Consecutive parts the current trouble has been open (see
+     *  `pickSerialEnding`). Omitted = old enough to resolve. */
+    troubleAge?: number
+    /** Words the learner keeps forgetting — first in line for the story. */
+    focusWords?: string[]
+    /** Words met in earlier stories and due to be met again (see
+     *  `dueForRecurrence`) — next in line after the focus words. */
+    recurWords?: string[]
     /** Called with the story the moment it exists, before the passes that only
      *  improve it. The caller saves it here, so nothing that has been written
      *  can be lost to a top-up, a vocabulary edit or a closed tab. */
-    onDraft?: (prose: StoryProse) => void | Promise<void>
+    onDraft?: (draft: StoryDraft) => void | Promise<void>
     /** Called with the running trace whenever a pass starts or finishes, so the
      *  UI can show what the wait is for and what each pass cost. */
     onProgress?: (steps: StoryStep[]) => void
@@ -1463,167 +1313,110 @@ export async function writeStoryDraft(
   /** Passed when the caller runs both halves and wants one shared trace. */
   trace?: Trace,
 ): Promise<StoryProse> {
-  const { deck, knownWords, learningWords, vocabLevel, topic, lengthWords } = opts
-  const { avoidThemes = [], avoidNames = [], continueFrom, focusWords = [] } = opts
+  const { deck, learningWords, vocabLevel, lengthWords, continueFrom } = opts
+  const { avoidThemes = [], avoidNames = [], focusWords = [], recurWords = [] } = opts
+  const topic = opts.topic?.trim()
   const ending =
     opts.ending ??
     pickSerialEnding(continueFrom?.bible?.openThreads?.length ?? 0, opts.troubleAge)
-  const { recurWords = [] } = opts
-
   const bible = continueFrom?.bible
   const langCode = langCodeFor(deck.language)
   const band = bandFor(vocabLevel)
-
   const { step } = trace ?? createTrace(opts.onProgress)
 
-  // One writing call, and the topic — or the thread being continued — is the
-  // whole brief. This replaced a planning pass and a rolled four-way "angle"
-  // that were injected as binding constraints: they bought variety, but they
-  // also overrode the reader's own topic, derailed continuations with random
-  // unrelated dimensions, and their enforcement showed in the prose. Variety
-  // is now asked for with two non-binding avoid-lists instead, and judged by
-  // reading the output (scripts/story-lab.mts).
-  const promptFor = (words: number) => [
+  // Forgotten words first, then the ones due again, then a random handful of
+  // the rest — a different handful each time, so stories don't keep landing
+  // on the same corner of the bank.
+  const shuffled = [...learningWords].sort(() => Math.random() - 0.5)
+  const wanted = [...new Set([...focusWords, ...recurWords, ...shuffled])].slice(
+    0,
+    MAX_WANTED_WORDS,
+  )
+  const steer = continueFrom?.direction?.trim()
+  const threadTopic = continueFrom?.topic?.trim()
+
+  // One short brief. Everything in it is either a real constraint (language,
+  // length, ending) or a craft ask — what makes a story worth reading. The
+  // bookkeeping a story also needs is done by other passes over the text.
+  const prompt = [
     continueFrom
-      ? `Below is a story in ${deck.language} that a language learner has been reading. Write the NEXT PART of it: continue seamlessly from where it ends, with the same people, the same world and the same feel. Advance the story — something new happens; do not re-tell, recap or pad.`
-      : `Write a short story in ${deck.language} for a language learner.`,
+      ? `Write the next part of a serial story in ${deck.language}, about ${lengthWords} words. Continue from where the previous part ends — same people, same world — and make something new happen.`
+      : `Write a story in ${deck.language}, about ${lengthWords} words.`,
+    !continueFrom && topic ? `The reader asked for: "${topic}". The story must genuinely be this.` : '',
+    threadTopic
+      ? `The reader asked for "${threadTopic}" when this serial began; it stays that kind of story.`
+      : '',
     continueFrom ? `Previous part, titled "${continueFrom.title}":\n${continueFrom.story}` : '',
     bible
       ? [
-          `STORY BIBLE — the world so far. All of it is already true: don't contradict it, and don't re-introduce these characters as though the reader were meeting them for the first time.`,
+          `Already true — don't contradict it, and don't re-introduce these people:`,
           `Cast: ${bible.cast.map((c) => `${c.name} (${c.role}; wants ${c.wants})`).join('; ')}`,
-          bible.places.length > 0 ? `Places: ${bible.places.join('; ')}` : '',
-          bible.facts.length > 0 ? `Established facts: ${bible.facts.join('; ')}` : '',
-          bible.openThreads.length > 0
-            ? `Open questions the reader is carrying — move the ones this part naturally moves, keep the rest alive: ${bible.openThreads.join('; ')}`
-            : '',
+          bible.facts.length > 0 ? `Facts: ${bible.facts.join('; ')}` : '',
+          bible.openThreads.length > 0 ? `Open questions: ${bible.openThreads.join('; ')}` : '',
         ]
           .filter(Boolean)
           .join('\n')
       : '',
-    continueFrom?.direction?.trim()
-      ? `THE READER ASKED FOR THIS NEXT: "${continueFrom.direction.trim()}". It must actually happen in this part — starting early, not teased for the end.`
-      : '',
     continueFrom && (bible?.openThreads?.length ?? 0) === 0
-      ? `The previous part settled its story. This part starts NEW trouble for these people — a fresh want, problem or arrival — and it should start early, not in the final lines. It must be a DIFFERENT KIND of trouble from what this thread has already played: reread the part above, and if its tension came from a secret, an illness or a message, find another door in.`
+      ? `The previous part settled its story, so start new trouble early — a different kind from before.`
       : '',
-    // Serials drift, and some drift is the fun — but six parts in, "a love
-    // story" had become a kidnapping thriller, and the model's cheapest
-    // escalation (news withheld, then delivered by phone) had run twice.
-    // Both lines are soft; the reader's steer still outranks everything.
-    continueFrom?.topic?.trim()
-      ? `THE KIND OF STORY: the reader asked for "${continueFrom.topic.trim()}" when this began, and every part stays that kind of story — the trouble, the turns and the pleasures should all belong to it.`
+    steer
+      ? `The reader asked for this to happen next: "${steer}". It must happen in this part, early — this outranks everything below.`
       : '',
+    levelSpec(deck.language, band),
+    [
+      `What makes it worth reading:`,
+      `- someone who wants something specific, and has to do something hard to get it`,
+      `- at least one turn the reader doesn't see coming`,
+      `- people who say less than they mean; show what they feel through what they do and say, never by naming the feeling`,
+      `- one or two concrete details that belong only to this story`,
+    ].join('\n'),
     continueFrom
-      ? `VARY THE MACHINERY: if this thread has already delivered a twist by phone call, message or photo, deliver this part's turn another way — in person, in the room, in something the reader watches happen.`
-      : '',
-    !continueFrom && topic?.trim()
-      ? `THE READER ASKED FOR: "${topic.trim()}". This is the whole brief — the story must genuinely BE this, not merely mention it. If it names a genre (a love story, a mystery, a ghost story), deliver that genre's real pleasures at this reading level.`
-      : '',
-    !continueFrom && !topic?.trim()
-      ? `Write a story you would actually want to read: specific people who want something, events that follow from each other, and an ending that lands. Any genre, any mood.`
-      : '',
-    // Both lists are requests, not rules — the machinery that used to enforce
-    // variety also overrode the brief, which is a worse failure than a repeat.
+      ? `At most one new named character.`
+      : `Two or three named characters, with names natural for ${deck.language} speakers.`,
+    endingSpec(ending),
+    `Separate paragraphs with a blank line.`,
+    wanted.length > 0 ? `Use some of these words where they fit naturally: ${wanted.join(', ')}` : '',
     !continueFrom && avoidThemes.length > 0
-      ? `The reader's recent stories, for variety: make this one clearly different in subject and in kind. Recent: ${avoidThemes.join('; ')}`
+      ? `Recent stories were about: ${avoidThemes.join('; ')}. Make this one different.`
       : '',
     !continueFrom && avoidNames.length > 0
-      ? `Recent stories used these character names — pick different ones: ${avoidNames.join(', ')}.`
+      ? `Don't reuse these names: ${avoidNames.join(', ')}.`
       : '',
-    continueFrom
-      ? `You may introduce at most ONE new named character, and only if this part genuinely needs them.`
-      : `Use at most ${MAX_CAST} named characters — two or three is better. Give them names natural for native ${deck.language} speakers, and refer to them by name, never as "the man" or "my friend". Return every personal name used in the characterNames array.`,
-    lengthSpec(words),
-    vocabHint(deck.language, band),
-    continueFrom
-      ? `The previous part above may use words harder than this band allows — do NOT match its vocabulary; the band wins, even where that makes this part plainer than the last.`
-      : '',
-    `REGISTER — casual, everyday conversational ${deck.language}, the way people actually talk in daily life (in Indonesian say "aku", not "saya"). No formal, literary or textbook language. Wrap all spoken lines in quotation marks “…”, never dashes.`,
-    PARAGRAPH_RULE,
-    `THE LEARNER'S WORD BANK — a preference, not a limit: within the band, reach for these words first.`,
-    knownWords.length > 0 ? `Known words — use freely: ${knownWords.join(', ')}` : '',
-    learningWords.length > 0
-      ? `Words being learned — weave in as many as fit naturally: ${learningWords.join(', ')}`
-      : '',
-    recurWords.length > 0
-      ? `Words the reader is due to meet again — use whichever fall naturally into the story, and leave out any that don't. Never bend a sentence around one: ${recurWords.join(', ')}`
-      : '',
-    focusWords.length > 0
-      ? `Words the learner keeps forgetting — each should appear a few times, in different sentences, and at least one should matter to the story. Never draw attention to them or define them: ${focusWords.join(', ')}`
-      : '',
-    // This is a serial: most parts end on tension, every third or so pays it
-    // off, and the reader's own steer outranks either.
-    ending === 'resolve'
-      ? `ENDING — this part SETTLES things: answer the questions the story has been carrying, shown as a scene the reader watches, and land the part properly. A resolution changes something or costs something — a truth admitted, a promise made, a price paid; nobody simply turns out to have been nice all along. No moral, no summary, no looking back. Nothing needs saving for later — the next part will bring something new. (If the reader's request above asks for something else, the request wins.)`
-      : `ENDING — this is a serial part: end on genuine unresolved tension. Something has just happened, arrived or been discovered, and the reader must not yet learn how it lands. Stop at the moment the next part becomes necessary — but end at a natural beat, never cut mid-scene for effect. (If the reader's request above asks for something else, the request wins.)`,
-    `THE BIBLE: also return "bible" — the state of the story world after this part${continueFrom ? ', updated from the bible above (carry forward everything still true, add what this part established, drop questions it answered)' : ''}. "logline" is ONE English sentence recapping what happened, shown to the reader as "Previously…" before the next part. "cast" lists every named character with role and want; "places" the locations; "facts" the concrete details a later part must stay consistent with; "openThreads" the questions left open${
-      ending === 'resolve'
-        ? ', if any — after a part that settles its story this is often empty, and empty is correct: never invent a question just to have one'
-        : ' — including the one your ending just raised'
-    }. Keep the bible lean: list in "cast" only the people who still matter to the story (drop walk-ons), and keep "facts" to at most the 8 a later part must not contradict.`,
-    `Return: a short title in ${deck.language}${continueFrom ? ' for this new part' : ''}, the story and the bible. Write the story in ${deck.language} only — it is translated and glossed separately afterwards. Spend everything on the story itself.`,
+    `Return a short title and the story, both in ${deck.language}.`,
   ]
     .filter(Boolean)
     .join('\n')
 
-  // The one creative call, and the only pass whose failure costs the reader the
-  // story — so it is the one that gets a ladder rather than a single try. Each
-  // rung asks for a shorter story on a faster model: length is what makes this
-  // call slow, a shorter draft is one the extension passes below can grow back,
-  // and a story that came out short still beats an error message.
-  let drafted: StoryProse | null = null
-  let shortened = false
-  for (const [i, rung] of writeLadder(lengthWords).entries()) {
-    try {
-      drafted = await step(
-        i === 0 ? 'write' : `write-${i}`,
-        i === 0 ? 'Writing' : `Writing a shorter part (about ${rung.words} words)`,
-        (onMeta) =>
-          callGeminiJson<StoryProse>(promptFor(rung.words), STORY_SCHEMA, {
-            tier: rung.tier,
-            effort: 'minimal',
-            label: i === 0 ? 'write' : `write-short-${i}`,
-            onMeta,
-          }),
-        (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
-      )
-      shortened = i > 0
-      break
-    } catch (e) {
-      // A key that isn't there, a session that expired, a prompt the model
-      // refuses — asking for the same thing more cheaply won't help, and the
-      // reader should hear the real reason without waiting through two more
-      // attempts. Only give ground on the failures that shrinking can fix.
-      if (!worthRetrying(e)) throw e
-      console.warn(`[story] write attempt ${i + 1} failed — asking for less`, e)
-    }
-  }
-  // Every rung threw something shrinkable, and the last one rethrows above, so
-  // this cannot be null — the check is here to say so to the type system.
-  if (!drafted) throw new Error('The story could not be written.')
-  let prose: StoryProse = drafted
+  let draft = await step(
+    'write',
+    'Writing',
+    (onMeta) =>
+      callGeminiJson<StoryDraft>(prompt, STORY_SCHEMA, {
+        tier: 'story',
+        effort: 'medium',
+        label: 'write',
+        onMeta,
+      }),
+    (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
+  )
   // Everything above this line is irreplaceable; everything below it is
   // improvement. Hand it over before going on.
-  await opts.onDraft?.(prose)
+  await opts.onDraft?.(draft)
 
-  // Models can't count their own words, so a draft routinely lands well under
-  // the requested length. Measure it the same way the reader does and, while
-  // it's short, ask for the missing stretch and splice it on.
-  // A draft that came from a shortened rung has further to travel, and it is
-  // the one case where the extra round-trip is clearly worth it.
-  const maxExtensions = MAX_EXTENSIONS + (shortened ? 1 : 0)
-  for (let pass = 0; pass < maxExtensions; pass++) {
-    const have = countWords(prose.story, langCode)
+  // Models can't count their own words, so a draft can land short. Measure it
+  // the way the reader does and, while it's short, ask for the missing stretch.
+  for (let pass = 0; pass < MAX_EXTENSIONS; pass++) {
+    const have = countWords(draft.story, langCode)
     if (have >= lengthWords * LENGTH_TOLERANCE) break
     try {
-      prose = await step(
+      draft = await step(
         `extend-${pass + 1}`,
         `Making it longer (${have} of ${lengthWords} words)`,
         (onMeta) =>
           extendStory({
             deck,
-            story: prose,
+            story: draft,
             missingWords: Math.max(40, lengthWords - have),
             band,
             ending,
@@ -1637,33 +1430,36 @@ export async function writeStoryDraft(
     }
   }
 
-  // Now bring the vocabulary down to the band. This has to happen before the
-  // translation and the glossary, which both read the final text — and after
-  // the extensions, so a spliced-on stretch is checked too.
+  // Two passes over the finished text, together. The vocabulary edit swaps
+  // words and leaves events and names alone, so the bible can be read from the
+  // text before it — and neither waits for the other.
   //
-  // Best-effort, like the glossary: a story that is written and readable should
-  // never be lost to the pass that was only meant to polish it.
-  const written = prose.story
-  try {
-    const simpler = await step(
+  // Both are best-effort: a story that is written and readable is never lost to
+  // a pass that was only meant to polish or record it.
+  const written = draft.story
+  const [story, world] = await Promise.all([
+    step(
       'simplify',
       'Making the words easier',
-      (onMeta) =>
-        simplifyStory({
-          deck,
-          story: written,
-          band,
-          characterNames: prose.characterNames ?? [],
-          onMeta,
-        }),
+      (onMeta) => simplifyStory({ deck, story: written, band, onMeta }),
       (after) => `${swappedWords(written, after, langCode)} words swapped out`,
-    )
-    prose = { ...prose, story: simpler }
-  } catch {
-    console.warn('[story] simplify failed — the story stands as written')
-  }
+    ).catch(() => {
+      console.warn('[story] simplify failed — the story stands as written')
+      return written
+    }),
+    step(
+      'bible',
+      'Noting who and what',
+      (onMeta) => extractBible({ deck, story: written, previous: bible, onMeta }),
+      (w) => `${w.characterNames.length} names, ${w.bible.openThreads.length} open threads`,
+    ).catch(() => {
+      console.warn('[story] bible failed — carrying the previous one forward')
+      const kept = bible ?? EMPTY_BIBLE
+      return { characterNames: kept.cast.map((c) => c.name), bible: kept }
+    }),
+  ])
 
-  return prose
+  return { title: draft.title, story, ...world }
 }
 
 /** The passes that explain a finished story: its English, its summary and its
@@ -1727,7 +1523,11 @@ export async function annotateStory(
  *  wants; the app itself runs the halves separately so the reader can start
  *  reading at the end of the first one. */
 export async function generateStory(
-  opts: Parameters<typeof writeStoryDraft>[0] & { knownGlossary?: GlossaryEntry[] },
+  opts: Parameters<typeof writeStoryDraft>[0] & {
+    /** The reader's known words, for deciding what the glossary marks as new. */
+    knownWords: string[]
+    knownGlossary?: GlossaryEntry[]
+  },
 ): Promise<Story> {
   const trace = createTrace(opts.onProgress)
   const prose = await writeStoryDraft(opts, trace)
@@ -2223,12 +2023,9 @@ export async function gradeTranslation(opts: {
 
 export class ApiError extends Error {
   status: number
-  /** Whether the server already fell back to the fast model for this request. */
-  rescued: boolean
 
-  constructor(status: number, message: string, rescued = false) {
+  constructor(status: number, message: string) {
     super(message)
     this.status = status
-    this.rescued = rescued
   }
 }

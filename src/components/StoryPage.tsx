@@ -124,7 +124,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const [vocabLevel, setVocabLevel] = useState<VocabLevel>(DEFAULT_VOCAB_LEVEL)
   // 'all' — draw on every word in the deck; 'learning' — only words not yet
   // marked known (the ones you haven't learnt yet).
-  const [scope, setScope] = useState<'all' | 'learning'>('all')
   const [loading, setLoading] = useState(false)
   /** Ids being annotated right now, so a story opened twice isn't annotated
    *  twice. A ref, not state: it guards a call, it doesn't paint anything. */
@@ -555,9 +554,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // The pool the writer can draw on — ignored words are not vocabulary.
   const bankSize = cards.filter((c) => !c.ignored).length
 
-  // "Only unlearned" needs at least one card that isn't marked known.
-  // Ignored words are never vocabulary the writer should build on.
-  const scopeEmpty = scope === 'learning' && !cards.some(inRotation)
 
   /** Generate a story — a fresh one, or the next part of the thread being
    *  continued, optionally steered by what the reader asked for. */
@@ -633,18 +629,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       })
       const draft = await writeStoryDraft({
         onDraft: async (first) => {
-          id = await db.stories.add({
-            ...base(),
-            title: first.title,
-            story: first.story,
-            characterNames: first.characterNames,
-            bible: first.bible,
-          })
+          id = await db.stories.add({ ...base(), title: first.title, story: first.story })
         },
         deck: deck!,
-        // In 'learning' mode, don't seed the story with already-known words —
-        // build it only from the ones still being learned.
-        knownWords: scope === 'all' ? cards!.filter((c) => c.known).map((c) => c.word) : [],
         learningWords: cards!.filter(inRotation).map((c) => c.word),
         vocabLevel,
         topic: from ? undefined : topic || undefined,
@@ -1241,25 +1228,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               </div>
             )}
             <div className="field">
-              <label>Build from</label>
-              <div className="seg-control">
-                <button
-                  type="button"
-                  className={scope === 'all' ? 'on' : ''}
-                  onClick={() => setScope('all')}
-                >
-                  All my words
-                </button>
-                <button
-                  type="button"
-                  className={scope === 'learning' ? 'on' : ''}
-                  onClick={() => setScope('learning')}
-                >
-                  Only unlearned
-                </button>
-              </div>
-            </div>
-            <div className="field">
               <label htmlFor="story-length">Length · about {length} words</label>
               <input
                 id="story-length"
@@ -1288,29 +1256,20 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               </div>
               <p className="note">
                 {bandFor(vocabLevel).hint} Written from the ~
-                {bandFor(vocabLevel).commonWords} most common words of {deck.language}, leaning on
-                your own words wherever they fit.
+                {bandFor(vocabLevel).commonWords} most common words of {deck.language}, with some of
+                the words you're learning woven in.
               </p>
             </div>
             <p className="note">
               {continuing
                 ? `Writes the next part of the story, picking up where it left off.`
-                : scope === 'all'
-                  ? `Writes a casual, everyday ${deck.language} story leaning on the words you know and weaving in the ones you're learning.`
-                  : `Writes a casual, everyday ${deck.language} story built only from the words you haven't learnt yet.`}{' '}
-              Tap any word in the result for its meaning. It ends on a cliffhanger with two ways to
-              go next.
+                : `Writes a casual, everyday ${deck.language} story, weaving in words you're learning.`}{' '}
+              Tap any word in the result for its meaning.
             </p>
             {focusWords.length > 0 && (
               <p className="note">
                 Building the plot around {focusWords.length} words you keep forgetting —{' '}
                 <b>{focusWords.join(', ')}</b> — so you meet each of them several times in context.
-              </p>
-            )}
-            {scopeEmpty && (
-              <p className="note error-note">
-                No unlearned words in this deck — every card is marked known. Switch to “All my
-                words”, or unmark some cards.
               </p>
             )}
             {steps.length > 0 && (
@@ -1361,7 +1320,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               <button
                 className="btn accent"
                 onClick={() => run()}
-                disabled={loading || bankSize === 0 || scopeEmpty}
+                disabled={loading || bankSize === 0}
               >
                 {loading
                   ? `${steps.find((s) => s.ms == null)?.label ?? 'Starting'}…`

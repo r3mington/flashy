@@ -1,18 +1,16 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { sessionCookie } from '../api/_lib/auth.js'
 
-/** The handler keeps what it learned for the life of a warm instance, so each
- *  test needs its own copy. */
-async function freshHandler() {
-  // Lives outside api/ deliberately: Vercel compiles everything under api/ as a
-  // deployable function, and a test file has no business being one.
+// Lives outside api/ deliberately: Vercel compiles everything under api/ as a
+// deployable function, and a test file has no business being one.
+async function handler() {
   vi.resetModules()
   return (await import('../api/generate.js')).default
 }
 
 const SECRET = 'test-secret'
 
-function reqRes(body: unknown = { prompt: 'write', schema: { type: 'object' }, tier: 'pro', thinking: true }) {
+function reqRes(body: unknown, cookie = sessionCookie(SECRET)) {
   const sent: { status?: number; body?: any } = {}
   const res = {
     status(code: number) {
@@ -24,67 +22,25 @@ function reqRes(body: unknown = { prompt: 'write', schema: { type: 'object' }, t
       return this
     },
   }
-  const req = { method: 'POST', headers: { cookie: sessionCookie(SECRET) }, body }
+  const req = { method: 'POST', headers: { cookie }, body }
   return { req: req as any, res: res as any, sent }
 }
 
-const ok = (text: string) => ({
-  ok: true,
-  json: async () => ({
-    candidates: [{ content: { parts: [{ text }] } }],
-    usageMetadata: {},
-  }),
+const ask = (extra: Record<string, unknown> = {}) => ({
+  prompt: 'write',
+  schema: { type: 'OBJECT' },
+  ...extra,
 })
 
-const fail = (status: number, message: string) => ({
+const ok = (text = '{"title":"t"}') => ({
+  ok: true,
+  json: async () => ({ candidates: [{ content: { parts: [{ text }] } }], usageMetadata: {} }),
+})
+
+const fail = (status: number, message = 'nope') => ({
   ok: false,
   status,
   json: async () => ({ error: { message } }),
-})
-
-const RETIRED =
-  'This model models/gemini-2.5-pro is no longer available to new users. Please update your code to use models/gemini-3.1-pro-preview for the latest features.'
-
-/** The warm-up race asks for almost nothing; that is how it is told apart from
- *  a real call. Tests count the real ones. */
-const isPing = (init: any) => JSON.parse(init.body).generationConfig?.maxOutputTokens === 24
-
-/** The models list, as the race and the picker ask for it. */
-const listOf = (models: string[] = []) => ({
-  ok: true,
-  json: async () => ({
-    models: models.map((n) => ({
-      name: `models/${n}`,
-      supportedGenerationMethods: ['generateContent'],
-    })),
-  }),
-})
-
-/** Which model a generateContent URL is for, or null for the models list. */
-const modelIn = (url: string) => /models\/(.+):generateContent$/.exec(String(url))?.[1] ?? null
-
-/** Records every model id the handler tried to generate with, in order. */
-function stubFetch(reply: (model: string, calls: string[]) => any, models: string[] = []) {
-  const calls: string[] = []
-  const listed = { ok: true, json: async () => ({ models: models.map((n) => ({ name: `models/${n}`, supportedGenerationMethods: ['generateContent'] })) }) }
-  const fetchMock = vi.fn(async (url: string, init: any) => {
-    const gen = /models\/(.+):generateContent$/.exec(String(url))
-    if (!gen) return listed
-    if (isPing(init)) return ok('{}')
-    calls.push(gen[1])
-    return reply(gen[1], calls)
-  })
-  vi.stubGlobal('fetch', fetchMock)
-  return calls
-}
-
-beforeEach(() => {
-  process.env.SESSION_SECRET = SECRET
-  process.env.GEMINI_API_KEY = 'key'
-})
-
-afterEach(() => {
-  vi.unstubAllGlobals()
 })
 
 /** What fetch throws when an AbortSignal.timeout fires. */
@@ -94,388 +50,135 @@ const timedOut = () => {
   throw e
 }
 
-describe('timeout resilience', () => {
-  it('rescues a too-slow pro call on the fast model rather than dying at the wall', async () => {
-    const calls: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: any) => {
-        const model = modelIn(url)
-        if (!model) return listOf()
-        if (isPing(init)) return ok('{}')
-        calls.push(model)
-        if (/pro/.test(model)) timedOut()
-        return ok('{"ok":true}')
-      }),
-    )
-    const { req, res, sent } = reqRes()
-    await (await freshHandler())(req, res)
-    expect(sent.status).toBe(200)
-    expect(calls).toEqual(['gemini-pro-latest', 'gemini-flash-latest'])
-    expect(sent.body.meta.rescued).toBe(true)
-  })
+/** Records every call: which model, with what thinking config. */
+function stubFetch(reply: (model: string) => any) {
+  const calls: { model: string; thinking: any }[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init: any) => {
+      const model = /models\/(.+):generateContent$/.exec(String(url))![1]
+      calls.push({ model, thinking: JSON.parse(init.body).generationConfig.thinkingConfig })
+      return reply(model)
+    }),
+  )
+  return calls
+}
 
-  it('gives up once the fast model has had its turn too, and says so', async () => {
-    const calls: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: any) => {
-        const model = modelIn(url)
-        if (!model) return listOf()
-        if (isPing(init)) return ok('{}')
-        calls.push(model)
-        return timedOut()
-      }),
-    )
-    const { req, res, sent } = reqRes()
-    await (await freshHandler())(req, res)
-    expect(sent.status).toBe(504)
-    // The flag is what stops the client spending another minute on the same
-    // fallback the server just tried.
-    expect(sent.body.rescued).toBe(true)
-    expect(calls).toEqual(['gemini-pro-latest', 'gemini-flash-latest'])
-  })
-
-  it('leaves a fast-tier request to use the whole budget', async () => {
-    const calls: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: any) => {
-        const model = modelIn(url)
-        if (!model) return listOf()
-        if (isPing(init)) return ok('{}')
-        calls.push(model)
-        return timedOut()
-      }),
-    )
-    const { req, res, sent } = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
-    await (await freshHandler())(req, res)
-    expect(sent.status).toBe(504)
-    expect(calls).toEqual(['gemini-flash-latest'])
-    expect(sent.body.rescued).toBeUndefined()
-  })
+beforeEach(() => {
+  process.env.SESSION_SECRET = SECRET
+  process.env.GEMINI_API_KEY = 'key'
+  delete process.env.STORY_MODEL
+  delete process.env.FAST_MODEL
+  delete process.env.FALLBACK_MODEL
 })
 
-describe('the warm-up race', () => {
-  it('sends the real work to a model that just answered, not to the busy alias', async () => {
-    const real: string[] = []
-    const pinged: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: any) => {
-        const gen = /models\/(.+):generateContent$/.exec(String(url))
-        if (!gen) {
-          return {
-            ok: true,
-            json: async () => ({
-              models: ['gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.5-flash'].map((n) => ({
-                name: `models/${n}`,
-                supportedGenerationMethods: ['generateContent'],
-              })),
-            }),
-          }
-        }
-        if (isPing(init)) {
-          pinged.push(gen[1])
-          // The overloaded one: 503 to the ping, exactly as it did in life.
-          if (gen[1] === 'gemini-flash-latest') return fail(503, 'high demand')
-          return ok('{}')
-        }
-        real.push(gen[1])
-        return ok('{"ok":true}')
-      }),
-    )
-    const handler = await freshHandler()
-    const { req, res, sent } = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
-    await handler(req, res)
-    expect(sent.status).toBe(200)
-    // Every candidate was asked; only the healthy one got the story.
-    expect(pinged).toContain('gemini-flash-latest')
-    expect(real).toEqual(['gemini-3.6-flash'])
-
-    // And the race doesn't run again once a model has answered for real.
-    const again = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
-    await handler(again.req, again.res)
-    expect(real).toEqual(['gemini-3.6-flash', 'gemini-3.6-flash'])
-    expect(pinged.filter((p) => p === 'gemini-3.6-flash')).toHaveLength(1)
-  })
-
-  it('falls through to the normal path when nothing answers the ping', async () => {
-    const real: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: any) => {
-        const gen = /models\/(.+):generateContent$/.exec(String(url))
-        if (!gen) return { ok: true, json: async () => ({ models: [] }) }
-        if (isPing(init)) return fail(503, 'high demand')
-        real.push(gen[1])
-        return ok('{"ok":true}')
-      }),
-    )
-    const { req, res, sent } = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
-    await (await freshHandler())(req, res)
-    // A race nobody wins costs a few tokens and changes nothing: the request
-    // still goes out, to the model it would have used anyway.
-    expect(sent.status).toBe(200)
-    expect(real).toEqual(['gemini-flash-latest'])
-  })
+afterEach(() => {
+  vi.unstubAllGlobals()
 })
 
-describe('a pro fleet under load', () => {
-  it('never sends the story to pro when the ping says the tier is queueing', async () => {
-    const real: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: any) => {
-        const model = modelIn(url)
-        if (!model) return listOf(['gemini-pro-latest', 'gemini-flash-latest'])
-        if (isPing(init)) {
-          // Pro answers, but slowly — the tell that it is queueing real work.
-          if (/pro/.test(model)) await new Promise((r) => setTimeout(r, 2100))
-          return ok('{}')
-        }
-        real.push(model)
-        return ok('{"ok":true}')
-      }),
-    )
-    const { req, res, sent } = reqRes()
-    await (await freshHandler())(req, res)
+describe('model and thinking', () => {
+  it('writes the story on the story model, thinking at medium', async () => {
+    const calls = stubFetch(() => ok())
+    const { req, res, sent } = reqRes(ask({ tier: 'story', effort: 'medium' }))
+    await (await handler())(req, res)
     expect(sent.status).toBe(200)
-    // The minute that would have been spent finding this out is not spent.
-    expect(real).toEqual(['gemini-flash-latest'])
-    expect(sent.body.meta.rescued).toBe(true)
-  }, 10_000)
-})
-
-describe('the caller\'s remembered model', () => {
-  it('starts there instead of on the busy alias', async () => {
-    const calls = stubFetch(() => ok('{"ok":true}'))
-    const { req, res, sent } = reqRes({
-      prompt: 'x',
-      schema: { type: 'object' },
-      tier: 'fast',
-      preferModel: 'gemini-3.6-flash',
-    })
-    await (await freshHandler())(req, res)
-    expect(sent.status).toBe(200)
-    expect(calls).toEqual(['gemini-3.6-flash'])
+    expect(calls).toEqual([{ model: 'gemini-3.8-flash', thinking: { thinkingLevel: 'MEDIUM' } }])
+    expect(sent.body.data).toEqual({ title: 't' })
   })
 
-  it('ignores a hint for the wrong class, or one this instance has benched', async () => {
-    const calls = stubFetch(() => ok('{"ok":true}'))
-    const handler = await freshHandler()
-    // A flash model cannot answer a pro request.
-    const wrong = reqRes({
-      prompt: 'x',
-      schema: { type: 'object' },
-      tier: 'pro',
-      preferModel: 'gemini-3.6-flash',
-    })
-    await handler(wrong.req, wrong.res)
-    expect(calls).toEqual(['gemini-pro-latest'])
+  it('runs a minimal-effort call with no thinking at all', async () => {
+    const calls = stubFetch(() => ok())
+    const { req, res } = reqRes(ask({ effort: 'minimal' }))
+    await (await handler())(req, res)
+    expect(calls[0].thinking).toEqual({ thinkingBudget: 0 })
   })
 
-  it('refuses a hint that isn\'t a model name', async () => {
-    const calls = stubFetch(() => ok('{"ok":true}'))
-    const { req, res } = reqRes({
-      prompt: 'x',
-      schema: { type: 'object' },
-      tier: 'fast',
-      preferModel: '../../etc/passwd:generateContent?key=',
-    })
-    await (await freshHandler())(req, res)
-    expect(calls).toEqual(['gemini-flash-latest'])
-  })
-})
-
-describe('a model that is merely busy', () => {
-  it('moves to another model of the same class, and stays moved', async () => {
-    const calls: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: any) => {
-        const gen = /models\/(.+):generateContent$/.exec(String(url))
-        if (gen && isPing(init)) return ok('{}')
-        if (!gen) {
-          return {
-            ok: true,
-            json: async () => ({
-              models: ['gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.5-flash'].map((n) => ({
-                name: `models/${n}`,
-                supportedGenerationMethods: ['generateContent'],
-              })),
-            }),
-          }
-        }
-        calls.push(gen[1])
-        // What the real API was doing when this was written: the newest flash
-        // sat for a minute and a half, an older one answered at once.
-        if (gen[1] === 'gemini-flash-latest') timedOut()
-        return ok('{"ok":true}')
-      }),
-    )
-    const handler = await freshHandler()
-    const first = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
-    await handler(first.req, first.res)
-    expect(first.sent.status).toBe(200)
-    expect(calls).toEqual(['gemini-flash-latest', 'gemini-3.6-flash'])
-
-    // The bench outlives the request: the next call doesn't pay the wait again.
-    const second = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
-    await handler(second.req, second.res)
-    expect(second.sent.status).toBe(200)
-    expect(calls).toEqual(['gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.6-flash'])
+  it('follows the reader\'s "think harder" setting when the caller names no effort', async () => {
+    const calls = stubFetch(() => ok())
+    const { req, res } = reqRes(ask({ thinking: true }))
+    await (await handler())(req, res)
+    expect(calls[0].thinking).toEqual({ thinkingLevel: 'HIGH' })
   })
 
-  it('benches the model behind an alias too, once it knows what it is', async () => {
-    const calls: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: any) => {
-        const gen = /models\/(.+):generateContent$/.exec(String(url))
-        if (gen && isPing(init)) return ok('{}')
-        if (!gen) {
-          return {
-            ok: true,
-            json: async () => ({
-              models: ['gemini-flash-latest', 'gemini-3.7-flash', 'gemini-3.6-flash'].map((n) => ({
-                name: `models/${n}`,
-                supportedGenerationMethods: ['generateContent'],
-              })),
-            }),
-          }
-        }
-        calls.push(gen[1])
-        // The alias answers once, naming what served it — then goes slow.
-        if (gen[1] === 'gemini-flash-latest') {
-          if (calls.filter((c) => c === 'gemini-flash-latest').length === 1) {
-            return {
-              ok: true,
-              json: async () => ({
-                candidates: [{ content: { parts: [{ text: '{"ok":true}' }] } }],
-                modelVersion: 'gemini-3.7-flash',
-                usageMetadata: {},
-              }),
-            }
-          }
-          timedOut()
-        }
-        return ok('{"ok":true}')
-      }),
-    )
-    const handler = await freshHandler()
-    for (let i = 0; i < 3; i++) {
-      const r = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'fast' })
-      await handler(r.req, r.res)
-      expect(r.sent.status).toBe(200)
+  it('takes its models from the environment when they are set', async () => {
+    process.env.STORY_MODEL = 'gemini-9-pro'
+    process.env.FAST_MODEL = 'gemini-9-flash'
+    const calls = stubFetch(() => ok())
+    const h = await handler()
+    for (const tier of ['story', 'fast']) {
+      const { req, res } = reqRes(ask({ tier }))
+      await h(req, res)
     }
-    // Call 1 learns the alias is 3.7. Call 2 times out on it and benches both,
-    // so 3.7 is never tried on its own merits — it is the same busy model.
-    expect(calls).toEqual([
-      'gemini-flash-latest',
-      'gemini-flash-latest',
-      'gemini-3.6-flash',
-      'gemini-3.6-flash',
-    ])
+    expect(calls.map((c) => c.model)).toEqual(['gemini-9-pro', 'gemini-9-flash'])
   })
 })
 
-describe('a pro model that can only think expensively', () => {
-  it('moves to the fast model rather than letting it think by default', async () => {
-    const tried: { model: string; thinking: object | null }[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: any) => {
-        const model = modelIn(url)
-        if (!model) return listOf()
-        if (isPing(init)) return ok('{}')
-        tried.push({ model, thinking: JSON.parse(init.body).generationConfig.thinkingConfig ?? null })
-        if (/pro/.test(model)) return fail(400, 'Unknown name "thinkingLevel": Cannot find field.')
-        return ok('{"ok":true}')
-      }),
-    )
-    const { req, res, sent } = reqRes({ prompt: 'x', schema: { type: 'object' }, tier: 'pro', effort: 'minimal' })
-    await (await freshHandler())(req, res)
+describe('fallback', () => {
+  it('moves to the fallback model when the first one times out, and says so', async () => {
+    const calls = stubFetch((model) => (model === 'gemini-3.8-flash' ? timedOut() : ok()))
+    const { req, res, sent } = reqRes(ask({ tier: 'story', effort: 'medium' }))
+    await (await handler())(req, res)
+    expect(calls.map((c) => c.model)).toEqual(['gemini-3.8-flash', 'gemini-3.7-flash'])
     expect(sent.status).toBe(200)
-    // Every pro attempt asked for cheap thinking; none fell through to the
-    // model's default, which is the config that eats the whole budget.
-    const onPro = tried.filter((t) => /pro/.test(t.model))
-    expect(onPro.length).toBeGreaterThan(1)
-    expect(onPro.every((t) => t.thinking !== null)).toBe(true)
-    expect(tried.at(-1)!.model).toBe('gemini-flash-latest')
+    expect(sent.body.meta).toMatchObject({ model: 'gemini-3.7-flash', rescued: true })
   })
 
-  it('stops paying the pro toll for the rest of the story once it has timed out', async () => {
-    const calls: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: any) => {
-        const model = modelIn(url)
-        if (!model) return listOf()
-        if (isPing(init)) return ok('{}')
-        calls.push(model)
-        if (/pro/.test(model)) timedOut()
-        return ok('{"ok":true}')
-      }),
-    )
-    const handler = await freshHandler()
-    const first = reqRes()
-    await handler(first.req, first.res)
-    const second = reqRes()
-    await handler(second.req, second.res)
-    expect(second.sent.status).toBe(200)
-    // The second call never touches pro: one timeout is enough to learn from.
-    expect(calls).toEqual(['gemini-pro-latest', 'gemini-flash-latest', 'gemini-flash-latest'])
-  })
-})
-
-describe('model resilience', () => {
-  it('takes the replacement the error names when a model is retired', async () => {
-    const calls = stubFetch((model) =>
-      model === 'gemini-3.1-pro-preview' ? ok('{"ok":true}') : fail(400, RETIRED),
-    )
-    const { req, res, sent } = reqRes()
-    await (await freshHandler())(req, res)
-    expect(sent.status).toBe(200)
-    expect(calls.at(-1)).toBe('gemini-3.1-pro-preview')
-    expect(sent.body.meta.model).toBe('gemini-3.1-pro-preview')
+  it('falls back on a busy, overloaded or retired model', async () => {
+    for (const status of [404, 429, 500, 503]) {
+      const calls = stubFetch((model) => (model === 'gemini-3.8-flash' ? fail(status) : ok()))
+      const { req, res, sent } = reqRes(ask())
+      await (await handler())(req, res)
+      expect(calls).toHaveLength(2)
+      expect(sent.status).toBe(200)
+    }
   })
 
-  it('discovers the newest model of the right class when no replacement is named', async () => {
-    const calls = stubFetch(
-      (model) => (model === 'gemini-3-pro' ? ok('{"ok":true}') : fail(404, 'models/x is not found')),
-      ['gemini-1.5-pro', 'gemini-3-pro', 'gemini-2.5-pro-preview', 'gemini-3-flash', 'gemini-3-pro-image'],
-    )
-    const { req, res, sent } = reqRes()
-    await (await freshHandler())(req, res)
-    expect(sent.status).toBe(200)
-    expect(calls.at(-1)).toBe('gemini-3-pro')
-  })
-
-  it('never retries a model it has already seen refuse', async () => {
-    const calls = stubFetch(() => fail(400, RETIRED), ['gemini-2.5-pro', 'gemini-3.1-pro-preview'])
-    const { req, res, sent } = reqRes()
-    await (await freshHandler())(req, res)
+  it('does not fall back on a request the model rejected', async () => {
+    const calls = stubFetch(() => fail(400, 'Invalid schema'))
+    const { req, res, sent } = reqRes(ask())
+    await (await handler())(req, res)
+    expect(calls).toHaveLength(1)
     expect(sent.status).toBe(400)
-    expect(new Set(calls).size).toBe(calls.length)
+    expect(sent.body.error).toBe('Invalid schema')
   })
 
-  it('still steps down the thinking chain for a config the model rejects', async () => {
-    const seen: object[] = []
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string, init: any) => {
-        if (!modelIn(url)) return listOf()
-        if (isPing(init)) return ok('{}')
-        const cfg = JSON.parse(init.body).generationConfig.thinkingConfig ?? null
-        seen.push(cfg)
-        if (cfg) return fail(400, 'Unknown name "thinkingLevel": Cannot find field.')
-        return ok('{"ok":true}')
-      }),
-    )
-    const { req, res, sent } = reqRes()
-    await (await freshHandler())(req, res)
-    expect(sent.status).toBe(200)
-    expect(seen).toEqual([{ thinkingLevel: 'HIGH' }, null])
+  it('reports the failure once the fallback has failed too', async () => {
+    const calls = stubFetch(() => fail(503, 'overloaded'))
+    const { req, res, sent } = reqRes(ask())
+    await (await handler())(req, res)
+    expect(calls).toHaveLength(2)
+    expect(sent.status).toBe(503)
+  })
+
+  it('tries once when the fallback is the same model', async () => {
+    process.env.FALLBACK_MODEL = 'gemini-3.8-flash'
+    const calls = stubFetch(() => fail(503))
+    const { req, res } = reqRes(ask())
+    await (await handler())(req, res)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('hides an upstream key problem behind a server error', async () => {
+    stubFetch(() => fail(403, 'API key not valid'))
+    const { req, res, sent } = reqRes(ask())
+    await (await handler())(req, res)
+    expect(sent.status).toBe(500)
+  })
+})
+
+describe('the request', () => {
+  it('refuses a caller that is not signed in', async () => {
+    const calls = stubFetch(() => ok())
+    const { req, res, sent } = reqRes(ask(), '')
+    await (await handler())(req, res)
+    expect(sent.status).toBe(401)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('refuses a body without a prompt and a schema', async () => {
+    stubFetch(() => ok())
+    const { req, res, sent } = reqRes({ prompt: 'write' })
+    await (await handler())(req, res)
+    expect(sent.status).toBe(400)
   })
 })

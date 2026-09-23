@@ -133,8 +133,8 @@ if (cmd === 'full' || cmd === 'continue') {
   // no beats — just "a story on this theme at this level".
   const { data } = await post({
     label: 'bare',
-    tier: 'pro',
-    effort: 'minimal',
+    tier: 'story',
+    effort: 'medium',
     prompt: [
       `Write a short story in Indonesian for a language learner at CEFR A2 (beginner).`,
       arg1 ? `Theme: ${arg1}.` : '',
