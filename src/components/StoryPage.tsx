@@ -32,6 +32,7 @@ import {
   type VocabLevel,
 } from '../ai'
 import { definable, missingDefinitions } from '../glossary'
+import { coverage, coverageShares, difficulty, type WordKind } from '../coverage'
 import { leeches } from '../stats'
 import { formatDuration } from '../time'
 import {
@@ -1072,15 +1073,39 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // through resolveDeckKey, so an inflected form in the text ("menjawab")
   // credits the card it belongs to ("jawab") rather than missing it. Ignored
   // words aren't vocabulary and are out of both halves of the fraction.
-  const bankUsed = new Set(
-    [...uniqueKeys]
-      .map((k) => resolveDeckKey(k))
-      .filter((k): k is string => k !== null && bankKeys.has(k)),
-  ).size
+  const deckKeysMet = new Set(
+    [...uniqueKeys].map((k) => resolveDeckKey(k)).filter((k): k is string => k !== null),
+  )
+  const bankUsed = [...deckKeysMet].filter((k) => bankKeys.has(k)).length
+  // Every running word sorted the way the text paints it — known words as
+  // prose, words in study in their colour, words not in the bank as new —
+  // so the bar above the story and the story itself tell the same story.
+  // Names, ignored words and bare numerals are nobody's vocabulary and stay
+  // out of both halves of every share.
+  const cov = coverage(
+    layout.rows.flatMap((row) => row.filter((t) => t.wordIdx >= 0).map((t) => defKey(t.tok))),
+    (key): WordKind => {
+      if (!definable(key) || nameKeys.has(key)) return 'skip'
+      const deckKey = resolveDeckKey(key)
+      if (deckKey === null) return 'new'
+      const card = cardByKey.get(deckKey)
+      if (!card || card.ignored) return 'skip'
+      return inRotation(card) ? 'learning' : 'known'
+    },
+  )
+  const covShares = coverageShares(cov)
+  const covLevel = difficulty(cov)
+  // The words this story was built around because the reader keeps failing
+  // them — how many of them actually made it into the text.
+  const troubleMet = (story?.focusWords ?? []).filter((w) => {
+    const k = resolveDeckKey(defKey(w))
+    return k !== null && deckKeysMet.has(k)
+  })
+  const sentenceCount = layout.rows.filter((row) => row.some((t) => t.wordIdx >= 0)).length
   const stats = {
     words: layout.wordCount,
     unique: uniqueKeys.size,
-    newWords: [...uniqueKeys].filter((k) => isNewWord(k) && !nameKeys.has(k)).length,
+    perSentence: sentenceCount > 0 ? Math.round(layout.wordCount / sentenceCount) : 0,
     readMin: Math.max(1, Math.round(layout.wordCount / 130)),
     bankUsed,
     bankTotal: bankKeys.size,
@@ -1471,12 +1496,66 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               </ul>
             </div>
           )}
+          {/* What the text is made of, as a share of every word you'll read
+              — the thing that decides how hard it is. The bar is painted in
+              the same colours as the words themselves. */}
+          {cov.total > 0 && (
+            <div className="story-coverage">
+              <div
+                className="coverage-bar"
+                role="img"
+                aria-label={`${covShares.known}% known, ${covShares.learning}% learning, ${covShares.new}% new`}
+              >
+                <span className="cov-known" style={{ width: `${(cov.known / cov.total) * 100}%` }} />
+                <span className="cov-learning" style={{ width: `${(cov.learning / cov.total) * 100}%` }} />
+                <span className="cov-new" style={{ width: `${(cov.new / cov.total) * 100}%` }} />
+              </div>
+              <div className="coverage-legend">
+                <span
+                  className="cov-known"
+                  title={`${cov.known} of the ${cov.total} words you'll read are ones you know — ${cov.distinct.known} different words`}
+                >
+                  <b>{covShares.known}%</b> known
+                </span>
+                {cov.learning > 0 && (
+                  <span
+                    className="cov-learning"
+                    title={`${cov.learning} of the ${cov.total} words you'll read are still in study — ${cov.distinct.learning} different words`}
+                  >
+                    <b>{covShares.learning}%</b> learning · {cov.distinct.learning}
+                  </span>
+                )}
+                {cov.new > 0 && (
+                  <span
+                    className="cov-new"
+                    title={`${cov.new} of the ${cov.total} words you'll read aren't in your deck — ${cov.distinct.new} different words, highlighted below`}
+                  >
+                    <b>{covShares.new}%</b> new · {cov.distinct.new}
+                  </span>
+                )}
+                {covLevel && (
+                  <span className="coverage-level" title={covLevel.hint}>
+                    {covLevel.label}
+                    {cov.new > 0 && ` · a new word every ${Math.round(cov.total / cov.new)}`}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
           <div className="story-stats">
             <span title="Words in the story">{stats.words} words</span>
             <span title="Distinct words">{stats.unique} unique</span>
-            {stats.newWords > 0 && (
-              <span className="story-stat-new" title="Words not in your deck, highlighted below">
-                {stats.newWords} new
+            {stats.perSentence > 0 && (
+              <span title="Average sentence length — longer sentences are harder to hold in your head">
+                ~{stats.perSentence} per sentence
+              </span>
+            )}
+            {troubleMet.length > 0 && (
+              <span
+               
+                title={`Words you keep forgetting, woven into this story: ${troubleMet.join(', ')}`}
+              >
+                {troubleMet.length} trouble {troubleMet.length === 1 ? 'word' : 'words'}
               </span>
             )}
             {stats.bankTotal > 0 && (

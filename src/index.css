@@ -2139,9 +2139,37 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   font-size: 13px;
   color: var(--ink-2);
 }
-/* Painted in whatever the reader chose for new words, so the count and the
-   words it counts are visibly the same thing. */
-.story-stats .story-stat-new { color: var(--c-new, var(--hue-amber)); font-weight: 600; }
+/* What the story is made of: known / learning / new as a share of the running
+   text. A hairline bar, not a filled box; each part painted in whatever the
+   reader chose for those words, so the count and the words it counts are
+   visibly the same thing. Known words read as prose, so their part is the
+   quiet one. */
+.story-coverage { margin: 4px 0 8px; }
+.coverage-bar {
+  display: flex;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--line);
+}
+.coverage-bar span { display: block; height: 100%; }
+.coverage-bar .cov-known { background: color-mix(in srgb, var(--c-known, var(--ink)) 35%, transparent); }
+.coverage-bar .cov-learning { background: var(--c-study, var(--hue-green)); }
+.coverage-bar .cov-new { background: var(--c-new, var(--hue-amber)); }
+.coverage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.coverage-legend b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.coverage-legend .cov-known b { color: var(--c-known, var(--ink)); }
+.coverage-legend .cov-learning { color: var(--c-study, var(--hue-green)); }
+.coverage-legend .cov-new { color: var(--c-new, var(--hue-amber)); }
+.coverage-legend .coverage-level { margin-left: auto; color: var(--ink); font-style: italic; }
 
 /* ---- Word definition sheet ---- */
 .word-sheet-backdrop {
