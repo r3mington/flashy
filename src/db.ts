@@ -93,7 +93,9 @@ export interface Review {
 export interface StoryBible {
   /** One-sentence English recap, shown as "Previously…" on the next part. */
   logline: string
-  cast: { name: string; role: string; wants: string }[]
+  /** `secret` is what that person knows or has done that the others don't —
+   *  the writer's, never shown to the reader. Missing on older bibles. */
+  cast: { name: string; role: string; wants: string; secret?: string }[]
   places: string[]
   /** Established details the next part must not contradict. */
   facts: string[]

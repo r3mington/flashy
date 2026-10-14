@@ -416,6 +416,7 @@ const BIBLE_SCHEMA = {
               name: { type: 'STRING' },
               role: { type: 'STRING' },
               wants: { type: 'STRING' },
+              secret: { type: 'STRING' },
             },
             required: ['name', 'role', 'wants'],
           },
@@ -1138,7 +1139,7 @@ async function extendStory(opts: {
   const prompt = [
     `Below is a story in ${deck.language}. It stopped too early and needs about ${missingWords} more words.`,
     `Story so far, titled "${story.title}":\n${story.story}`,
-    `Write ONLY the continuation, following on from the last line in the same voice, with the same people (no new named characters). Move the story forward with real events — a new turn, a complication — not description or small talk. Do not repeat or recap anything above.`,
+    `Write ONLY the continuation, following on from the last line in the same voice, with the same people (no new named characters). Move the story forward with real events — a new turn, a complication that follows from what came before, with everyone acting on what they know — not description or small talk. Do not repeat or recap anything above.`,
     levelSpec(deck.language, band),
     endingSpec(ending),
     `Separate paragraphs with a blank line. Return the continuation alone, in ${deck.language}, in "story".`,
@@ -1175,7 +1176,7 @@ async function extractBible(opts: {
       ? `The record before this part — carry forward what is still true, add what this part established, drop the questions it answered:\n${JSON.stringify(previous)}`
       : '',
     `Return "characterNames": every personal name used in the story, spelled exactly as in the text.`,
-    `And "bible": "logline" — ONE English sentence recapping what happened in this ${previous ? 'part' : 'story'}, shown to the reader as "Previously…" before the next part; "cast" — the named characters who still matter, each with their role and what they want; "places" — the locations; "facts" — at most 8 concrete details a later part must not contradict; "openThreads" — the questions the story leaves open. If it settles everything, openThreads is empty — never invent one.`,
+    `And "bible": "logline" — ONE English sentence recapping what happened in this ${previous ? 'part' : 'story'}, shown to the reader as "Previously…" before the next part; "cast" — the named characters who still matter, each with their role, what they want, and "secret": what they know or have done that the others don't, as far as the story shows (empty if nothing); "places" — the locations; "facts" — at most 8 concrete details a later part must not contradict; "openThreads" — the questions the story leaves open. If it settles everything, openThreads is empty — never invent one.`,
     `Story:\n${story}`,
   ]
     .filter(Boolean)
@@ -1350,7 +1351,9 @@ export async function writeStoryDraft(
     bible
       ? [
           `Already true — don't contradict it, and don't re-introduce these people:`,
-          `Cast: ${bible.cast.map((c) => `${c.name} (${c.role}; wants ${c.wants})`).join('; ')}`,
+          `Cast: ${bible.cast
+            .map((c) => `${c.name} (${c.role}; wants ${c.wants}${c.secret ? `; secretly: ${c.secret}` : ''})`)
+            .join('; ')}`,
           bible.facts.length > 0 ? `Facts: ${bible.facts.join('; ')}` : '',
           bible.openThreads.length > 0 ? `Open questions: ${bible.openThreads.join('; ')}` : '',
         ]
@@ -1364,13 +1367,23 @@ export async function writeStoryDraft(
       ? `The reader asked for this to happen next: "${steer}". It must happen in this part, early — this outranks everything below.`
       : '',
     levelSpec(deck.language, band),
+    // The believability lines are here because a reader stopped believing a
+    // serial: a killer, caught, accused her escaped victim with her garden full
+    // of bodies — a turn bought by making a clever character act against
+    // everything she knew. A twist is only worth something if it costs no one
+    // their sense.
     [
       `What makes it worth reading:`,
       `- someone who wants something specific, and has to do something hard to get it`,
-      `- at least one turn the reader doesn't see coming`,
+      `- people who act on what they want and what they know. Nobody does something foolish so the plot can happen: a dangerous person is clever, a cornered one acts in their own interest. If someone does something strange, they have a reason the reader can see, or will`,
+      `- at least one turn the reader doesn't see coming that still follows from what is already in the story — surprising at first, obvious looking back. Never a coincidence, never someone suddenly acting out of character`,
       `- people who say less than they mean; show what they feel through what they do and say, never by naming the feeling`,
-      `- one or two concrete details that belong only to this story`,
+      `- one or two concrete details that belong only to this story, and let one come back later meaning more than it did`,
+      `- plain words can still be beautiful: an exact image, and a short sentence landing after longer ones`,
     ].join('\n'),
+    continueFrom
+      ? `Before writing, ask of each person: knowing what they know now, what would they really do next? Start there, not from the twist you want.`
+      : '',
     continueFrom
       ? `At most one new named character.`
       : `Two or three named characters, with names natural for ${deck.language} speakers.`,
