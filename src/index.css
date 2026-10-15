@@ -1554,6 +1554,12 @@ button { font-family: inherit; }
   color: var(--ink-2);
 }
 .story-summary b { color: var(--ink); margin-right: 4px; }
+/* A Learn series' plan: a quiet folded list under the summary. */
+.story-plan { margin: -6px 0 16px; font-size: 13px; color: var(--ink-2); }
+.story-plan summary { cursor: pointer; color: var(--ink-2); }
+.story-plan ol { margin: 6px 0 0; padding-left: 22px; line-height: 1.6; }
+.story-plan li.is-done { opacity: 0.6; }
+.story-plan li.is-current { color: var(--ink); font-weight: 600; }
 
 /* Shown while the annotation passes finish behind a story that is already
    being read. Quieter than the summary it sits under: it is a note about the

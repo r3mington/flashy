@@ -12,6 +12,7 @@
  *    npx tsx scripts/story-lab.mts full "a love story"   # the whole pipeline
  *    npx tsx scripts/story-lab.mts bare "a love story"   # one bare prompt, no machinery
  *    npx tsx scripts/story-lab.mts continue <file.json> "steer"  # next part, full pipeline
+ *    npx tsx scripts/story-lab.mts learn "the history of Indonesia"  # a Learn series, part 1
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 
@@ -92,8 +93,11 @@ function save(name: string, obj: unknown) {
   console.error(`  → ${path}`)
 }
 
-if (cmd === 'full' || cmd === 'continue') {
+if (cmd === 'full' || cmd === 'learn' || cmd === 'continue') {
   const prev = cmd === 'continue' ? JSON.parse(readFileSync(arg1!, 'utf-8')) : undefined
+  // A continuation carries its thread's kind, plan and place in the plan.
+  const kind = prev ? (prev.kind ?? 'story') : cmd === 'learn' ? 'learn' : 'story'
+  const part = prev ? (prev.part ?? 1) + 1 : 1
   // AVOID/RECUR simulate what StoryPage passes from the reader's history.
   const avoidThemes = (process.env.AVOID ?? '').split('|').filter(Boolean)
   const avoidNames = (process.env.NAMES ?? '').split(',').filter(Boolean)
@@ -118,6 +122,9 @@ if (cmd === 'full' || cmd === 'continue') {
     // What the app passes from the thread's earlier parts: entries the reader
     // already has, reused instead of bought again.
     knownGlossary: prev?.glossary ?? undefined,
+    kind,
+    outline: prev?.outline,
+    partIndex: part - 1,
     ending: (process.env.ENDING as 'hook' | 'resolve' | undefined) || undefined,
     troubleAge: prev
       ? (prev.openStreak ?? ((prev.bible?.openThreads?.length ?? 0) > 0 ? 1 : 0))
@@ -126,7 +133,15 @@ if (cmd === 'full' || cmd === 'continue') {
   })
   const prevStreak = prev ? (prev.openStreak ?? ((prev.bible?.openThreads?.length ?? 0) > 0 ? 1 : 0)) : 0
   const openStreak = (story.bible?.openThreads?.length ?? 0) > 0 ? prevStreak + 1 : 0
-  save(cmd, { topic: prev ? ((process.env.TOPIC || prev.topic) ?? null) : (arg1 ?? null), openStreak, ...story })
+  save(cmd, {
+    topic: prev ? ((process.env.TOPIC || prev.topic) ?? null) : (arg1 ?? null),
+    openStreak,
+    kind,
+    part,
+    ...story,
+    outline: story.outline ?? prev?.outline,
+  })
+  if (story.outline) console.log(`\n----- plan -----\n${story.outline.map((p, i) => `${i + 1}. ${p}`).join('\n')}`)
   console.log(`\n===== ${story.title} =====\n\n${story.story}\n\n----- summary -----\n${story.summary}\n\n----- translation -----\n${story.translation}`)
 } else if (cmd === 'bare') {
   // The stripped pipeline the user proposes: one prompt, no plan, no angle,
@@ -153,6 +168,6 @@ if (cmd === 'full' || cmd === 'continue') {
   save('bare', data)
   console.log(`\n===== ${data.title} =====\n\n${data.story}`)
 } else {
-  console.error('usage: story-lab.mts full|bare "topic"  OR  continue <file.json> "steer"')
+  console.error('usage: story-lab.mts full|learn|bare "topic"  OR  continue <file.json> "steer"')
   process.exit(1)
 }

@@ -1,4 +1,4 @@
-import { db, type Deck, type StoryBible } from './db'
+import { db, type Deck, type StoryBible, type StoryKind } from './db'
 import { langCodeFor } from './speech'
 import { countWords, tokenizeWords } from './text'
 
@@ -361,6 +361,8 @@ export interface Story {
    *  Also fed back as `avoidThemes` on later stories — a title says nothing
    *  about what a story actually did, which is the part that repeats. */
   summary?: string
+  /** Learn threads: the series plan, returned with the first part only. */
+  outline?: string[]
 }
 
 const GLOSSARY_ARRAY = {
@@ -424,6 +426,7 @@ const BIBLE_SCHEMA = {
         places: { type: 'ARRAY', items: { type: 'STRING' } },
         facts: { type: 'ARRAY', items: { type: 'STRING' } },
         openThreads: { type: 'ARRAY', items: { type: 'STRING' } },
+        terms: { type: 'ARRAY', items: { type: 'STRING' } },
       },
       required: ['logline', 'cast', 'places', 'facts', 'openThreads'],
     },
@@ -616,16 +619,18 @@ const SUMMARY_SCHEMA = {
 async function translateStory(
   deck: Deck,
   story: string,
+  kind: StoryKind,
   onMeta?: (m: CallMeta) => void,
 ): Promise<{ translation: string; summary: string }> {
   const langCode = langCodeFor(deck.language)
+  const noun = kind === 'learn' ? 'text' : 'story'
   const chunks = chunkForRewrite(story, langCode, TRANSLATE_CHUNK_WORDS)
 
   const promptFor = (chunk: string) =>
     [
       chunks.length > 1
-        ? `Translate this EXTRACT from a ${deck.language} story into natural English. Other extracts are handled separately — translate only the text below, all of it, and nothing else. Return it as one string in "translation".`
-        : `Translate this ${deck.language} story into natural English. Return the whole translation as one string in "translation".`,
+        ? `Translate this EXTRACT from a ${deck.language} ${noun} into natural English. Other extracts are handled separately — translate only the text below, all of it, and nothing else. Return it as one string in "translation".`
+        : `Translate this ${deck.language} ${noun} into natural English. Return the whole translation as one string in "translation".`,
       `Keep the paragraph breaks of the original, keep dialogue inside quotation marks “…”, and translate every line — do not summarise, abridge or add anything.`,
       `Write English a person would actually write: idiomatic, not a word-for-word calque of the ${deck.language}.`,
       `Text:\n${chunk}`,
@@ -636,8 +641,10 @@ async function translateStory(
   // story after it is written, and a summary of the draft can end up
   // describing a scene that was cut.
   const summaryPrompt = [
-    `Below is a finished story in ${deck.language}, for a language learner.`,
-    `Return "summary": the plot of this story in English, at most ${SUMMARY_MAX_WORDS} words. It is shown to the learner BEFORE they read, so they can spend their attention on the language rather than on working out what is happening. Plain and concrete — who, where, what happens — naming the characters. No suspense-building, no questions, no commentary on the story.`,
+    `Below is a finished ${noun} in ${deck.language}, for a language learner.`,
+    kind === 'learn'
+      ? `Return "summary": what this text explains, in English, at most ${SUMMARY_MAX_WORDS} words. It is shown to the learner BEFORE they read, so they can spend their attention on the language rather than on working out what is being said. Plain and concrete — the main idea, and the people, places and dates it goes through. No questions, no commentary on the text.`
+      : `Return "summary": the plot of this story in English, at most ${SUMMARY_MAX_WORDS} words. It is shown to the learner BEFORE they read, so they can spend their attention on the language rather than on working out what is happening. Plain and concrete — who, where, what happens — naming the characters. No suspense-building, no questions, no commentary on the story.`,
     `Story:\n${story}`,
   ].join('\n')
 
@@ -993,9 +1000,10 @@ async function simplifyStory(opts: {
   deck: Deck
   story: string
   band: VocabBand
+  kind: StoryKind
   onMeta?: (m: CallMeta) => void
 }): Promise<string> {
-  const { deck, story, band, onMeta } = opts
+  const { deck, story, band, kind, onMeta } = opts
   const langCode = langCodeFor(deck.language)
   const chunks = chunkForRewrite(story, langCode, SIMPLIFY_CHUNK_WORDS)
   const metas: CallMeta[] = []
@@ -1012,7 +1020,7 @@ async function simplifyStory(opts: {
       // this call writes nothing. Same band, stated as a test to apply.
       `Below is a story in ${deck.language} written for a language learner at ${band.cefr}. This reader knows roughly the ${band.commonWords} most common words of ${deck.language} — ordinary spoken vocabulary, the words a graded reader at that level uses.`,
       `Return "words": every word in the story that falls OUTSIDE that — literary, formal, technical, bookish, written-register, or merely uncommon. For each one ask: would someone a few months into learning ${deck.language} know this word? If not, list it.`,
-      `Use the exact form the word takes in the text. Do not list names of people or places. Do not list words that are inside the vocabulary — a list padded with ordinary words costs the reader a rewrite they did not need.`,
+      `Use the exact form the word takes in the text. Do not list names of people or places.${kind === 'learn' ? ' Do not list a key term the text stops to explain — the reader is meant to learn it.' : ''} Do not list words that are inside the vocabulary — a list padded with ordinary words costs the reader a rewrite they did not need.`,
       langCode === 'id'
         ? `Also list any of these, which are always too formal here whatever their frequency: beliau, tersebut, sehingga, namun, oleh karena itu, adapun, dengan demikian, seraya, sembari — and any word where a commoner synonym exists (mendadak→tiba-tiba, sunyi→sepi, menatap→melihat, gerbang→pintu, ransel→tas).`
         : '',
@@ -1057,6 +1065,11 @@ async function simplifyStory(opts: {
       `• Keep the length. Replacing one hard word with three easy ones is right; dropping the sentence is not.`,
       `• Keep every detail. Where a hard word names something specific, say the same specific thing in a few easy words rather than swapping in a plainer detail.`,
       `• Where a sentence is already simple enough, leave it alone word for word.`,
+      // An easy word can be a wrong one: "annexed" swapped for "took" is a
+      // different claim. A story survives that; an explanation doesn't.
+      kind === 'learn'
+        ? `• This text explains real facts. Every claim, number and date must mean exactly the same after the edit — where a plain word would change what is claimed, use a few plain words that say exactly it. Keep any key term the text stops to explain.`
+        : '',
       // The audit already found them, and a rewrite told what to fix is both
       // more accurate and less tempted to rewrite what is fine.
       offendersIn(chunk).length > 0
@@ -1113,9 +1126,55 @@ async function simplifyStory(opts: {
  *  constrains the LANGUAGE and says outright that the story is not to be
  *  simplified with it: left to itself, a model asked for a story "for a
  *  language learner" writes a children's story. */
-function levelSpec(language: string, band: VocabBand): string {
+function levelSpec(language: string, band: VocabBand, kind: StoryKind = 'story'): string {
   const casual = langCodeFor(language) === 'id' ? ` ("aku", not "saya")` : ''
-  return `It is for an adult reading ${language} at ${band.cefr}. Keep the LANGUAGE at that level: roughly the ${band.commonWords} most common words, short sentences, casual spoken ${language}${casual}, dialogue in “…”. Don't simplify the STORY — write something an adult would want to finish.`
+  const language_ = `It is for an adult reading ${language} at ${band.cefr}. Keep the LANGUAGE at that level: roughly the ${band.commonWords} most common words, short sentences, casual spoken ${language}${casual}`
+  return kind === 'learn'
+    ? `${language_}, as a friend who knows the subject would explain it over dinner. Don't simplify the THINKING — plain words, adult ideas.`
+    : `${language_}, dialogue in “…”. Don't simplify the STORY — write something an adult would want to finish.`
+}
+
+/** How a Learn part ends: on the question the next part of the plan answers,
+ *  or — past the last one — by showing how the parts fit. The explainer's
+ *  version of the serial cadence: a reason to open the next part that is a
+ *  real question, not a cliffhanger. */
+function learnEndingSpec(next: string | undefined): string {
+  return next
+    ? `End on the question the next part answers (${next}) — a question the reader now wants answered, not an announcement of what comes next.`
+    : `End by showing, in a sentence or two, how this part fits with what came before. No moral, no list.`
+}
+
+const OUTLINE_SCHEMA = {
+  type: 'OBJECT',
+  properties: { parts: { type: 'ARRAY', items: { type: 'STRING' } } },
+  required: ['parts'],
+}
+
+/** Plan a Learn series before its first part is written. Stories were made
+ *  better by taking their plan away — a writer improvising a plot does better
+ *  than one filling in beats — but an explanation is the opposite case: part
+ *  four can only build on part two if someone decided what part two was. */
+async function planCourse(opts: {
+  deck: Deck
+  topic: string
+  lengthWords: number
+  onMeta?: (m: CallMeta) => void
+}): Promise<string[]> {
+  const { deck, topic, lengthWords, onMeta } = opts
+  const prompt = [
+    `An adult learning ${deck.language} wants to understand this topic by reading about it in ${deck.language}: "${topic}". Plan a short series of readings, about ${lengthWords} words each.`,
+    `Return "parts": between 4 and 8 items, in English, one per reading. Each is a short title of two to five words, a colon, then one sentence: the one idea that reading explains, and the real person, place, moment or object it is told through.`,
+    `Start where someone who knows nothing about it would start, and order the parts so each needs only the ones before it. Choose the parts that make the topic make sense, not every fact about it: causes and consequences over lists of names and dates.`,
+    `Only well-established history and ideas. Where experts genuinely disagree, a part can be about that disagreement.`,
+  ].join('\n')
+  const out = await callGeminiJson<{ parts: string[] }>(prompt, OUTLINE_SCHEMA, {
+    tier: 'story',
+    effort: 'medium',
+    label: 'plan',
+    budgetMs: CHUNK_BUDGET_MS,
+    onMeta,
+  })
+  return (out.parts ?? []).map((p) => p.trim()).filter(Boolean).slice(0, 8)
 }
 
 function endingSpec(ending: SerialEnding): string {
@@ -1131,31 +1190,80 @@ async function extendStory(opts: {
   story: StoryDraft
   missingWords: number
   band: VocabBand
-  /** The continuation becomes the new ending, so it has to land the same way. */
-  ending: SerialEnding
+  kind: StoryKind
+  /** A story's continuation becomes its new ending, so it has to land the
+   *  same way: the ending line of the brief the draft was written to. Unused
+   *  for Learn, whose top-up goes in before the ending it already has. */
+  ending: string
   onMeta?: (m: CallMeta) => void
 }): Promise<StoryDraft> {
-  const { deck, story, missingWords, band, ending, onMeta } = opts
+  const { deck, story, missingWords, band, kind, ending, onMeta } = opts
+  const noun = kind === 'learn' ? 'text' : 'story'
   const prompt = [
-    `Below is a story in ${deck.language}. It stopped too early and needs about ${missingWords} more words.`,
-    `Story so far, titled "${story.title}":\n${story.story}`,
-    `Write ONLY the continuation, following on from the last line in the same voice, with the same people (no new named characters). Move the story forward with real events — a new turn, a complication that follows from what came before, with everyone acting on what they know — not description or small talk. Do not repeat or recap anything above.`,
-    levelSpec(deck.language, band),
-    endingSpec(ending),
-    `Separate paragraphs with a blank line. Return the continuation alone, in ${deck.language}, in "story".`,
-  ].join('\n')
+    `Below is a ${noun} in ${deck.language}. It stopped too early and needs about ${missingWords} more words.`,
+    `${kind === 'learn' ? 'Text' : 'Story'} so far, titled "${story.title}":\n${story.story}`,
+    kind === 'learn'
+      ? `Its last paragraph hands over to the next part, so write a passage to go just BEFORE that last paragraph. Go further into this part's idea — a concrete example, a cause, a consequence — and leave what the last paragraph asks for the next part to answer. Only well-established facts; leave a detail out rather than guess it. Do not repeat or recap anything above.`
+      : `Write ONLY the continuation, following on from the last line in the same voice, with the same people (no new named characters). Move the story forward with real events — a new turn, a complication that follows from what came before, with everyone acting on what they know — not description or small talk. Do not repeat or recap anything above.`,
+    levelSpec(deck.language, band, kind),
+    kind === 'learn' ? '' : ending,
+    `Separate paragraphs with a blank line. Return the ${kind === 'learn' ? 'passage' : 'continuation'} alone, in ${deck.language}, in "story".`,
+  ]
+    .filter(Boolean)
+    .join('\n')
 
   const more = await callGeminiJson<{ story: string }>(prompt, EXTEND_SCHEMA, {
+    // A story's top-up only has to read well; an explainer's has to be true,
+    // and the one that ran without thinking credited Borobudur's dynasty with
+    // a rival's temple. Learn pays for the writer's model and a moment's thought.
+    ...(kind === 'learn' ? { tier: 'story' as const, effort: 'medium' as const } : {}),
     label: 'extend',
     // A top-up is optional: the reader is waiting on a story they could already
     // read, and a length that falls short costs them less than the wait.
     budgetMs: 150_000,
     onMeta,
   })
-  return { ...story, story: `${story.story.trimEnd()}\n\n${(more.story ?? '').trim()}` }
+  const added = (more.story ?? '').trim()
+  // A story's top-up continues it and becomes its ending. A Learn part
+  // already ends on the question its next part answers — the first top-up
+  // that ran after it answered that question, and part one ate part two — so
+  // the new passage goes in before the last paragraph instead.
+  if (kind === 'learn') return { ...story, story: insertBeforeLastParagraph(story.story, added) }
+  return { ...story, story: `${story.story.trimEnd()}\n\n${added}` }
+}
+
+/** Put `added` in as its own paragraph(s) just before the text's last one —
+ *  or after it, when there is only the one. */
+export function insertBeforeLastParagraph(text: string, added: string): string {
+  const paras = text.trim().split(/\n\s*\n/)
+  const extra = added.trim()
+  if (!extra) return text.trim()
+  if (paras.length < 2) return `${paras.join('')}\n\n${extra}`
+  const last = paras.pop()!
+  return [...paras, extra, last].join('\n\n')
 }
 
 const EMPTY_BIBLE: StoryBible = { logline: '', cast: [], places: [], facts: [], openThreads: [] }
+
+/** The Learn version of the world record: not who wants what, but what the
+ *  series has explained — so the next part builds on it instead of starting
+ *  again. Same shape as a story's, so the reader's "Previously…" and "Who's
+ *  who" work unchanged: the cast is the real people met so far. */
+function learnBiblePrompt(deck: Deck, text: string, previous?: StoryBible): string {
+  return [
+    previous
+      ? `Below is the latest part of a series in ${deck.language} that explains a real topic. Update the record of what the series has covered, so the next part builds on it without repeating it.`
+      : `Below is the first part of a series in ${deck.language} that explains a real topic. Record what it covered, so the next part can build on it without repeating it.`,
+    previous
+      ? `The record before this part — carry forward what still matters, add what this part explained:\n${JSON.stringify(previous)}`
+      : '',
+    `Return "characterNames": every personal name used in the text, spelled exactly as in the text.`,
+    `And "bible": "logline" — ONE English sentence saying what this part explained, shown to the reader as "Previously…" before the next part; "cast" — the real people named who matter to the topic, each with their role and what they were after ("secret" always empty); "places" — the places; "facts" — at most 8 key points the series has established, the ones a later part builds on; "terms" — the key terms the series has explained, each as "${deck.language} term (English)"; "openThreads" — the questions the text raised and left for later, or empty.`,
+    `Text:\n${text}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
 
 /** Read the story world off the finished text: who is in it, and what a later
  *  part must stay consistent with. Split out of the writing call so the writer
@@ -1165,10 +1273,11 @@ async function extractBible(opts: {
   story: string
   /** The world before this part, when it continues a serial. */
   previous?: StoryBible
+  kind: StoryKind
   onMeta?: (m: CallMeta) => void
 }): Promise<{ characterNames: string[]; bible: StoryBible }> {
-  const { deck, story, previous, onMeta } = opts
-  const prompt = [
+  const { deck, story, previous, kind, onMeta } = opts
+  const prompt = kind === 'learn' ? learnBiblePrompt(deck, story, previous) : [
     previous
       ? `Below is the latest part of a serial story in ${deck.language}. Update the record of its world so the next part stays consistent.`
       : `Below is a story in ${deck.language}. Record the state of its world so a next part could stay consistent with it.`,
@@ -1298,6 +1407,14 @@ export async function writeStoryDraft(
     /** Consecutive parts the current trouble has been open (see
      *  `pickSerialEnding`). Omitted = old enough to resolve. */
     troubleAge?: number
+    /** Story (the default) or a real topic explained — see `StoryKind`. */
+    kind?: StoryKind
+    /** Learn threads: the series plan, from the root. Planned here when a new
+     *  Learn thread starts without one. */
+    outline?: string[]
+    /** Learn threads: which part of the plan this is, from 0 — the number of
+     *  parts the thread already has. */
+    partIndex?: number
     /** Words the learner keeps forgetting — first in line for the story. */
     focusWords?: string[]
     /** Words met in earlier stories and due to be met again (see
@@ -1316,6 +1433,7 @@ export async function writeStoryDraft(
 ): Promise<StoryProse> {
   const { deck, learningWords, vocabLevel, lengthWords, continueFrom } = opts
   const { avoidThemes = [], avoidNames = [], focusWords = [], recurWords = [] } = opts
+  const { kind = 'story', partIndex = 0 } = opts
   const topic = opts.topic?.trim()
   const ending =
     opts.ending ??
@@ -1335,6 +1453,39 @@ export async function writeStoryDraft(
   )
   const steer = continueFrom?.direction?.trim()
   const threadTopic = continueFrom?.topic?.trim()
+
+  // A new Learn thread is planned before it is written. Best-effort: without
+  // a plan the part is still written, it just can't promise what comes next.
+  const planned =
+    kind === 'learn' && !continueFrom && !opts.outline && topic
+      ? await step(
+          'plan',
+          'Planning the series',
+          (onMeta) => planCourse({ deck, topic, lengthWords, onMeta }),
+          (parts) => `${parts.length} parts`,
+        ).catch((): string[] => {
+          console.warn('[story] plan failed — writing the first part without one')
+          return []
+        })
+      : undefined
+  const outline = opts.outline ?? (planned && planned.length > 0 ? planned : undefined)
+
+  if (kind === 'learn') {
+    const brief = learnBrief({
+      language: deck.language,
+      band,
+      lengthWords,
+      topic: threadTopic || topic || '',
+      outline,
+      partIndex,
+      previous: continueFrom,
+      bible,
+      steer,
+      wanted,
+    })
+    const prose = await writeAndPolish(brief.prompt, brief.ending)
+    return planned && planned.length > 0 ? { ...prose, outline: planned } : prose
+  }
 
   // One short brief. Everything in it is either a real constraint (language,
   // length, ending) or a craft ask — what makes a story worth reading. The
@@ -1401,78 +1552,150 @@ export async function writeStoryDraft(
     .filter(Boolean)
     .join('\n')
 
-  let draft = await step(
-    'write',
-    'Writing',
-    (onMeta) =>
-      callGeminiJson<StoryDraft>(prompt, STORY_SCHEMA, {
-        tier: 'story',
-        effort: 'medium',
-        label: 'write',
-        onMeta,
-      }),
-    (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
-  )
-  // Everything above this line is irreplaceable; everything below it is
-  // improvement. Hand it over before going on.
-  await opts.onDraft?.(draft)
+  return writeAndPolish(prompt, endingSpec(ending))
 
-  // Models can't count their own words, so a draft can land short. Measure it
-  // the way the reader does and, while it's short, ask for the missing stretch.
-  for (let pass = 0; pass < MAX_EXTENSIONS; pass++) {
-    const have = countWords(draft.story, langCode)
-    if (have >= lengthWords * LENGTH_TOLERANCE) break
-    try {
-      draft = await step(
-        `extend-${pass + 1}`,
-        `Making it longer (${have} of ${lengthWords} words)`,
-        (onMeta) =>
-          extendStory({
-            deck,
-            story: draft,
-            missingWords: Math.max(40, lengthWords - have),
-            band,
-            ending,
-            onMeta,
-          }),
-        (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
-      )
-    } catch {
-      // A failed top-up shouldn't cost the reader the story they already have.
-      break
+  /** Write to a brief, then the passes every draft gets: top-ups while it is
+   *  short, the vocabulary edit and the world record. `endingLine` is the
+   *  brief's ending, handed to the top-up, whose text becomes the new end. */
+  async function writeAndPolish(prompt: string, endingLine: string): Promise<StoryProse> {
+    let draft = await step(
+      'write',
+      'Writing',
+      (onMeta) =>
+        callGeminiJson<StoryDraft>(prompt, STORY_SCHEMA, {
+          tier: 'story',
+          effort: 'medium',
+          label: 'write',
+          onMeta,
+        }),
+      (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
+    )
+    // Everything above this line is irreplaceable; everything below it is
+    // improvement. Hand it over before going on.
+    await opts.onDraft?.(draft)
+
+    // Models can't count their own words, so a draft can land short. Measure it
+    // the way the reader does and, while it's short, ask for the missing stretch.
+    for (let pass = 0; pass < MAX_EXTENSIONS; pass++) {
+      const have = countWords(draft.story, langCode)
+      if (have >= lengthWords * LENGTH_TOLERANCE) break
+      try {
+        draft = await step(
+          `extend-${pass + 1}`,
+          `Making it longer (${have} of ${lengthWords} words)`,
+          (onMeta) =>
+            extendStory({
+              deck,
+              story: draft,
+              missingWords: Math.max(40, lengthWords - have),
+              band,
+              kind,
+              ending: endingLine,
+              onMeta,
+            }),
+          (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
+        )
+      } catch {
+        // A failed top-up shouldn't cost the reader the story they already have.
+        break
+      }
     }
+
+    // Two passes over the finished text, together. The vocabulary edit swaps
+    // words and leaves events and names alone, so the bible can be read from the
+    // text before it — and neither waits for the other.
+    //
+    // Both are best-effort: a story that is written and readable is never lost to
+    // a pass that was only meant to polish or record it.
+    const written = draft.story
+    const [story, world] = await Promise.all([
+      step(
+        'simplify',
+        'Making the words easier',
+        (onMeta) => simplifyStory({ deck, story: written, band, kind, onMeta }),
+        (after) => `${swappedWords(written, after, langCode)} words swapped out`,
+      ).catch(() => {
+        console.warn('[story] simplify failed — the story stands as written')
+        return written
+      }),
+      step(
+        'bible',
+        'Noting who and what',
+        (onMeta) => extractBible({ deck, story: written, previous: bible, kind, onMeta }),
+        (w) => `${w.characterNames.length} names, ${w.bible.openThreads.length} open threads`,
+      ).catch(() => {
+        console.warn('[story] bible failed — carrying the previous one forward')
+        const kept = bible ?? EMPTY_BIBLE
+        return { characterNames: kept.cast.map((c) => c.name), bible: kept }
+      }),
+    ])
+
+    return { title: draft.title, story, ...world }
   }
+}
 
-  // Two passes over the finished text, together. The vocabulary edit swaps
-  // words and leaves events and names alone, so the bible can be read from the
-  // text before it — and neither waits for the other.
-  //
-  // Both are best-effort: a story that is written and readable is never lost to
-  // a pass that was only meant to polish or record it.
-  const written = draft.story
-  const [story, world] = await Promise.all([
-    step(
-      'simplify',
-      'Making the words easier',
-      (onMeta) => simplifyStory({ deck, story: written, band, onMeta }),
-      (after) => `${swappedWords(written, after, langCode)} words swapped out`,
-    ).catch(() => {
-      console.warn('[story] simplify failed — the story stands as written')
-      return written
-    }),
-    step(
-      'bible',
-      'Noting who and what',
-      (onMeta) => extractBible({ deck, story: written, previous: bible, onMeta }),
-      (w) => `${w.characterNames.length} names, ${w.bible.openThreads.length} open threads`,
-    ).catch(() => {
-      console.warn('[story] bible failed — carrying the previous one forward')
-      const kept = bible ?? EMPTY_BIBLE
-      return { characterNames: kept.cast.map((c) => c.name), bible: kept }
-    }),
-  ])
-
-  return { title: draft.title, story, ...world }
+/** The Learn brief: what the writing call is told when the thread explains a
+ *  real topic instead of inventing one. The story brief's craft asks are about
+ *  people who want things; these are about an idea landing — one at a time,
+ *  through something concrete, with its causes — and about not being wrong,
+ *  which a story cannot be and an explanation can. */
+function learnBrief(o: {
+  language: string
+  band: VocabBand
+  lengthWords: number
+  topic: string
+  outline?: string[]
+  partIndex: number
+  previous?: { title: string; story: string }
+  bible?: StoryBible
+  steer?: string
+  wanted: string[]
+}): { prompt: string; ending: string } {
+  const { language, band, lengthWords, topic, outline, partIndex, previous, bible, steer, wanted } = o
+  const beyondPlan = outline !== undefined && partIndex >= outline.length
+  const ending = learnEndingSpec(outline?.[partIndex + 1])
+  const prompt = [
+    `Write part ${partIndex + 1}${outline && !beyondPlan ? ` of ${outline.length}` : ''} of a short series in ${language} that explains a real topic to an adult: "${topic}". About ${lengthWords} words.`,
+    outline
+      ? `The series plan, in English:\n${outline.map((p, i) => `${i + 1}. ${p}${i === partIndex ? '   ← THIS PART' : ''}`).join('\n')}`
+      : '',
+    beyondPlan
+      ? `The plan is finished. This part goes one step further: the most interesting thing about the topic the series has not covered yet.`
+      : '',
+    previous ? `Previous part, titled "${previous.title}":\n${previous.story}` : '',
+    bible
+      ? [
+          `Already covered — build on it, don't explain it again:`,
+          bible.facts.length > 0 ? `Key points: ${bible.facts.join('; ')}` : '',
+          (bible.terms?.length ?? 0) > 0 ? `Terms already explained: ${bible.terms!.join(', ')}` : '',
+          bible.cast.length > 0
+            ? `People already introduced: ${bible.cast.map((c) => `${c.name} (${c.role})`).join('; ')}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : '',
+    steer
+      ? `The reader asked for this part to cover: "${steer}". It must, early — this outranks the plan.`
+      : '',
+    levelSpec(language, band, 'learn'),
+    [
+      `What makes it worth reading:`,
+      `- one idea, explained properly, rather than a list of facts`,
+      `- told through something concrete — a real person, a place, a moment, an object, a number — and then a step back to say what it shows`,
+      `- the why behind every what: the causes, and what people at the time wanted and feared`,
+      `- at most three key terms the reader needs for this topic; when one first appears, explain it in plain words in the same sentence`,
+      `- at least one thing the reader would not have guessed, that is true`,
+    ].join('\n'),
+    `Only state what is well established. Never invent a quote, a name, a number or a date — leave a detail out rather than guess it. Where experts disagree, say so in a sentence. An imagined scene is fine only if the text says it is imagined ("Imagine…").`,
+    ending,
+    `Separate paragraphs with a blank line.`,
+    wanted.length > 0 ? `Use some of these words where they fit naturally: ${wanted.join(', ')}` : '',
+    `Return a short title and the text, both in ${language}.`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+  return { prompt, ending }
 }
 
 /** The passes that explain a finished story: its English, its summary and its
@@ -1489,11 +1712,12 @@ export async function annotateStory(
     bankWords: string[]
     /** Glossary entries from earlier parts of this thread (see `glossaryFor`). */
     knownGlossary?: GlossaryEntry[]
+    kind?: StoryKind
     onProgress?: (steps: StoryStep[]) => void
   },
   trace?: Trace,
 ): Promise<{ translation: string; summary: string; glossary: GlossaryEntry[] }> {
-  const { deck, prose, bankWords, knownGlossary } = opts
+  const { deck, prose, bankWords, knownGlossary, kind = 'story' } = opts
   const { step } = trace ?? createTrace(opts.onProgress)
 
   // Translate and gloss last, over the text as it finally stands — so
@@ -1510,7 +1734,7 @@ export async function annotateStory(
     step(
       'translate',
       'Translating',
-      (onMeta) => translateStory(deck, prose.story, onMeta),
+      (onMeta) => translateStory(deck, prose.story, kind, onMeta),
       (t) => `${countWords(t.translation, 'en')} words`,
     ).catch(() => {
       console.warn('[story] translation failed — the story stands untranslated')
@@ -1550,6 +1774,7 @@ export async function generateStory(
       prose,
       bankWords: [...opts.knownWords, ...opts.learningWords],
       knownGlossary: opts.knownGlossary,
+      kind: opts.kind,
     },
     trace,
   )

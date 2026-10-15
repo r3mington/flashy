@@ -12,6 +12,7 @@ import {
   statusPatch,
   type Card,
   type SavedStory,
+  type StoryKind,
   type WordStatus,
 } from '../db'
 import { dueForRecurrence, encounterStats, fadeLevel } from '../encounters'
@@ -119,8 +120,17 @@ interface Definition {
   isName?: boolean
 }
 
+/** A plan line's title — the part before its colon (see `planCourse`). */
+function planTitle(line: string): string {
+  const i = line.indexOf(':')
+  return i > 0 && i < 60 ? line.slice(0, i).trim() : line
+}
+
 export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const [topic, setTopic] = useState('')
+  // Invent a story, or explain a real topic (see `StoryKind`). Only picked for
+  // a new thread; a continuation is whatever its thread is.
+  const [kind, setKind] = useState<StoryKind>('story')
   const [length, setLength] = useState(150)
   const [vocabLevel, setVocabLevel] = useState<VocabLevel>(DEFAULT_VOCAB_LEVEL)
   // 'all' — draw on every word in the deck; 'learning' — only words not yet
@@ -573,14 +583,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       // consecutive parts, ending at the newest, whose bible still carried
       // open threads. Feeds the ending roll — young trouble always survives.
       let troubleAge = 0
+      let thread: SavedStory[] = []
       if (from) {
         const rootId = from.parentId ?? from.id
-        const thread = (savedStories ?? [])
+        thread = (savedStories ?? [])
           .filter((s) => s.id === rootId || s.parentId === rootId)
           .sort((a, b) => a.createdAt - b.createdAt)
         for (const part of thread)
           troubleAge = (part.bible?.openThreads?.length ?? 0) > 0 ? troubleAge + 1 : 0
       }
+      const threadRoot = from ? (thread.find((s) => !s.parentId) ?? thread[0]) : undefined
+      const runKind: StoryKind = from ? (threadRoot?.kind ?? 'story') : kind
       // Words met in earlier stories whose spacing says it is time to meet
       // them again — still new, or still in study. Known words are not
       // re-encounters, just words. The open story is none, so nothing is
@@ -624,6 +637,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         focusWords: focusWords.length > 0 ? focusWords : undefined,
         chosen: from && steer ? steer : undefined,
         topic: from ? undefined : topic.trim() || undefined,
+        kind: runKind === 'learn' ? runKind : undefined,
         // Parts always attach to the thread's root, never to another part.
         parentId: from ? (from.parentId ?? from.id) : undefined,
         createdAt,
@@ -639,6 +653,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         lengthWords: length,
         onProgress: setSteps,
         troubleAge: from ? troubleAge : undefined,
+        kind: runKind,
+        outline: threadRoot?.outline,
+        partIndex: thread.length,
         focusWords,
         recurWords,
         // Steer fresh stories away from themes already covered (recent first).
@@ -682,6 +699,8 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         story: draft.story,
         characterNames: draft.characterNames,
         bible: draft.bible,
+        // A new Learn thread's plan, kept on its root for every later part.
+        outline: draft.outline,
       }
       if (id === null) id = await db.stories.add(record)
       else await db.stories.update(id, record)
@@ -728,6 +747,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         },
         bankWords: (cards ?? []).filter((c) => c.known || inRotation(c)).map((c) => c.word),
         knownGlossary,
+        kind: saved.kind,
       })
       await db.stories.update(saved.id, { translation, summary, glossary })
       setStory((cur) => (cur?.id === saved.id ? { ...cur, translation, summary, glossary } : cur))
@@ -1196,6 +1216,20 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // everyone is meant to be a stranger.
   const cast = (prevPart?.bible?.cast ?? []).filter((c) => c.name?.trim())
 
+  // The form's mode: a continuation is whatever its thread is. For a Learn
+  // thread, the plan line the next part will be written to.
+  const contRootId = continuing ? (continuing.parentId ?? continuing.id) : null
+  const contThread = (savedStories ?? []).filter(
+    (s) => s.id === contRootId || s.parentId === contRootId,
+  )
+  const contRoot = contThread.find((s) => s.id === contRootId)
+  const formKind: StoryKind = continuing ? (contRoot?.kind ?? 'story') : kind
+  const nextInPlan = contRoot?.outline?.[contThread.length]
+  // The open part's plan, read off its thread's root.
+  const plan = story?.kind === 'learn' ? chain[0]?.outline : undefined
+  // A story can be about anything; an explanation has to be about something.
+  const canRun = bankSize > 0 && (formKind !== 'learn' || continuing !== null || topic.trim() !== '')
+
   return (
     <>
       <div className="page-head">
@@ -1228,29 +1262,71 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     ✕
                   </button>
                 </div>
+                {formKind === 'learn' && nextInPlan && (
+                  <p className="note">
+                    Next in the series: <b>{planTitle(nextInPlan)}</b>
+                  </p>
+                )}
                 <div className="field">
-                  <label htmlFor="story-direction">What happens next? (optional)</label>
+                  <label htmlFor="story-direction">
+                    {formKind === 'learn'
+                      ? 'Anything this part should cover? (optional)'
+                      : 'What happens next? (optional)'}
+                  </label>
                   <textarea
                     id="story-direction"
                     autoFocus
                     value={direction}
                     onChange={(e) => setDirection(e.target.value)}
-                    placeholder="e.g. something surprising happens, or the main character feels sad"
+                    placeholder={
+                      formKind === 'learn'
+                        ? 'e.g. more about the people who lived through it'
+                        : 'e.g. something surprising happens, or the main character feels sad'
+                    }
                   />
                 </div>
               </>
             ) : (
-              <div className="field">
-                <label htmlFor="story-topic">Topic (optional)</label>
-                <input
-                  id="story-topic"
-                  autoFocus
-                  value={topic}
-                  onChange={(e) => setTopic(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && !loading && run()}
-                  placeholder="e.g. a lost dog finds its way home"
-                />
-              </div>
+              <>
+                <div className="field">
+                  <label>Kind</label>
+                  <div className="seg-control">
+                    <button
+                      type="button"
+                      className={kind === 'story' ? 'on' : ''}
+                      title="An invented story"
+                      onClick={() => setKind('story')}
+                    >
+                      Story
+                    </button>
+                    <button
+                      type="button"
+                      className={kind === 'learn' ? 'on' : ''}
+                      title="A real topic, explained in a short series"
+                      onClick={() => setKind('learn')}
+                    >
+                      Learn
+                    </button>
+                  </div>
+                </div>
+                <div className="field">
+                  <label htmlFor="story-topic">
+                    {kind === 'learn' ? 'What do you want to learn about?' : 'Topic (optional)'}
+                  </label>
+                  <input
+                    id="story-topic"
+                    autoFocus
+                    value={topic}
+                    onChange={(e) => setTopic(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && !loading && canRun && run()}
+                    placeholder={
+                      kind === 'learn'
+                        ? 'e.g. the history of Indonesia, how inflation works'
+                        : 'e.g. a lost dog finds its way home'
+                    }
+                  />
+                </div>
+              </>
             )}
             <div className="field">
               <label htmlFor="story-length">Length · about {length} words</label>
@@ -1287,13 +1363,18 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             </div>
             <p className="note">
               {continuing
-                ? `Writes the next part of the story, picking up where it left off.`
-                : `Writes a casual, everyday ${deck.language} story, weaving in words you're learning.`}{' '}
+                ? formKind === 'learn'
+                  ? `Writes the next part of the series, building on what it has covered.`
+                  : `Writes the next part of the story, picking up where it left off.`
+                : formKind === 'learn'
+                  ? `Plans a short series on the topic, then explains the first part in casual, everyday ${deck.language}, weaving in words you're learning.`
+                  : `Writes a casual, everyday ${deck.language} story, weaving in words you're learning.`}{' '}
               Tap any word in the result for its meaning.
             </p>
             {focusWords.length > 0 && (
               <p className="note">
-                Building the plot around {focusWords.length} words you keep forgetting —{' '}
+                {formKind === 'learn' ? 'Weaving in' : 'Building the plot around'} {focusWords.length}{' '}
+                words you keep forgetting —{' '}
                 <b>{focusWords.join(', ')}</b> — so you meet each of them several times in context.
               </p>
             )}
@@ -1345,13 +1426,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               <button
                 className="btn accent"
                 onClick={() => run()}
-                disabled={loading || bankSize === 0}
+                disabled={loading || !canRun}
               >
                 {loading
                   ? `${steps.find((s) => s.ms == null)?.label ?? 'Starting'}…`
-                  : continuing
-                    ? 'Continue story'
-                    : 'Generate story'}
+                  : formKind === 'learn'
+                    ? continuing
+                      ? 'Next part'
+                      : 'Start learning'
+                    : continuing
+                      ? 'Continue story'
+                      : 'Generate story'}
               </button>
             </div>
           </div>
@@ -1391,6 +1476,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                         {root.title}
                       </span>
                       <span className="story-saved-meta">
+                        {root.kind === 'learn' ? 'Learn · ' : ''}
                         {root.topic ? `${root.topic} · ` : ''}
                         {new Date(root.createdAt).toLocaleDateString()} ·{' '}
                         {countWords(root.story, langCode)} words
@@ -1454,7 +1540,12 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         // The palette lives on the page, not the body, so the "N new" stat in
         // the header is painted the same colour as the words it counts.
         <div className="story-page" style={storyColorVars(settings.storyColors)}>
-          {chainIdx > 0 && <div className="story-part-badge">Part {chainIdx + 1}</div>}
+          {(chainIdx > 0 || plan) && (
+            <div className="story-part-badge">
+              Part {chainIdx + 1}
+              {plan && chainIdx < plan.length ? ` of ${plan.length}` : ''}
+            </div>
+          )}
           <h2 className="story-title">{story.title}</h2>
           {prevPart?.bible?.logline && (
             <p className="story-previously">
@@ -1468,12 +1559,27 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               point of reading in the first place. */}
           {story.summary && (
             <p className="story-summary">
-              <b>The story</b> {story.summary}
+              <b>{story.kind === 'learn' ? 'In short' : 'The story'}</b> {story.summary}
             </p>
           )}
           {/* The story arrives before the things that explain it. Say so, so a
               missing summary or a word that takes a moment to define reads as
               work still in progress rather than as something broken. */}
+          {/* Where this part sits in its Learn series — folded away, since it
+              is a map to come back to, not something to read before every
+              part. */}
+          {plan && plan.length > 0 && (
+            <details className="story-plan">
+              <summary>The series</summary>
+              <ol>
+                {plan.map((line, i) => (
+                  <li key={i} className={i === chainIdx ? 'is-current' : i < chainIdx ? 'is-done' : ''}>
+                    {planTitle(line)}
+                  </li>
+                ))}
+              </ol>
+            </details>
+          )}
           {annotatingId === story.id && (
             <p className="story-annotating">Still looking up the words and the English…</p>
           )}

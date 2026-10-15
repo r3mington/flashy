@@ -101,7 +101,14 @@ export interface StoryBible {
   facts: string[]
   /** Questions the story has raised and not yet answered. */
   openThreads: string[]
+  /** Learn threads only: the key terms explained so far, so a later part
+   *  uses them instead of explaining them again. */
+  terms?: string[]
 }
+
+/** What a thread is: an invented story, or a real topic explained in parts.
+ *  Missing on rows saved before Learn existed, which are all stories. */
+export type StoryKind = 'story' | 'learn'
 
 export interface SavedStory {
   id: number
@@ -147,6 +154,11 @@ export interface SavedStory {
    *  and excluded from new-word highlighting/chips. */
   characterNames?: string[]
   topic?: string
+  /** Story or explainer — see `StoryKind`. Written on every part. */
+  kind?: StoryKind
+  /** Learn threads, root only: the series plan, one English line per part,
+   *  made before the first part was written. Plain, not indexed. */
+  outline?: string[]
   /** Root story this one continues (always the first part's id) — parts are
    *  grouped under that root in the saved-stories list. Unset for standalone
    *  stories and roots. Plain property, not indexed. */

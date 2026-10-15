@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  insertBeforeLastParagraph,
   ApiError,
   chunkForRewrite,
   worthRetrying,
@@ -100,6 +101,20 @@ describe('swappedWords', () => {
 
   it('ignores punctuation and case', () => {
     expect(swappedWords('Dia pergi.', 'dia pergi!', 'id')).toBe(0)
+  })
+})
+
+describe('insertBeforeLastParagraph', () => {
+  it('keeps the last paragraph last', () => {
+    expect(insertBeforeLastParagraph('One.\n\nTwo.\n\nWhy?', 'More.')).toBe('One.\n\nTwo.\n\nMore.\n\nWhy?')
+  })
+
+  it('appends when there is only one paragraph', () => {
+    expect(insertBeforeLastParagraph('Only.', 'More.')).toBe('Only.\n\nMore.')
+  })
+
+  it('leaves the text alone when nothing was added', () => {
+    expect(insertBeforeLastParagraph('One.\n\nWhy?\n', '  ')).toBe('One.\n\nWhy?')
   })
 })
 
