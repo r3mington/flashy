@@ -1281,7 +1281,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     placeholder={
                       formKind === 'learn'
                         ? 'e.g. more about the people who lived through it'
-                        : 'e.g. something surprising happens, or the main character feels sad'
+                        : 'e.g. she takes the job in Osaka · it turns into a love story · a year later'
                     }
                   />
                 </div>

@@ -1195,9 +1195,11 @@ async function extendStory(opts: {
    *  same way: the ending line of the brief the draft was written to. Unused
    *  for Learn, whose top-up goes in before the ending it already has. */
   ending: string
+  /** What the reader asked of this part, so the top-up keeps to it. */
+  steer?: string
   onMeta?: (m: CallMeta) => void
 }): Promise<StoryDraft> {
-  const { deck, story, missingWords, band, kind, ending, onMeta } = opts
+  const { deck, story, missingWords, band, kind, ending, steer, onMeta } = opts
   const noun = kind === 'learn' ? 'text' : 'story'
   const prompt = [
     `Below is a ${noun} in ${deck.language}. It stopped too early and needs about ${missingWords} more words.`,
@@ -1205,6 +1207,7 @@ async function extendStory(opts: {
     kind === 'learn'
       ? `Its last paragraph hands over to the next part, so write a passage to go just BEFORE that last paragraph. Go further into this part's idea — a concrete example, a cause, a consequence — and leave what the last paragraph asks for the next part to answer. Only well-established facts; leave a detail out rather than guess it. Do not repeat or recap anything above.`
       : `Write ONLY the continuation, following on from the last line in the same voice, with the same people (no new named characters). Move the story forward with what happens next, at the same pace and the same scale: let the situation already there play out or deepen, with everyone acting on what they know. No new twist, secret or crime — and not description or small talk either. Do not repeat or recap anything above.`,
+    steer ? `The reader asked this part for: "${steer}". Keep to it.` : '',
     levelSpec(deck.language, band, kind),
     kind === 'learn' ? '' : ending,
     `Separate paragraphs with a blank line. Return the ${kind === 'learn' ? 'passage' : 'continuation'} alone, in ${deck.language}, in "story".`,
@@ -1496,7 +1499,7 @@ export async function writeStoryDraft(
       : `Write a story in ${deck.language}, about ${lengthWords} words.`,
     !continueFrom && topic ? `The reader asked for: "${topic}". The story must genuinely be this.` : '',
     threadTopic
-      ? `The reader asked for "${threadTopic}" when this serial began; it stays that kind of story.`
+      ? `The reader asked for "${threadTopic}" when this serial began; it stays that kind of story${steer ? ' unless their steer below takes it elsewhere' : ''}.`
       : '',
     continueFrom ? `Previous part, titled "${continueFrom.title}":\n${continueFrom.story}` : '',
     bible
@@ -1515,7 +1518,7 @@ export async function writeStoryDraft(
       ? `The previous part settled its story, so start new trouble early — a different kind from before.`
       : '',
     steer
-      ? `The reader asked for this to happen next: "${steer}". It must happen in this part, early — this outranks everything below.`
+      ? `The reader steered this part: "${steer}". Follow it, whatever kind of steer it is — something that happens, a change of tone or genre, a jump in time, a focus on one person, how the part should end. Act on it early in this part. It outranks everything else in this brief, including the kind of story this began as, how big the trouble may be, and how to end.`
       : '',
     levelSpec(deck.language, band),
     // Scale and pace are here because "a story of someone in Japan" came back
@@ -1523,7 +1526,9 @@ export async function writeStoryDraft(
     // frame a worker, all inside the first part. Every craft ask below pulled
     // toward more plot, and nothing said how much the story could hold.
     continueFrom
-      ? `Keep the trouble the size of the story the reader asked for. It can grow, but one step at a time — no crime, betrayal or conspiracy the story hasn't already earned.`
+      ? steer
+        ? `Make the trouble the size the reader's steer calls for, and no bigger.`
+        : `Keep the trouble the size of the story the reader asked for. It can grow, but one step at a time — no crime, betrayal or conspiracy the story hasn't already earned.`
       : `Make the trouble the size of what the reader asked for. Unless they asked for crime, danger or suspense, this is ordinary life: a choice, a misunderstanding, a small loss, something someone wants and isn't sure they can have — no crimes, betrayals, schemes or hidden money. This is the opening: let the reader get to know one person — their day, their habits, what they want and why — and let ONE thing change. One development, not a chain of revelations.`,
     // The believability lines are here because a reader stopped believing a
     // serial: a killer, caught, accused her escaped victim with her garden full
@@ -1598,6 +1603,7 @@ export async function writeStoryDraft(
               band,
               kind,
               ending: endingLine,
+              steer,
               onMeta,
             }),
           (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
