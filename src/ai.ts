@@ -1180,7 +1180,7 @@ async function planCourse(opts: {
 function endingSpec(ending: SerialEnding): string {
   return ending === 'resolve'
     ? `End by settling the story, in a scene the reader watches, and let it change or cost someone something. No moral, no summary.`
-    : `End on something unresolved, so the reader needs the next part — at a natural beat, not mid-scene.`
+    : `End on something unresolved, so the reader wants the next part — a question about someone in it as much as about what happens, at a natural beat, not mid-scene.`
 }
 
 /** Grow a story that came back short: hand the draft back and ask for the
@@ -1204,7 +1204,7 @@ async function extendStory(opts: {
     `${kind === 'learn' ? 'Text' : 'Story'} so far, titled "${story.title}":\n${story.story}`,
     kind === 'learn'
       ? `Its last paragraph hands over to the next part, so write a passage to go just BEFORE that last paragraph. Go further into this part's idea — a concrete example, a cause, a consequence — and leave what the last paragraph asks for the next part to answer. Only well-established facts; leave a detail out rather than guess it. Do not repeat or recap anything above.`
-      : `Write ONLY the continuation, following on from the last line in the same voice, with the same people (no new named characters). Move the story forward with real events — a new turn, a complication that follows from what came before, with everyone acting on what they know — not description or small talk. Do not repeat or recap anything above.`,
+      : `Write ONLY the continuation, following on from the last line in the same voice, with the same people (no new named characters). Move the story forward with what happens next, at the same pace and the same scale: let the situation already there play out or deepen, with everyone acting on what they know. No new twist, secret or crime — and not description or small talk either. Do not repeat or recap anything above.`,
     levelSpec(deck.language, band, kind),
     kind === 'learn' ? '' : ending,
     `Separate paragraphs with a blank line. Return the ${kind === 'learn' ? 'passage' : 'continuation'} alone, in ${deck.language}, in "story".`,
@@ -1518,6 +1518,13 @@ export async function writeStoryDraft(
       ? `The reader asked for this to happen next: "${steer}". It must happen in this part, early — this outranks everything below.`
       : '',
     levelSpec(deck.language, band),
+    // Scale and pace are here because "a story of someone in Japan" came back
+    // as a thriller: a visa held hostage, a boss stealing from his own till to
+    // frame a worker, all inside the first part. Every craft ask below pulled
+    // toward more plot, and nothing said how much the story could hold.
+    continueFrom
+      ? `Keep the trouble the size of the story the reader asked for. It can grow, but one step at a time — no crime, betrayal or conspiracy the story hasn't already earned.`
+      : `Make the trouble the size of what the reader asked for. Unless they asked for crime, danger or suspense, this is ordinary life: a choice, a misunderstanding, a small loss, something someone wants and isn't sure they can have — no crimes, betrayals, schemes or hidden money. This is the opening: let the reader get to know one person — their day, their habits, what they want and why — and let ONE thing change. One development, not a chain of revelations.`,
     // The believability lines are here because a reader stopped believing a
     // serial: a killer, caught, accused her escaped victim with her garden full
     // of bodies — a turn bought by making a clever character act against
@@ -1525,9 +1532,9 @@ export async function writeStoryDraft(
     // their sense.
     [
       `What makes it worth reading:`,
-      `- someone who wants something specific, and has to do something hard to get it`,
+      `- someone who wants something specific, and what it costs them to go after it`,
       `- people who act on what they want and what they know. Nobody does something foolish so the plot can happen: a dangerous person is clever, a cornered one acts in their own interest. If someone does something strange, they have a reason the reader can see, or will`,
-      `- at least one turn the reader doesn't see coming that still follows from what is already in the story — surprising at first, obvious looking back. Never a coincidence, never someone suddenly acting out of character`,
+      `- a moment that changes how the reader sees someone — it can be small: a kindness, a lie told to spare someone, a detail that gives away a past. It follows from what is already in the story. Never a coincidence, never someone suddenly acting out of character`,
       `- people who say less than they mean; show what they feel through what they do and say, never by naming the feeling`,
       `- one or two concrete details that belong only to this story, and let one come back later meaning more than it did`,
       `- plain words can still be beautiful: an exact image, and a short sentence landing after longer ones`,
