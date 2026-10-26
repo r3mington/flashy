@@ -71,6 +71,31 @@ describe('rootCandidates — Indonesian', () => {
     )
   })
 
+  describe('reads casual speech as the word it is', () => {
+    it.each([
+      ['udah', 'sudah'],
+      ['aja', 'saja'],
+      ['temennya', 'teman'],
+      ['deket', 'dekat'],
+      ['nunggu', 'tunggu'],
+      ['nanya', 'tanya'],
+      ['nyari', 'cari'],
+      ['ngambil', 'ambil'],
+      ['ngopi', 'kopi'],
+      ['ngomongnya', 'omong'],
+    ])('%s → %s', (surface, root) => expect(reaches(surface, root)).toBe(true))
+
+    it.each([
+      ['nggak', 'tidak'], // a different word, to be learned
+      ['bilangin', 'bilang'], // casual -kan: derivation, as above
+      ['deketin', 'dekat'],
+      ['nama', 'ama'], // a word that merely starts with n
+      ['nasi', 'asi'],
+    ])('%s is not covered by %s', (surface, root) =>
+      expect(reaches(surface, root)).toBe(false),
+    )
+  })
+
   it('leaves non-Indonesian languages alone, bar lowercasing', () => {
     expect(rootCandidates('Bonjour', 'fr')).toEqual(['bonjour'])
     expect(rootCandidates('membaca', null)).toEqual(['membaca'])

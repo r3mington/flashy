@@ -13,6 +13,7 @@
  *    npx tsx scripts/story-lab.mts bare "a love story"   # one bare prompt, no machinery
  *    npx tsx scripts/story-lab.mts continue <file.json> "steer"  # next part, full pipeline
  *    npx tsx scripts/story-lab.mts learn "the history of Indonesia"  # a Learn series, part 1
+ *    REGISTER=casual npx tsx scripts/story-lab.mts full "a ride to the beach"  # casual speech
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 
@@ -98,6 +99,8 @@ if (cmd === 'full' || cmd === 'learn' || cmd === 'continue') {
   // A continuation carries its thread's kind, plan and place in the plan.
   const kind = prev ? (prev.kind ?? 'story') : cmd === 'learn' ? 'learn' : 'story'
   const part = prev ? (prev.part ?? 1) + 1 : 1
+  // Speech belongs to the thread, as in the app.
+  const register = prev ? (prev.register ?? 'standard') : process.env.REGISTER === 'casual' ? 'casual' : 'standard'
   // AVOID/RECUR simulate what StoryPage passes from the reader's history.
   const avoidThemes = (process.env.AVOID ?? '').split('|').filter(Boolean)
   const avoidNames = (process.env.NAMES ?? '').split(',').filter(Boolean)
@@ -123,6 +126,7 @@ if (cmd === 'full' || cmd === 'learn' || cmd === 'continue') {
     // already has, reused instead of bought again.
     knownGlossary: prev?.glossary ?? undefined,
     kind,
+    register,
     outline: prev?.outline,
     partIndex: part - 1,
     ending: (process.env.ENDING as 'hook' | 'resolve' | undefined) || undefined,
@@ -137,6 +141,7 @@ if (cmd === 'full' || cmd === 'learn' || cmd === 'continue') {
     topic: prev ? ((process.env.TOPIC || prev.topic) ?? null) : (arg1 ?? null),
     openStreak,
     kind,
+    register,
     part,
     ...story,
     outline: story.outline ?? prev?.outline,

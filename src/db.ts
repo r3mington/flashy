@@ -110,6 +110,12 @@ export interface StoryBible {
  *  Missing on rows saved before Learn existed, which are all stories. */
 export type StoryKind = 'story' | 'learn'
 
+/** How the people in a thread talk. Standard is the plain spoken language a
+ *  textbook teaches; casual is how people actually talk to each other day to
+ *  day — for Indonesian, nggak, udah, kok, sih, Kak. Missing on rows saved
+ *  before it existed, which are all standard. */
+export type StoryRegister = 'standard' | 'casual'
+
 export interface SavedStory {
   id: number
   deckId: number
@@ -156,6 +162,9 @@ export interface SavedStory {
   topic?: string
   /** Story or explainer — see `StoryKind`. Written on every part. */
   kind?: StoryKind
+  /** Casual or standard speech — see `StoryRegister`. Written on every part;
+   *  absent means standard. */
+  register?: StoryRegister
   /** Learn threads, root only: the series plan, one English line per part,
    *  made before the first part was written. Plain, not indexed. */
   outline?: string[]
@@ -360,6 +369,8 @@ export interface AppSettings {
   storyControlsOpen: boolean
   /** Colour per kind of word in a story. */
   storyColors: StoryColors
+  /** The speech last picked for a new story, so the form remembers it. */
+  storyRegister: StoryRegister
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -380,6 +391,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   storyGloss: true,
   storyControlsOpen: true,
   storyColors: DEFAULT_STORY_COLORS,
+  storyRegister: 'standard',
 }
 
 export const db = new Dexie('flashy') as Dexie & {

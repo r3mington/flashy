@@ -13,6 +13,7 @@ import {
   type Card,
   type SavedStory,
   type StoryKind,
+  type StoryRegister,
   type WordStatus,
 } from '../db'
 import { dueForRecurrence, encounterStats, fadeLevel } from '../encounters'
@@ -594,6 +595,11 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       }
       const threadRoot = from ? (thread.find((s) => !s.parentId) ?? thread[0]) : undefined
       const runKind: StoryKind = from ? (threadRoot?.kind ?? 'story') : kind
+      // Speech, like kind, belongs to the thread: a story that starts casual
+      // stays casual.
+      const runRegister: StoryRegister = from
+        ? (threadRoot?.register ?? 'standard')
+        : settings.storyRegister
       // Words met in earlier stories whose spacing says it is time to meet
       // them again — still new, or still in study. Known words are not
       // re-encounters, just words. The open story is none, so nothing is
@@ -638,6 +644,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         chosen: from && steer ? steer : undefined,
         topic: from ? undefined : topic.trim() || undefined,
         kind: runKind === 'learn' ? runKind : undefined,
+        register: runRegister === 'casual' ? runRegister : undefined,
         // Parts always attach to the thread's root, never to another part.
         parentId: from ? (from.parentId ?? from.id) : undefined,
         createdAt,
@@ -654,6 +661,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         onProgress: setSteps,
         troubleAge: from ? troubleAge : undefined,
         kind: runKind,
+        register: runRegister,
         outline: threadRoot?.outline,
         partIndex: thread.length,
         focusWords,
@@ -1224,6 +1232,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   )
   const contRoot = contThread.find((s) => s.id === contRootId)
   const formKind: StoryKind = continuing ? (contRoot?.kind ?? 'story') : kind
+  const formRegister: StoryRegister = continuing
+    ? (contRoot?.register ?? 'standard')
+    : settings.storyRegister
   const nextInPlan = contRoot?.outline?.[contThread.length]
   // The open part's plan, read off its thread's root.
   const plan = story?.kind === 'learn' ? chain[0]?.outline : undefined
@@ -1340,6 +1351,36 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 onChange={(e) => setLength(Number(e.target.value))}
               />
             </div>
+            {!continuing && (
+              <div className="field">
+                <label>Speech</label>
+                <div className="seg-control">
+                  <button
+                    type="button"
+                    className={formRegister === 'standard' ? 'on' : ''}
+                    title="Plain everyday language, as a textbook teaches it"
+                    onClick={() => saveSettings({ storyRegister: 'standard' })}
+                  >
+                    Standard
+                  </button>
+                  <button
+                    type="button"
+                    className={formRegister === 'casual' ? 'on' : ''}
+                    title="The way people actually talk to each other"
+                    onClick={() => saveSettings({ storyRegister: 'casual' })}
+                  >
+                    Casual
+                  </button>
+                </div>
+                <p className="note">
+                  {formRegister === 'casual'
+                    ? langCode === 'id'
+                      ? 'How people really talk — nggak, udah, kok, sih, Kak — with much of it told in conversation.'
+                      : 'How people really talk to each other, with much of it told in conversation.'
+                    : 'Plain everyday language, as a textbook teaches it.'}
+                </p>
+              </div>
+            )}
             <div className="field">
               <label>Difficulty</label>
               <div className="seg-control">
@@ -1368,7 +1409,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   : `Writes the next part of the story, picking up where it left off.`
                 : formKind === 'learn'
                   ? `Plans a short series on the topic, then explains the first part in casual, everyday ${deck.language}, weaving in words you're learning.`
-                  : `Writes a casual, everyday ${deck.language} story, weaving in words you're learning.`}{' '}
+                  : formRegister === 'casual'
+                    ? `Writes a story in ${deck.language} as people really speak it, weaving in words you're learning.`
+                    : `Writes a casual, everyday ${deck.language} story, weaving in words you're learning.`}{' '}
               Tap any word in the result for its meaning.
             </p>
             {focusWords.length > 0 && (

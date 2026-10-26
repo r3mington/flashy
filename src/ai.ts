@@ -1,4 +1,4 @@
-import { db, type Deck, type StoryBible, type StoryKind } from './db'
+import { db, type Deck, type StoryBible, type StoryKind, type StoryRegister } from './db'
 import { langCodeFor } from './speech'
 import { countWords, tokenizeWords } from './text'
 
@@ -342,6 +342,14 @@ function MEMORY_RULE(language: string): string {
     `Give an "emoji" field (1-2 emoji) ONLY to content words concrete enough to picture instantly — a thing, an action, a vivid quality. Leave it off function words, names, numbers, and abstractions no emoji really depicts.`,
     `Where a word is derived or inflected from a simpler ${language} base word, give "root" (that base word, in its dictionary form) and "rootMeaning" (its English meaning) — e.g. Indonesian "makanya" from "makan" (to eat), "berjalan" from "jalan" (road, to walk). Omit both when the word already IS its own base, or when the base is not itself a real ${language} word.`,
   ].join('\n')
+}
+
+/** Casual speech is where a learner meets forms no dictionary entry leads
+ *  with, and "no, not" for nggak hides that it is the tidak they already know.
+ *  Naming the standard form links the two. */
+function CASUAL_FORM_RULE(language: string): string {
+  const eg = langCodeFor(language) === 'id' ? ` — e.g. "nggak": "no, not (casual for tidak)", "udah": "already (casual for sudah)"` : ''
+  return `Where a word is a casual spoken form of a more standard ${language} word, end its meaning with "(casual for <standard form>)"${eg}.`
 }
 
 /** Shared instruction for the optional "roman" field: standard learner
@@ -812,6 +820,7 @@ async function glossaryFor(opts: {
         : '',
       ROMAN_RULE(deck.language, 'every glossary entry'),
       MEMORY_RULE(deck.language),
+      CASUAL_FORM_RULE(deck.language),
       FREQ_RULE(deck.language),
     ]
       .filter(Boolean)
@@ -1001,9 +1010,10 @@ async function simplifyStory(opts: {
   story: string
   band: VocabBand
   kind: StoryKind
+  register: StoryRegister
   onMeta?: (m: CallMeta) => void
 }): Promise<string> {
-  const { deck, story, band, kind, onMeta } = opts
+  const { deck, story, band, kind, register, onMeta } = opts
   const langCode = langCodeFor(deck.language)
   const chunks = chunkForRewrite(story, langCode, SIMPLIFY_CHUNK_WORDS)
   const metas: CallMeta[] = []
@@ -1023,6 +1033,11 @@ async function simplifyStory(opts: {
       `Use the exact form the word takes in the text. Do not list names of people or places.${kind === 'learn' ? ' Do not list a key term the text stops to explain — the reader is meant to learn it.' : ''} Do not list words that are inside the vocabulary — a list padded with ordinary words costs the reader a rewrite they did not need.`,
       langCode === 'id'
         ? `Also list any of these, which are always too formal here whatever their frequency: beliau, tersebut, sehingga, namun, oleh karena itu, adapun, dengan demikian, seraya, sembari — and any word where a commoner synonym exists (mendadak→tiba-tiba, sunyi→sepi, menatap→melihat, gerbang→pintu, ransel→tas).`
+        : '',
+      // The audit is hunting for words above the band, and to a model that
+      // knows written Indonesian best, nggak and udah look like errors.
+      register === 'casual'
+        ? `The story is written in casual spoken ${deck.language} on purpose. Never list a casual spoken form (${langCode === 'id' ? 'nggak, udah, aja, gimana, kok, sih, ngomong, bilangin and the like' : 'contractions, particles, spoken verb forms'}) — they are what the reader is here to learn.`
         : '',
       `If every word is inside the vocabulary, return an empty list. That is a normal answer, not a failure.`,
       `Story:\n${story}`,
@@ -1065,6 +1080,9 @@ async function simplifyStory(opts: {
       `• Keep the length. Replacing one hard word with three easy ones is right; dropping the sentence is not.`,
       `• Keep every detail. Where a hard word names something specific, say the same specific thing in a few easy words rather than swapping in a plainer detail.`,
       `• Where a sentence is already simple enough, leave it alone word for word.`,
+      register === 'casual'
+        ? `• The text is in casual spoken ${deck.language} on purpose. Keep every casual form as it is — never "correct" one to its standard written form — and keep any replacement word casual too.`
+        : '',
       // An easy word can be a wrong one: "annexed" swapped for "took" is a
       // different claim. A story survives that; an explanation doesn't.
       kind === 'learn'
@@ -1122,16 +1140,58 @@ async function simplifyStory(opts: {
   return edited.map((piece, i) => `${chunks[i].sep}${piece}`).join('')
 }
 
+/** Indonesian as people actually talk it. "Casual spoken Indonesian" alone
+ *  came back as tidak, sudah and saja: textbook Indonesian with "aku" in it.
+ *  The forms have to be named, or the model writes the language it was asked
+ *  for in the register it reads most of. */
+const ID_CASUAL_STORY = [
+  `In dialogue, use the forms people actually say, never the written ones: nggak (not tidak), udah (not sudah), aja (not saja), gimana, gitu, gini, emang, bener, deket, tau, liat, abis, kalo, sampe, pake, belom, ntar, cuma, kayak, banget.`,
+  `Use the particles that carry the tone of real speech where a speaker would: kok, sih, dong, deh, lho, kan, ya, nih, tuh, waduh. A few per scene, not one on every line.`,
+  `Spoken verb forms are right in dialogue: ngomong, nunggu, nyari, ngerti, mikir, nanya, nonton — and -in in place of -kan or -i (bilangin, tungguin, beliin).`,
+  `People address each other the Indonesian way, by age and role: Kak, Mas, Mbak, Pak, Bu, Dek.`,
+  `Pronouns: aku and kamu between people who know each other; saya to a stranger or someone older. gue and lo only between young friends in Jakarta.`,
+  `Narration between the dialogue stays plain and relaxed — simple spoken Indonesian, never bookish. The casual forms belong to the people talking.`,
+]
+
+/** What a casual thread asks for on top of the level. A story is told largely
+ *  through talk, because talk is what the reader wants to be able to follow;
+ *  an explainer has no one talking, so its own voice relaxes instead. */
+function casualSpec(language: string, kind: StoryKind): string {
+  const id = langCodeFor(language) === 'id'
+  if (kind === 'learn')
+    return id
+      ? `CASUAL SPEECH — write it the way someone would explain it out loud to a friend, not the way a textbook writes it: nggak, udah, aja, gimana, emang, kayak, banget, and the odd kok, sih or lho. Relaxed, not slangy.`
+      : `CASUAL SPEECH — write it the way someone would explain it out loud to a friend: the contractions and spoken forms native speakers really use, not textbook ${language}. Relaxed, not slangy.`
+  const lines = id
+    ? ID_CASUAL_STORY
+    : [
+        `In dialogue, people speak ${language} the way native speakers really talk day to day — the contractions, dropped words, fillers and particles of real speech, not textbook forms.`,
+        `Narration between the dialogue stays plain and relaxed. The casual forms belong to the people talking.`,
+      ]
+  return [
+    `CASUAL SPEECH — this reader wants to understand people the way they really talk.`,
+    `• Tell a good half of the story through people talking to each other: ordinary exchanges as well as the important ones.`,
+    ...lines.map((l) => `• ${l}`),
+  ].join('\n')
+}
+
 /** The language-level line shared by the writing and extension prompts. It
  *  constrains the LANGUAGE and says outright that the story is not to be
  *  simplified with it: left to itself, a model asked for a story "for a
  *  language learner" writes a children's story. */
-function levelSpec(language: string, band: VocabBand, kind: StoryKind = 'story'): string {
-  const casual = langCodeFor(language) === 'id' ? ` ("aku", not "saya")` : ''
+function levelSpec(
+  language: string,
+  band: VocabBand,
+  kind: StoryKind = 'story',
+  register: StoryRegister = 'standard',
+): string {
+  const casual = langCodeFor(language) === 'id' && register === 'standard' ? ` ("aku", not "saya")` : ''
   const language_ = `It is for an adult reading ${language} at ${band.cefr}. Keep the LANGUAGE at that level: roughly the ${band.commonWords} most common words, short sentences, casual spoken ${language}${casual}`
-  return kind === 'learn'
-    ? `${language_}, as a friend who knows the subject would explain it over dinner. Don't simplify the THINKING — plain words, adult ideas.`
-    : `${language_}, dialogue in “…”. Don't simplify the STORY — write something an adult would want to finish.`
+  const level =
+    kind === 'learn'
+      ? `${language_}, as a friend who knows the subject would explain it over dinner. Don't simplify the THINKING — plain words, adult ideas.`
+      : `${language_}, dialogue in “…”. Don't simplify the STORY — write something an adult would want to finish.`
+  return register === 'casual' ? `${level}\n${casualSpec(language, kind)}` : level
 }
 
 /** How a Learn part ends: on the question the next part of the plan answers,
@@ -1197,9 +1257,10 @@ async function extendStory(opts: {
   ending: string
   /** What the reader asked of this part, so the top-up keeps to it. */
   steer?: string
+  register: StoryRegister
   onMeta?: (m: CallMeta) => void
 }): Promise<StoryDraft> {
-  const { deck, story, missingWords, band, kind, ending, steer, onMeta } = opts
+  const { deck, story, missingWords, band, kind, ending, steer, register, onMeta } = opts
   const noun = kind === 'learn' ? 'text' : 'story'
   const prompt = [
     `Below is a ${noun} in ${deck.language}. It stopped too early and needs about ${missingWords} more words.`,
@@ -1208,7 +1269,7 @@ async function extendStory(opts: {
       ? `Its last paragraph hands over to the next part, so write a passage to go just BEFORE that last paragraph. Go further into this part's idea — a concrete example, a cause, a consequence — and leave what the last paragraph asks for the next part to answer. Only well-established facts; leave a detail out rather than guess it. Do not repeat or recap anything above.`
       : `Write ONLY the continuation, following on from the last line in the same voice, with the same people (no new named characters). Move the story forward with what happens next, at the same pace and the same scale: let the situation already there play out or deepen, with everyone acting on what they know. No new twist, secret or crime — and not description or small talk either. Do not repeat or recap anything above.`,
     steer ? `The reader asked this part for: "${steer}". Keep to it.` : '',
-    levelSpec(deck.language, band, kind),
+    levelSpec(deck.language, band, kind, register),
     kind === 'learn' ? '' : ending,
     `Separate paragraphs with a blank line. Return the ${kind === 'learn' ? 'passage' : 'continuation'} alone, in ${deck.language}, in "story".`,
   ]
@@ -1412,6 +1473,8 @@ export async function writeStoryDraft(
     troubleAge?: number
     /** Story (the default) or a real topic explained — see `StoryKind`. */
     kind?: StoryKind
+    /** Standard (the default) or casual speech — see `StoryRegister`. */
+    register?: StoryRegister
     /** Learn threads: the series plan, from the root. Planned here when a new
      *  Learn thread starts without one. */
     outline?: string[]
@@ -1436,7 +1499,7 @@ export async function writeStoryDraft(
 ): Promise<StoryProse> {
   const { deck, learningWords, vocabLevel, lengthWords, continueFrom } = opts
   const { avoidThemes = [], avoidNames = [], focusWords = [], recurWords = [] } = opts
-  const { kind = 'story', partIndex = 0 } = opts
+  const { kind = 'story', register = 'standard', partIndex = 0 } = opts
   const topic = opts.topic?.trim()
   const ending =
     opts.ending ??
@@ -1485,6 +1548,7 @@ export async function writeStoryDraft(
       bible,
       steer,
       wanted,
+      register,
     })
     const prose = await writeAndPolish(brief.prompt, brief.ending)
     return planned && planned.length > 0 ? { ...prose, outline: planned } : prose
@@ -1520,7 +1584,7 @@ export async function writeStoryDraft(
     steer
       ? `The reader steered this part: "${steer}". Follow it, whatever kind of steer it is — something that happens, a change of tone or genre, a jump in time, a focus on one person, how the part should end. Act on it early in this part. It outranks everything else in this brief, including the kind of story this began as, how big the trouble may be, and how to end.`
       : '',
-    levelSpec(deck.language, band),
+    levelSpec(deck.language, band, 'story', register),
     // Scale and pace are here because "a story of someone in Japan" came back
     // as a thriller: a visa held hostage, a boss stealing from his own till to
     // frame a worker, all inside the first part. Every craft ask below pulled
@@ -1604,6 +1668,7 @@ export async function writeStoryDraft(
               kind,
               ending: endingLine,
               steer,
+              register,
               onMeta,
             }),
           (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
@@ -1625,7 +1690,7 @@ export async function writeStoryDraft(
       step(
         'simplify',
         'Making the words easier',
-        (onMeta) => simplifyStory({ deck, story: written, band, kind, onMeta }),
+        (onMeta) => simplifyStory({ deck, story: written, band, kind, register, onMeta }),
         (after) => `${swappedWords(written, after, langCode)} words swapped out`,
       ).catch(() => {
         console.warn('[story] simplify failed — the story stands as written')
@@ -1663,8 +1728,9 @@ function learnBrief(o: {
   bible?: StoryBible
   steer?: string
   wanted: string[]
+  register: StoryRegister
 }): { prompt: string; ending: string } {
-  const { language, band, lengthWords, topic, outline, partIndex, previous, bible, steer, wanted } = o
+  const { language, band, lengthWords, topic, outline, partIndex, previous, bible, steer, wanted, register } = o
   const beyondPlan = outline !== undefined && partIndex >= outline.length
   const ending = learnEndingSpec(outline?.[partIndex + 1])
   const prompt = [
@@ -1691,7 +1757,7 @@ function learnBrief(o: {
     steer
       ? `The reader asked for this part to cover: "${steer}". It must, early — this outranks the plan.`
       : '',
-    levelSpec(language, band, 'learn'),
+    levelSpec(language, band, 'learn', register),
     [
       `What makes it worth reading:`,
       `- one idea, explained properly, rather than a list of facts`,
@@ -1866,6 +1932,7 @@ export async function defineWord(opts: {
     `Also report whether it is a content word (noun, verb, adjective or adverb) rather than a function word.`,
     ROMAN_RULE(deck.language, 'the word'),
     MEMORY_RULE(deck.language),
+    CASUAL_FORM_RULE(deck.language),
     FREQ_RULE(deck.language),
   ]
     .filter(Boolean)
@@ -1928,6 +1995,7 @@ export async function defineWords(opts: {
     `Return every word exactly as given, each with its meaning.`,
     ROMAN_RULE(deck.language, 'every entry'),
     MEMORY_RULE(deck.language),
+    CASUAL_FORM_RULE(deck.language),
     FREQ_RULE(deck.language),
     `Words:`,
     ...words.map((w) => (w.sentence ? `${w.word} — in: "${w.sentence.trim()}"` : w.word)),

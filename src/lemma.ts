@@ -42,6 +42,44 @@ const ID_PREFIX_RULES: { prefix: string; restore: string[] }[] = [
   { prefix: 'di', restore: [''] }, // dibaca → baca
 ]
 
+/** Casual speech's own verb prefix: the bare nasal, without the me-. Same
+ *  restorations as the standard rules, except n-, which only ever stands in
+ *  for a lost t (nunggu → tunggu, nanya → tanya) — restoring nothing there
+ *  would turn every word that simply starts with n into a stem. */
+const ID_CASUAL_PREFIX_RULES: { prefix: string; restore: string[] }[] = [
+  { prefix: 'ng', restore: ['', 'k'] }, // ngomong → omong, ngopi → kopi
+  { prefix: 'ny', restore: ['s', 'c'] }, // nyapu → sapu, nyari → cari
+  { prefix: 'n', restore: ['t'] }, // nunggu → tunggu, nulis → tulis
+]
+
+/** Casual spellings of words the learner may own in their standard form.
+ *  Only sound changes — the same word said more loosely. A different word for
+ *  the same thing (nggak for tidak, cuma for hanya) is vocabulary of its own,
+ *  and is left to be learned. */
+const ID_CASUAL_FORMS: Record<string, string> = {
+  udah: 'sudah',
+  aja: 'saja',
+  gitu: 'begitu',
+  gini: 'begini',
+  emang: 'memang',
+  bener: 'benar',
+  deket: 'dekat',
+  seneng: 'senang',
+  cepet: 'cepat',
+  temen: 'teman',
+  pinter: 'pintar',
+  males: 'malas',
+  tau: 'tahu',
+  liat: 'lihat',
+  abis: 'habis',
+  belom: 'belum',
+  ntar: 'nanti',
+  kalo: 'kalau',
+  sampe: 'sampai',
+  pake: 'pakai',
+  ama: 'sama',
+}
+
 const MIN_ROOT = 2
 
 function idStripClitics(word: string): Set<string> {
@@ -89,5 +127,18 @@ export function rootCandidates(word: string, langCode: string | null): string[] 
       for (const root of idStripPrefixes(bare)) out.add(root)
     }
   }
+  // Casual speech, last: the bare nasal prefix (nunggu → tunggu) and loose
+  // spellings (temennya → temen → teman). Not -in: it is casual -kan/-i, and
+  // those build a different word (see above) however they are spelled.
+  for (const s of [...out]) {
+    for (const { prefix, restore } of ID_CASUAL_PREFIX_RULES) {
+      if (!s.startsWith(prefix)) continue
+      for (const c of restore) {
+        const stem = c + s.slice(prefix.length)
+        if (stem.length >= MIN_ROOT) out.add(stem)
+      }
+    }
+  }
+  for (const s of [...out]) if (ID_CASUAL_FORMS[s]) out.add(ID_CASUAL_FORMS[s])
   return [...out]
 }
