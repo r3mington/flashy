@@ -3,14 +3,21 @@ import { useRef, useState } from 'react'
 import { formatDuration } from '../../time'
 import { formatBankDay, formatHour, useColumnPick } from './chartUtils'
 
-const RANGES = [
+const RANGES: { days: number | 'all'; label: string }[] = [
   { days: 7, label: '7d' },
   { days: 30, label: '30d' },
   { days: 90, label: '90d' },
   { days: 365, label: '1y' },
+  { days: 'all', label: 'Since start' },
 ]
 
-export function RangeBar({ value, onChange }: { value: number; onChange: (days: number) => void }) {
+export function RangeBar({
+  value,
+  onChange,
+}: {
+  value: number | 'all'
+  onChange: (days: number | 'all') => void
+}) {
   return (
     <div className="range-bar">
       <span className="range-label">Range</span>
@@ -330,9 +337,11 @@ export function PipelineChart({ series, today }: { series: BankPoint[]; today: n
 export function Heatmap({
   days,
   today,
+  labelStart = '12 weeks ago',
 }: {
   days: { day: number; reviews: number; seconds: number }[]
   today: number
+  labelStart?: string
 }) {
   const max = Math.max(...days.map((d) => d.reviews), 1)
   // Columns are calendar weeks; the first entry is always a Sunday.
@@ -383,7 +392,7 @@ export function Heatmap({
         ))}
       </div>
       <div className="chart-labels">
-        <span>12 weeks ago</span>
+        <span>{labelStart}</span>
         <span className="heat-scale">
           less
           {[0, 1, 2, 3, 4].map((l) => (

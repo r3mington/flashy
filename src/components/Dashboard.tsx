@@ -3,7 +3,8 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db'
 import { useSettings } from '../useSettings'
 import { formatAgo, formatDuration } from '../time'
-import { type Stats, compute } from './dashboard/compute'
+import { type Range, type Stats, compute } from './dashboard/compute'
+import { CLEAN_READING_FROM } from './dashboard/progress'
 import {
   BarChart,
   Heatmap,
@@ -26,6 +27,16 @@ const GRADE_LABEL: Record<(typeof GRADES)[number], string> = {
   easy: 'Easy',
 }
 
+/** "12 Jul", with the year only when it isn't this one. */
+function shortDate(ts: number): string {
+  const d = new Date(ts)
+  return d.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    ...(d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}),
+  })
+}
+
 interface Props {
   onOpenDeck?: (deckId: number) => void
   onStudy?: (deckId: number) => void
@@ -35,7 +46,7 @@ interface Props {
 
 export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) {
   const settings = useSettings()
-  const [rangeDays, setRangeDays] = useState<number>(30)
+  const [range, setRange] = useState<Range>(30)
   const [deckFilter, setDeckFilter] = useState<number | 'all'>('all')
 
   const data = useLiveQuery(async () => {
@@ -51,9 +62,9 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
     return { cards, reviews, decks, snapshots, stories, reading, listening }
   })
 
-  const stats = useMemo(() => (data ? compute(data, rangeDays, deckFilter) : null), [
+  const stats = useMemo(() => (data ? compute(data, range, deckFilter) : null), [
     data,
-    rangeDays,
+    range,
     deckFilter,
   ])
 
@@ -61,6 +72,11 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
   const { decks } = data
   const scoped = deckFilter !== 'all'
   const deckName = scoped ? decks.find((d) => d.id === deckFilter)?.name : null
+  // How the chosen range reads in a sentence, and under the first bar of a
+  // chart. Every number that depends on the range says which one it is.
+  const rangeText =
+    range === 'all' ? `since ${shortDate(stats.windowStart)}` : `in the last ${range} days`
+  const rangeStart = range === 'all' ? shortDate(stats.windowStart) : `${range}d ago`
 
   return (
     <>
@@ -103,11 +119,13 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
         <Stat
           label="Words"
           value={stats.cards.length}
-          hint={
-            stats.ignoredCount > 0
-              ? `${stats.states.known} known · ${stats.ignoredCount} ignored`
-              : `${stats.states.known} known`
-          }
+          hint={[
+            `${stats.states.known} known`,
+            stats.addedInRange > 0 ? `+${stats.addedInRange} ${rangeText}` : null,
+            stats.ignoredCount > 0 ? `${stats.ignoredCount} ignored` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
         />
         <Stat
           label="Reviews today"
@@ -121,20 +139,103 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
           hint={stats.bestStreak > stats.streak ? `best ${stats.bestStreak}` : undefined}
         />
         <Stat
-          label={`Retention (${rangeDays}d)`}
+          label="Remembered"
           value={stats.ret.overall === null ? '—' : `${stats.ret.overall}%`}
-          hint={stats.ret.overallCount > 0 ? `${stats.ret.overallCount} answers` : undefined}
+          hint={
+            stats.ret.overallCount > 0
+              ? `of ${stats.ret.overallCount} answers ${rangeText}`
+              : `no answers ${rangeText}`
+          }
         />
         <Stat
-          label="Time invested"
-          value={formatDuration(stats.totalTimeSecs)}
-          hint="reviewing · reading · listening"
+          label="Time spent"
+          value={formatDuration(stats.timeInRange)}
+          hint={`${rangeText} · reviewing, reading, listening`}
         />
       </div>
 
-      <RangeBar value={rangeDays} onChange={setRangeDays} />
+      <RangeBar value={range} onChange={setRange} />
 
       {/* ---------- reading ---------- */}
+
+      {stats.readWordsTotal > 0 && (
+        <section className="dash-section">
+          <div className="eyebrow">
+            Reading progress
+            <span className="eyebrow-note">
+              {stats.readWordsTotal.toLocaleString()} words read in all ·{' '}
+              {stats.readWordsInRange.toLocaleString()} {rangeText}
+              {stats.readingDaysInRange > 0 &&
+                ` · ${stats.readWordsPerReadingDay.toLocaleString()} a day on the ${stats.readingDaysInRange} ${stats.readingDaysInRange === 1 ? 'day' : 'days'} you read`}
+            </span>
+          </div>
+          <BarChart
+            data={stats.readWordsCumulative}
+            labelStart={rangeStart}
+            labelEnd="today"
+            describe={(i, v) =>
+              `${formatBankDay(stats.days[i], stats.today)} · ${stats.readWordsSeries[i].toLocaleString()} read that day · ${v.toLocaleString()} in total`
+            }
+          />
+          <p className="note">
+            Your running total of story words read. Words count as you scroll, once per story —
+            re-reading one doesn't count it again.
+            {stats.wordsTrackedFrom !== null &&
+              ` Counting began on ${shortDate(stats.wordsTrackedFrom)}; anything read before then isn't included.`}
+          </p>
+
+          <div className="eyebrow" style={{ marginTop: '1.25rem' }}>
+            Reading speed
+            {stats.speed && (
+              <span className="eyebrow-note">
+                about {stats.speed.wpm} words a minute {rangeText}
+              </span>
+            )}
+          </div>
+          {stats.weeklySpeed.length >= 2 ? (
+            <BarChart
+              data={stats.weeklySpeed.map((w) => w.wpm)}
+              labelStart={`week of ${shortDate(stats.weeklySpeed[0].weekStart)}`}
+              labelEnd="this week"
+              hint="Tap the chart to read a week"
+              describe={(i, v) => `Week of ${shortDate(stats.weeklySpeed[i].weekStart)} · ${v} words a minute`}
+            />
+          ) : null}
+          <p className="note">
+            {stats.speed
+              ? 'Rising bars mean you read faster. '
+              : 'Your reading speed shows up here once you have a few days of reading. '}
+            It only uses days from {shortDate(CLEAN_READING_FROM)}, when the reading clock started
+            ignoring time you weren't actually reading. Days spent re-reading old stories pull it
+            down a little.
+          </p>
+        </section>
+      )}
+
+      {stats.storyEase.length >= 2 && (
+        <section className="dash-section">
+          <div className="eyebrow">
+            How hard your stories are
+            <span className="eyebrow-note">new words in every 100, one bar per story</span>
+          </div>
+          <BarChart
+            data={stats.storyEase.map((e) => e.newPer100)}
+            labelStart={shortDate(stats.storyEase[0].story.createdAt)}
+            labelEnd={shortDate(stats.storyEase[stats.storyEase.length - 1].story.createdAt)}
+            hint="Tap the chart to read a story"
+            describe={(i, v) => {
+              const e = stats.storyEase[i]
+              return `${e.story.title} · ${shortDate(e.story.createdAt)} · ${v} new in every 100 words`
+            }}
+          />
+          <p className="note">
+            Shorter bars mean easier reading. Each story is measured against the words you had
+            when it was written, so it shows how hard it was for you then. Under 5 in 100 reads
+            comfortably; above 10, most readers lose the thread. The difficulty you pick for a
+            story moves this too.
+          </p>
+        </section>
+      )}
 
       {stats.stories.length > 0 && (
         <section className="dash-section">
@@ -175,52 +276,16 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
         </section>
       )}
 
-      {stats.readWordsTotal > 0 && (
-        <section className="dash-section">
-          <div className="eyebrow">
-            Words read
-            <span className="eyebrow-note">
-              {stats.readWordsInRange.toLocaleString()} in the last {rangeDays}d ·{' '}
-              {stats.readWordsPerReadingDay.toLocaleString()}/day on the{' '}
-              {stats.readingDaysInRange} {stats.readingDaysInRange === 1 ? 'day' : 'days'} you read
-            </span>
-          </div>
-          <BarChart
-            data={stats.readWordsSeries}
-            labelStart={`${rangeDays}d ago`}
-            labelEnd="today"
-            describe={(i, v) =>
-              `${formatBankDay(stats.days[i], stats.today)} · ${v.toLocaleString()} ${v === 1 ? 'word' : 'words'} read`
-            }
-          />
-          <p className="note">
-            Counted as you scroll through a story, once per story — re-reading one doesn't count its
-            words again. Reading isn't split per deck.
-          </p>
-        </section>
-      )}
-
       {/* ---------- consistency ---------- */}
 
       <section className="dash-section">
-        <div className="eyebrow">Activity · last 12 weeks</div>
-        <Heatmap days={stats.heatmap} today={stats.today} />
+        <div className="eyebrow">Activity · {stats.heatLong ? rangeText : 'last 12 weeks'}</div>
+        <Heatmap
+          days={stats.heatmap}
+          today={stats.today}
+          labelStart={stats.heatLong ? shortDate(stats.heatmap[0].day) : undefined}
+        />
       </section>
-
-      {stats.byHour.some((h) => h.count > 0) && (
-        <section className="dash-section">
-          <div className="eyebrow">
-            When you study
-            {stats.bestHour !== null && (
-              <span className="eyebrow-note">
-                sharpest around {formatHour(stats.bestHour.hour)} · {stats.bestHour.accuracy}%
-                correct
-              </span>
-            )}
-          </div>
-          <HourChart hours={stats.byHour} />
-        </section>
-      )}
 
       {/* ---------- growth ---------- */}
 
@@ -241,12 +306,12 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
         <div className="eyebrow">
           Words added
           <span className="eyebrow-note">
-            {stats.addedInRange} in the last {rangeDays}d · {stats.addedPerWeek}/week
+            {stats.addedInRange} {rangeText} · {stats.addedPerWeek}/week
           </span>
         </div>
         <BarChart
           data={stats.addedSeries}
-          labelStart={`${rangeDays}d ago`}
+          labelStart={rangeStart}
           labelEnd="today"
           describe={(i, v) =>
             `${formatBankDay(stats.days[i], stats.today)} · ${v} ${v === 1 ? 'word' : 'words'} added`
@@ -274,7 +339,7 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
           keys={GRADES}
           labels={GRADES.map((g) => GRADE_LABEL[g])}
           colors={['var(--red)', 'var(--amber)', 'var(--green)', 'var(--violet)']}
-          labelStart={`${rangeDays}d ago`}
+          labelStart={rangeStart}
           labelEnd="today"
         />
         <div className="state-legend">
@@ -302,7 +367,7 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
 
       <section className="dash-section">
         <div className="eyebrow">
-          Time invested
+          Time spent
           <span className="eyebrow-note">
             {formatDuration(stats.timeTotals.study)} reviewing ·{' '}
             {formatDuration(stats.timeTotals.read)} reading ·{' '}
@@ -314,7 +379,7 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
           keys={['study', 'read', 'listen'] as const}
           labels={['reviewing', 'reading', 'listening']}
           colors={['var(--accent)', 'var(--green)', 'var(--violet)']}
-          labelStart={`${rangeDays}d ago`}
+          labelStart={rangeStart}
           labelEnd="today"
           format={(v) => formatDuration(v)}
         />
@@ -471,7 +536,7 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
 
       {/* ---------- decks ---------- */}
 
-      {decks.length > 0 && (
+      {decks.length > 1 && (
         <section className="dash-section">
           <div className="eyebrow">Decks</div>
           <div className="deck-table-wrap">
@@ -537,6 +602,11 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
             hint={stats.bestDay ? formatAgo(stats.bestDay.day) : undefined}
           />
           <Stat label="Lifetime answers" value={stats.allReviews.length} />
+          <Stat
+            label="Total time"
+            value={formatDuration(stats.totalTimeSecs)}
+            hint="reviewing · reading · listening"
+          />
           {stats.readWordsTotal > 0 && (
             <Stat
               label="Words read"
@@ -558,6 +628,79 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
         </div>
       </section>
 
+      {/* ---------- more: useful now and then ---------- */}
+
+      <details className="dash-more">
+        <summary>More</summary>
+      {stats.byHour.some((h) => h.count > 0) && (
+        <section className="dash-section">
+          <div className="eyebrow">
+            When you study
+            {stats.bestHour !== null && (
+              <span className="eyebrow-note">
+                sharpest around {formatHour(stats.bestHour.hour)} · {stats.bestHour.accuracy}%
+                correct
+              </span>
+            )}
+          </div>
+          <HourChart hours={stats.byHour} />
+        </section>
+      )}
+
+      {decks.length === 1 && (
+        <section className="dash-section">
+          <div className="eyebrow">Decks</div>
+          <div className="deck-table-wrap">
+            <table className="deck-table">
+              <thead>
+                <tr>
+                  <th>Deck</th>
+                  <th>Words</th>
+                  <th>Known</th>
+                  <th>Due</th>
+                  <th>7d</th>
+                  <th>Retention</th>
+                  <th>Last studied</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.deckRows.map((r) => (
+                  <tr
+                    key={r.deck.id}
+                    onClick={() => onOpenDeck?.(r.deck.id)}
+                    className={onOpenDeck ? 'clickable' : undefined}
+                  >
+                    <td>
+                      <span className="deck-cell-name">{r.deck.name}</span>
+                      <span className="deck-cell-lang">{r.deck.language}</span>
+                    </td>
+                    <td>{r.cards}</td>
+                    <td>
+                      {r.cards > 0 ? `${Math.round((r.known / r.cards) * 100)}%` : '—'}
+                      <span className="cell-sub">{r.known}</span>
+                    </td>
+                    <td className={r.dueNow > 0 ? 'hot' : undefined}>{r.dueNow || '—'}</td>
+                    <td>{r.reviews7d || '—'}</td>
+                    <td>{r.retention === null ? '—' : `${r.retention}%`}</td>
+                    <td>{r.lastStudied === null ? 'never' : formatAgo(r.lastStudied)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {stats.languages.length > 1 && (
+            <div className="state-legend">
+              {stats.languages.map((l) => (
+                <span key={l.language}>
+                  <strong>{l.language}</strong> · {l.cards} {l.cards === 1 ? 'word' : 'words'},{' '}
+                  {l.known} known
+                </span>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       {stats.gaps.length > 0 && (
         <section className="dash-section">
           <div className="eyebrow">
@@ -574,6 +717,8 @@ export function Dashboard({ onOpenDeck, onStudy, onDrill, onOpenStory }: Props) 
           </div>
         </section>
       )}
+
+      </details>
 
       {stats.allReviews.length === 0 && (
         <p className="note">

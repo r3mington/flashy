@@ -15,6 +15,18 @@ import {
   secondsPerAnswer,
   studySecondsByDay,
 } from '../../stats'
+import {
+  daysBetween,
+  inceptionDay,
+  readingSpeed,
+  storyEase,
+  weeklySpeed,
+  wordsTrackedFrom,
+} from './progress'
+
+/** A fixed number of days back from today, or everything since the deck (or
+ *  the oldest deck) began. */
+export type Range = number | 'all'
 
 // ---------------------------------------------------------------- computation
 
@@ -28,13 +40,15 @@ export type RawData = {
   listening: ListeningLog[]
 }
 
-export function compute(rawInput: RawData, rangeDays: number, deckFilter: number | 'all') {
+export function compute(rawInput: RawData, range: Range, deckFilter: number | 'all') {
   // Ignored words (brand names, place names…) live in the deck only to keep
   // stories from flagging them as new. They are not vocabulary, so they are
   // dropped before anything here counts them — as known or as anything else.
   const raw: RawData = { ...rawInput, cards: rawInput.cards.filter((c) => !c.ignored) }
   const now = Date.now()
   const today = startOfDay(now)
+  const rangeDays =
+    range === 'all' ? daysBetween(inceptionDay(raw, deckFilter, today), today) : range
   // The day axis is walked midnight to midnight rather than stepped by 24h,
   // so it stays on real midnights across DST.
   const days: number[] = [today]
@@ -108,6 +122,10 @@ export function compute(rawInput: RawData, rangeDays: number, deckFilter: number
   }))
   const readWordsSeries = days.map((day) => readWordsByDay.get(day) ?? 0)
   const readWordsInRange = readWordsSeries.reduce((a, b) => a + b, 0)
+  // Running total across the window, starting from whatever was read before it.
+  let runningWords = 0
+  for (const [day, w] of readWordsByDay) if (day < windowStart) runningWords += w
+  const readWordsCumulative = readWordsSeries.map((w) => (runningWords += w))
   const readingDaysInRange = readWordsSeries.filter((w) => w > 0).length
   const timeTotals = timeSeries.reduce(
     (a, p) => ({ study: a.study + p.study, read: a.read + p.read, listen: a.listen + p.listen }),
@@ -118,10 +136,12 @@ export function compute(rawInput: RawData, rangeDays: number, deckFilter: number
     raw.reading.reduce((a, r) => a + r.seconds, 0) +
     raw.listening.reduce((a, r) => a + r.seconds, 0)
 
-  // --- 12-week heatmap, aligned so each column is a calendar week
+  // --- heatmap: twelve weeks, or the whole range when that is longer,
+  // aligned so each column is a calendar week
   const heatDays: { day: number; reviews: number; seconds: number }[] = []
   let heatStart = today
   for (let i = 0; i < 83; i++) heatStart = prevDay(heatStart)
+  if (windowStart < heatStart) heatStart = windowStart
   for (let dow = new Date(heatStart).getDay(); dow > 0; dow--) heatStart = prevDay(heatStart)
   for (let d = heatStart; d <= today; d = nextDay(d)) {
     heatDays.push({
@@ -221,9 +241,14 @@ export function compute(rawInput: RawData, rangeDays: number, deckFilter: number
 
   const topDue = [...deckRows].sort((a, b) => b.dueNow - a.dueNow)[0]
 
+  const deckLanguage = new Map(raw.decks.map((d) => [d.id, d.language]))
+
   return {
     today,
     days,
+    rangeDays,
+    windowStart,
+    heatLong: heatDays.length > 7 * 13,
     cards,
     ignoredCount,
     allReviews,
@@ -257,8 +282,22 @@ export function compute(rawInput: RawData, rangeDays: number, deckFilter: number
     gradeTotals,
     timeSeries,
     timeTotals,
+    timeInRange: timeTotals.study + timeTotals.read + timeTotals.listen,
     readWordsSeries,
+    readWordsCumulative,
     readWordsInRange,
+    wordsTrackedFrom: wordsTrackedFrom(raw.reading),
+    speed: readingSpeed(raw.reading, windowStart, today),
+    weeklySpeed: weeklySpeed(raw.reading, windowStart, today),
+    // Stories are measured against their own deck's bank, so the full card
+    // list goes in, ignored words included — they are what tells a brand name
+    // from a word the reader hasn't learned.
+    storyEase: storyEase(
+      stories,
+      rawInput.cards,
+      (id) => deckLanguage.get(id),
+      windowStart,
+    ),
     readWordsTotal: raw.reading.reduce((a, r) => a + (r.words ?? 0), 0),
     readWordsPerReadingDay:
       readingDaysInRange > 0 ? Math.round(readWordsInRange / readingDaysInRange) : 0,

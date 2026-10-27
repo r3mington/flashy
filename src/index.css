@@ -2583,3 +2583,14 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   white-space: pre;
   min-height: 160px;
 }
+
+/* Dashboard sections that are useful now and then, folded away by default. */
+.dash-more { margin-top: 8px; }
+.dash-more > summary {
+  cursor: pointer;
+  color: var(--ink-2);
+  font-size: 14px;
+  padding: 12px 0;
+  list-style-position: inside;
+}
+.dash-more[open] > summary { margin-bottom: 4px; }
