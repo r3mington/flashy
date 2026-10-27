@@ -196,7 +196,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const [baselineKeys, setBaselineKeys] = useState<Set<string>>(new Set())
 
   // Daily reading log — ticks only while a story is open.
-  const timer = useReadingTimer(!!story)
+  const timer = useReadingTimer(!!story, reading)
 
   const settings = useSettings()
   const { deck, cards, langCode } = useDeck(deckId)
