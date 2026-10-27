@@ -2567,3 +2567,19 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   .backup-table-row { grid-template-columns: 1fr auto; }
   .backup-table-span { grid-column: 1 / -1; text-align: left; margin-top: -2px; }
 }
+
+/* ---- Google Sheets ---- */
+.sheet-setup { margin: 14px 0; }
+.sheet-setup summary { cursor: pointer; color: var(--ink-2); font-size: 14px; }
+.sheet-steps { margin: 12px 0 0; padding-left: 20px; color: var(--ink-2); font-size: 14px; line-height: 1.55; }
+.sheet-steps li { margin-bottom: 6px; }
+.sheet-steps b { color: var(--ink); font-weight: 600; }
+.sheet-steps a { color: var(--accent); }
+.sheet-setup .field { margin-top: 10px; }
+.field textarea.sheet-script {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+  min-height: 160px;
+}

@@ -4,6 +4,7 @@ import { checkAuth } from './auth'
 import { liveQuery } from 'dexie'
 import { db, recordDailySnapshot } from './db'
 import { useSettings } from './useSettings'
+import { dailySheetSave } from './sheets'
 import { DeckList } from './components/DeckList'
 import { DeckView } from './components/DeckView'
 import { StudySrs } from './components/StudySrs'
@@ -164,6 +165,18 @@ export default function App() {
       sub.unsubscribe()
       document.removeEventListener('visibilitychange', onHide)
     }
+  }, [])
+
+  // The Google Sheet, once a day: at the first open of the day, or the first
+  // time the app comes back to the front after midnight — an installed app
+  // can sit open in the background for days without ever reloading.
+  useEffect(() => {
+    void dailySheetSave()
+    const onShow = () => {
+      if (document.visibilityState === 'visible') void dailySheetSave()
+    }
+    document.addEventListener('visibilitychange', onShow)
+    return () => document.removeEventListener('visibilitychange', onShow)
   }, [])
 
   // Force light/dark, or clear the override to follow the OS (the default CSS

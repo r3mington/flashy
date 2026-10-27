@@ -21,6 +21,7 @@ import {
   type RestoreMode,
   type TableSummary,
 } from '../backup'
+import { APPS_SCRIPT, SHEET_TAB, isAppsScriptUrl, saveToSheet } from '../sheets'
 
 async function exportJson() {
   const [decks, cards] = await Promise.all([db.decks.toArray(), db.cards.toArray()])
@@ -233,6 +234,168 @@ function BackupSection() {
           </div>
         </div>
       )}
+    </section>
+  )
+}
+
+/** Connect a Google Sheet, see how the last save went, and save on demand.
+ *  The setup steps sit here rather than in a help page because they are only
+ *  ever read once, while doing them. */
+function SheetSection() {
+  const settings = useSettings()
+  const connected = settings.sheetUrl !== ''
+  const [draft, setDraft] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const link = draft ?? settings.sheetUrl
+  // The last failure, if nothing has worked since.
+  const lastError =
+    settings.sheetLastError && settings.sheetLastAttempt > settings.sheetLastSync
+      ? settings.sheetLastError
+      : null
+
+  async function save(url: string) {
+    setBusy(true)
+    setError(null)
+    setNote(null)
+    try {
+      const words = await saveToSheet(url)
+      setNote(`Saved ${words.toLocaleString()} words to the “${SHEET_TAB}” tab.`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'The save failed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function connect() {
+    const url = link.trim()
+    if (!isAppsScriptUrl(url)) {
+      setError(
+        'That isn’t a Web app link. It should start with https://script.google.com/macros/s/ and end with /exec.',
+      )
+      return
+    }
+    await saveSettings({ sheetUrl: url })
+    setDraft(null)
+    // Save straight away: the first save is the test that the link works.
+    await save(url)
+  }
+
+  async function disconnect() {
+    if (!confirm('Stop saving to this Google Sheet? The sheet itself is left as it is.')) return
+    await saveSettings({ sheetUrl: '', sheetLastError: '' })
+    setDraft(null)
+    setNote(null)
+    setError(null)
+  }
+
+  async function copyScript() {
+    try {
+      await navigator.clipboard.writeText(APPS_SCRIPT)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setError('Couldn’t copy. Select the script in the box below and copy it by hand.')
+    }
+  }
+
+  return (
+    <section className="dash-section">
+      <div className="eyebrow">Google Sheets</div>
+      <p className="note">
+        Keeps a copy of every word from every deck, with all its details, in one tab
+        (“{SHEET_TAB}”) of a Google Sheet you own. Flashy saves once a day, the first time you
+        open it, and each save replaces the whole tab. Other tabs are never touched.
+      </p>
+
+      {connected && (
+        <div className="option-row">
+          <div>
+            <div className="option-name">Save now</div>
+            <div className="option-desc">
+              {settings.sheetLastSync
+                ? `Last saved ${new Date(settings.sheetLastSync).toLocaleString()} — ${settings.sheetLastCount.toLocaleString()} words.`
+                : 'Not saved yet.'}
+            </div>
+          </div>
+          <button className="btn small primary" disabled={busy} onClick={() => save(settings.sheetUrl)}>
+            {busy ? 'Saving…' : 'Save now'}
+          </button>
+        </div>
+      )}
+      {lastError && !error && <p className="note error">Last save failed: {lastError}</p>}
+
+      <details className="sheet-setup" open={!connected}>
+        <summary>{connected ? 'How it was set up' : 'Set it up — once, about five minutes'}</summary>
+        <ol className="sheet-steps">
+          <li>
+            On a computer, open the Google Sheet you want to use, or make a new one at{' '}
+            <a href="https://sheets.new" target="_blank" rel="noreferrer">sheets.new</a>.
+          </li>
+          <li>In the sheet’s menu, choose <b>Extensions → Apps Script</b>.</li>
+          <li>
+            Delete what’s in the editor, paste in the helper script below, and press the save
+            icon.
+          </li>
+          <li>
+            Press <b>Deploy → New deployment</b>. Click the gear next to “Select type” and choose{' '}
+            <b>Web app</b>. Set “Execute as” to <b>Me</b> and “Who has access” to{' '}
+            <b>Anyone</b>, then press <b>Deploy</b>.
+          </li>
+          <li>
+            Google asks for permission. Choose your account. If it warns that Google hasn’t
+            verified the app, press <b>Advanced</b>, then <b>Go to</b> your project — it’s your
+            own script. Then <b>Allow</b>.
+          </li>
+          <li>
+            Copy the <b>Web app</b> link (it ends in <code>/exec</code>). Send it to the device
+            you use Flashy on, paste it below, and press <b>Connect</b>.
+          </li>
+        </ol>
+        <p className="note">
+          Anyone who has the link could replace the tab, so keep it private, like a password.
+        </p>
+        <div className="backup-actions">
+          <button className="btn small" onClick={copyScript}>
+            {copied ? 'Copied' : 'Copy helper script'}
+          </button>
+        </div>
+        <div className="field">
+          <textarea className="sheet-script" readOnly value={APPS_SCRIPT} rows={8} />
+        </div>
+      </details>
+
+      <div className="field">
+        <label htmlFor="sheet-url">Web app link</label>
+        <input
+          id="sheet-url"
+          value={link}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="https://script.google.com/macros/s/…/exec"
+          autoComplete="off"
+          spellCheck={false}
+        />
+      </div>
+      <div className="backup-actions">
+        <button
+          className="btn small primary"
+          disabled={busy || link.trim() === '' || link.trim() === settings.sheetUrl}
+          onClick={connect}
+        >
+          {busy ? 'Saving…' : 'Connect'}
+        </button>
+        {connected && (
+          <button className="btn small ghost" disabled={busy} onClick={disconnect}>
+            Disconnect
+          </button>
+        )}
+      </div>
+
+      {error && <p className="note error">{error}</p>}
+      {note && <p className="note">{note}</p>}
     </section>
   )
 }
@@ -501,6 +664,8 @@ export function Options() {
       </section>
 
       <BackupSection />
+
+      <SheetSection />
 
       <section className="dash-section">
         <div className="eyebrow">Data</div>

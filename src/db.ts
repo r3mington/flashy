@@ -371,6 +371,17 @@ export interface AppSettings {
   storyColors: StoryColors
   /** The speech last picked for a new story, so the form remembers it. */
   storyRegister: StoryRegister
+  /** The Apps Script web app that writes the word bank into a Google Sheet
+   *  (see `sheets.ts`). Empty = not connected. */
+  sheetUrl: string
+  /** When the sheet was last written successfully. 0 = never. */
+  sheetLastSync: number
+  /** When a save was last tried, whether or not it worked. 0 = never. */
+  sheetLastAttempt: number
+  /** Words written by the last successful save. */
+  sheetLastCount: number
+  /** Why the last save failed; empty once one succeeds. */
+  sheetLastError: string
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -392,6 +403,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   storyControlsOpen: true,
   storyColors: DEFAULT_STORY_COLORS,
   storyRegister: 'standard',
+  sheetUrl: '',
+  sheetLastSync: 0,
+  sheetLastAttempt: 0,
+  sheetLastCount: 0,
+  sheetLastError: '',
 }
 
 export const db = new Dexie('flashy') as Dexie & {
