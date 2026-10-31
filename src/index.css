@@ -2595,10 +2595,10 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 }
 .dash-more[open] > summary { margin-bottom: 4px; }
 
-/* One-handed word pop-up (phones): the story stays visible and tappable
-   behind a compact panel, and the buttons float up one edge above it. */
-.word-sheet-backdrop.thumb { background: transparent; pointer-events: none; animation: none; }
-.word-sheet.thumb { pointer-events: auto; padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); }
+/* One-handed word pop-up (phones): the story stays visible behind a compact
+   panel, and the buttons float up one edge above it. */
+.word-sheet-backdrop.thumb { background: transparent; animation: none; }
+.word-sheet.thumb { padding: 14px 18px calc(14px + env(safe-area-inset-bottom)); }
 .word-sheet.thumb .word-sheet-meaning { margin-bottom: 6px; }
 .word-sheet-more {
   background: none;

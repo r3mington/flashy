@@ -166,10 +166,10 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const [story, setStory] = useState<SavedStory | null>(null)
   const [showTranslation, setShowTranslation] = useState(false)
   const [selected, setSelected] = useState<Definition | null>(null)
-  // One-handed pop-up (see `storyThumb`): its extras fold behind "More", and
-  // each word opens folded.
-  const [sheetMore, setSheetMore] = useState(false)
-  useEffect(() => setSheetMore(false), [selected?.word])
+  // One-handed pop-up (see `storyThumb`): its extras can fold away behind
+  // "More". Each word opens with them showing.
+  const [sheetMore, setSheetMore] = useState(true)
+  useEffect(() => setSheetMore(true), [selected?.word])
   // Phone-sized: the width the rest of the app already lays out as mobile.
   const [isPhone, setIsPhone] = useState(() => window.matchMedia(PHONE_QUERY).matches)
   useEffect(() => {
@@ -2187,8 +2187,8 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         >
           <div className={`word-sheet${thumb ? ' thumb' : ''}`} onClick={(e) => e.stopPropagation()}>
             {/* One-handed: the buttons float up the chosen edge, just above
-                the panel, where the thumb already is. The story stays
-                tappable behind them, so the next word opens straight away. */}
+                the panel, where the thumb already is. A tap anywhere else
+                closes it, as in the normal pop-up. */}
             {thumb && (
               <div className={`thumb-rail ${thumb}`}>
                 {WORD_STATUSES.map((s) => (
