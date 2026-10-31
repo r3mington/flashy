@@ -116,6 +116,9 @@ export type StoryKind = 'story' | 'learn'
  *  before it existed, which are all standard. */
 export type StoryRegister = 'standard' | 'casual'
 
+/** Which story words get a meaning above them — see `AppSettings.storyGloss`. */
+export type StoryGloss = 'off' | 'first' | 'all'
+
 export interface SavedStory {
   id: number
   deckId: number
@@ -360,10 +363,13 @@ export interface AppSettings {
    *  on a flashcard and a distraction in a paragraph, and the reader should be
    *  able to say so per context. */
   storyEmoji: boolean
-  /** A one-word English gloss above the FIRST appearance of each new word in
-   *  a story, and nothing after: the first meeting is anchored without a tap,
-   *  and every later one asks the reader to remember. */
-  storyGloss: boolean
+  /** Short English meanings above story words. 'first' puts one above the
+   *  FIRST appearance of each new word, and nothing after: the first meeting
+   *  is anchored without a tap, and every later one asks the reader to
+   *  remember. 'all' puts one above every new and in-study word, every time —
+   *  for reading at a level where stopping to tap would lose the thread.
+   *  Saved as a boolean before 'all' existed: true meant 'first'. */
+  storyGloss: StoryGloss | boolean
   /** Whether the reader's control bar is expanded (it collapses to a slim
    *  play + progress strip so the story gets the screen). */
   storyControlsOpen: boolean
@@ -399,7 +405,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   storyFontScale: 1,
   storyRoman: 'new',
   storyEmoji: true,
-  storyGloss: true,
+  storyGloss: 'first',
   storyControlsOpen: true,
   storyColors: DEFAULT_STORY_COLORS,
   storyRegister: 'standard',

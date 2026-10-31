@@ -14,6 +14,7 @@ import {
   type SavedStory,
   type StoryKind,
   type StoryRegister,
+  type StoryGloss,
   type WordStatus,
 } from '../db'
 import { dueForRecurrence, encounterStats, fadeLevel } from '../encounters'
@@ -431,7 +432,8 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // The first appearance of each word in the story, by word index — where the
   // micro-gloss goes. Only the FIRST: the first meeting is the one worth
   // anchoring for free, and every one after it should ask to be remembered.
-  const showGloss = settings.storyGloss
+  const glossMode: StoryGloss =
+    settings.storyGloss === true ? 'first' : settings.storyGloss === false ? 'off' : settings.storyGloss
   const firstAt = useMemo(() => {
     const map = new Map<string, number>()
     for (const row of layout.rows)
@@ -1171,6 +1173,10 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     story?.bookmark != null && layout.wordCount > 0
       ? Math.min(100, Math.round(((story.bookmark + 1) / layout.wordCount) * 100))
       : null
+  function cycleGlossMode() {
+    const next: StoryGloss = glossMode === 'off' ? 'first' : glossMode === 'first' ? 'all' : 'off'
+    saveSettings({ storyGloss: next })
+  }
   function cycleRomanMode() {
     const next = romanMode === 'off' ? 'new' : romanMode === 'new' ? 'all' : 'off'
     saveSettings({ storyRoman: next })
@@ -1855,12 +1861,18 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             )}
 
             <button
-              className={`btn small ${showGloss ? '' : 'ghost'}`}
-              onClick={() => saveSettings({ storyGloss: !showGloss })}
-              aria-pressed={showGloss}
-              title="A one-word meaning above the first appearance of each new word"
+              className={`btn small ${glossMode === 'off' ? 'ghost' : ''}`}
+              onClick={cycleGlossMode}
+              title={
+                glossMode === 'off'
+                  ? 'Meanings above words: off'
+                  : glossMode === 'first'
+                    ? 'Meanings above words: the first time each new word appears'
+                    : 'Meanings above words: every new and in-study word, every time'
+              }
             >
-              <span className="roman-glyph">abc</span> {showGloss ? 'on' : 'off'}
+              <span className="roman-glyph">abc</span>{' '}
+              {glossMode === 'off' ? 'off' : glossMode === 'first' ? 'new' : 'all'}
             </button>
 
             <div className="story-size">
@@ -1963,10 +1975,20 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   // withdrawn and the word asks to be remembered instead;
                   // a tap brings it back along with the colour. Shares the
                   // ruby line with romanization when both apply.
+                  //
+                  // 'all' is the reader asking for every coloured word to
+                  // carry its meaning, every time, faded or not. A word in
+                  // study falls back to its own card when the story's
+                  // glossary missed it.
                   const gloss =
-                    showGloss && isNew && fade === 0 && firstAt.get(key) === t.wordIdx
-                      ? microGloss(defs.get(key)?.meaning)
-                      : undefined
+                    glossMode === 'all' && (isNew || inStudy)
+                      ? microGloss(
+                          defs.get(key)?.meaning ??
+                            cardByKey.get(resolveDeckKey(key) ?? '')?.meaning,
+                        )
+                      : glossMode === 'first' && isNew && fade === 0 && firstAt.get(key) === t.wordIdx
+                        ? microGloss(defs.get(key)?.meaning)
+                        : undefined
                   const ruby = [roman, gloss].filter(Boolean).join(' · ')
                   return (
                     <span key={ti} className={marked ? 'story-marked-word' : undefined}>
