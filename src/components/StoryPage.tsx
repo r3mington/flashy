@@ -15,6 +15,7 @@ import {
   type StoryKind,
   type StoryRegister,
   type StoryGloss,
+  type StoryThumb,
   type WordStatus,
 } from '../db'
 import { dueForRecurrence, encounterStats, fadeLevel } from '../encounters'
@@ -57,6 +58,8 @@ import { defKey, splitSentences, tokenizeWords, countWords } from '../text'
 import { storyColorVars } from '../storyColors'
 import { explainAffixes } from '../affixes'
 import { useSettings, saveSettings } from '../useSettings'
+
+const PHONE_QUERY = '(max-width: 767px)'
 
 const WORD_STATUSES: { key: WordStatus; label: string; title: string }[] = [
   {
@@ -163,6 +166,18 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const [story, setStory] = useState<SavedStory | null>(null)
   const [showTranslation, setShowTranslation] = useState(false)
   const [selected, setSelected] = useState<Definition | null>(null)
+  // One-handed pop-up (see `storyThumb`): its extras fold behind "More", and
+  // each word opens folded.
+  const [sheetMore, setSheetMore] = useState(false)
+  useEffect(() => setSheetMore(false), [selected?.word])
+  // Phone-sized: the width the rest of the app already lays out as mobile.
+  const [isPhone, setIsPhone] = useState(() => window.matchMedia(PHONE_QUERY).matches)
+  useEffect(() => {
+    const mq = window.matchMedia(PHONE_QUERY)
+    const on = () => setIsPhone(mq.matches)
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
   // Story being continued — the generate form runs in "next part" mode.
   const [continuing, setContinuing] = useState<SavedStory | null>(null)
   // Optional reader steer for how a continuation should go.
@@ -1173,6 +1188,13 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     story?.bookmark != null && layout.wordCount > 0
       ? Math.min(100, Math.round(((story.bookmark + 1) / layout.wordCount) * 100))
       : null
+  const thumbSetting: StoryThumb = settings.storyThumb ?? 'off'
+  const thumb = isPhone && thumbSetting !== 'off' ? thumbSetting : null
+  function cycleThumb() {
+    const next: StoryThumb =
+      thumbSetting === 'off' ? 'right' : thumbSetting === 'right' ? 'left' : 'off'
+    saveSettings({ storyThumb: next })
+  }
   function cycleGlossMode() {
     const next: StoryGloss = glossMode === 'off' ? 'first' : glossMode === 'first' ? 'all' : 'off'
     saveSettings({ storyGloss: next })
@@ -1215,6 +1237,15 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const selectedAffixes = selected?.root
     ? explainAffixes(selected.word, selected.root, langCode)
     : []
+  // Whether the pop-up has anything beyond the word and its meaning — what
+  // the one-handed panel folds behind "More".
+  const selectedHasExtras =
+    !!selected &&
+    ((!!selected.root && defKey(selected.root) !== defKey(selected.word)) ||
+      (selectedSeen != null && !selected.loading && !selected.failed) ||
+      !!selectedMnemonic ||
+      (selectedIsLeech && !selected.loading && !selected.failed) ||
+      selectedAffixes.length > 0)
 
   // The open story's place in its thread: what came before (for the recap) and
   // whether a next part already exists (which the reader gets a link to).
@@ -1875,6 +1906,20 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
               {glossMode === 'off' ? 'off' : glossMode === 'first' ? 'new' : 'all'}
             </button>
 
+            {isPhone && (
+              <button
+                className={`btn small ${thumbSetting === 'off' ? 'ghost' : ''}`}
+                onClick={cycleThumb}
+                title={
+                  thumbSetting === 'off'
+                    ? 'Word pop-up: normal'
+                    : `Word pop-up: one-handed, buttons on the ${thumbSetting}`
+                }
+              >
+                <span aria-hidden="true">✋</span> {thumbSetting}
+              </button>
+            )}
+
             <div className="story-size">
               <button
                 className="btn small ghost"
@@ -2136,8 +2181,45 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       )}
 
       {selected && (
-        <div className="word-sheet-backdrop" onClick={() => setSelected(null)}>
-          <div className="word-sheet" onClick={(e) => e.stopPropagation()}>
+        <div
+          className={`word-sheet-backdrop${thumb ? ' thumb' : ''}`}
+          onClick={() => setSelected(null)}
+        >
+          <div className={`word-sheet${thumb ? ' thumb' : ''}`} onClick={(e) => e.stopPropagation()}>
+            {/* One-handed: the buttons float up the chosen edge, just above
+                the panel, where the thumb already is. The story stays
+                tappable behind them, so the next word opens straight away. */}
+            {thumb && (
+              <div className={`thumb-rail ${thumb}`}>
+                {WORD_STATUSES.map((s) => (
+                  <button
+                    key={s.key}
+                    className={`thumb-btn${selectedCard && statusOf(selectedCard) === s.key ? ' on' : ''}`}
+                    title={s.title}
+                    disabled={!selectedCard && !selected.meaning}
+                    onClick={() => {
+                      if (selectedCard) void setCardStatus([selectedCard.id], s.key)
+                      else void addWord(selected.word, selected.meaning, s.key, selected.roman, selected.emoji)
+                      setSelected(null)
+                    }}
+                  >
+                    {s.key === 'inStudy' ? 'Study' : s.label}
+                  </button>
+                ))}
+                {canRead && (
+                  <button
+                    className="thumb-btn icon"
+                    aria-label={`Pronounce ${selected.word}`}
+                    onClick={() => pronounce(selected.word)}
+                  >
+                    <Icon name="volume" />
+                  </button>
+                )}
+                <button className="thumb-btn icon" aria-label="Close" onClick={() => setSelected(null)}>
+                  ×
+                </button>
+              </div>
+            )}
             <div className="word-sheet-word">
               {selected.emoji && (
                 <span className="word-sheet-emoji" aria-hidden="true">
@@ -2145,7 +2227,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 </span>
               )}
               {selected.word}
-              {canRead && (
+              {canRead && !thumb && (
                 <button
                   className="speak-btn"
                   title="Pronounce"
@@ -2177,129 +2259,140 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   ? 'Couldn’t fetch a definition — check your connection and tap the word again.'
                   : selected.meaning}
             </div>
-            {/* The word it's built from — the thing that makes an affixed form
-                stick ("makanya" is just "makan" wearing a suffix). One quiet
-                line under the meaning, never a second definition competing
-                with the first. */}
-            {selected.root && defKey(selected.root) !== defKey(selected.word) && (
-              <div className="word-sheet-root">
-                from <b>{selected.root}</b>
-                {selected.rootMeaning && <span> — {selected.rootMeaning}</span>}
-                {selected.rootInDeck && <span className="in-deck"> · in your deck</span>}
-              </div>
-            )}
-            {/* How often the reader has met this word in earlier stories. A
-                climbing count is its own small reward, and "first time" says
-                this one is worth a moment. */}
-            {selectedSeen != null && !selected.loading && !selected.failed && (
-              <div className="word-sheet-seen">
-                {selectedSeen === 0
-                  ? 'First time you’ve met this word'
-                  : selectedSeen === 1
-                    ? 'Met once before, in an earlier story'
-                    : `Met ${selectedSeen} times before, in earlier stories`}
-              </div>
-            )}
-            {/* A keyword-method mnemonic: the sound-alike in capitals, then
-                the picture. Kept once made, so it is the same picture every
-                time — which is what makes it one. */}
-            {selectedMnemonic && (
-              <div className="word-sheet-mnemonic">
-                <span className="mnemonic-glyph" aria-hidden="true">
-                  💡
-                </span>
-                <span>{selectedMnemonic.text}</span>
-              </div>
-            )}
-            {!selectedMnemonic && selectedIsLeech && !selected.loading && !selected.failed && (
-              <div className="word-sheet-mnemonic offer">
-                <span>
-                  You keep looking this one up
-                  {tapCount.get(selectedKey) ? ` — ${tapCount.get(selectedKey)} times` : ''}.
-                </span>
-                <button
-                  className="btn small"
-                  disabled={mnemonicBusy === selectedKey}
-                  onClick={() => makeMnemonic(selected.word, selected.meaning, selected.roman)}
-                >
-                  {mnemonicBusy === selectedKey ? 'Thinking…' : '💡 Make me a mnemonic'}
-                </button>
-                {mnemonicError && <span className="mnemonic-error">{mnemonicError}</span>}
-              </div>
-            )}
-            {/* What the affixes on this word actually do. The word on screen is
-                already the worked example, so only the rule needs stating; the
-                canned example rides along as a tooltip. */}
-            {selectedAffixes.length > 0 && (
-              <div className="word-sheet-affixes">
-                {selectedAffixes.map((a) => (
-                  <div key={a.label} className="affix-row">
-                    <span className="affix-label" title={a.example}>
-                      {a.label}
-                    </span>
-                    <span className="affix-gloss" title={a.example}>
-                      {a.gloss}
-                    </span>
+            {(!thumb || sheetMore) && (
+              <>
+                {/* The word it's built from — the thing that makes an affixed form
+                    stick ("makanya" is just "makan" wearing a suffix). One quiet
+                    line under the meaning, never a second definition competing
+                    with the first. */}
+                {selected.root && defKey(selected.root) !== defKey(selected.word) && (
+                  <div className="word-sheet-root">
+                    from <b>{selected.root}</b>
+                    {selected.rootMeaning && <span> — {selected.rootMeaning}</span>}
+                    {selected.rootInDeck && <span className="in-deck"> · in your deck</span>}
                   </div>
-                ))}
-              </div>
-            )}
-            <div className="word-sheet-actions">
-              {selectedCard ? (
-                <>
-                  <span className="s-tag added">
-                    {selectedCard.ignored
-                      ? 'Ignored ✓'
-                      : selectedCard.known
-                        ? 'Known ✓'
-                        : 'In study ✓'}
-                  </span>
-                  {/* All three statuses at once, so a word can always go back to
-                      any of them — not just out of whichever one it is in. */}
-                  <div className="seg-control small">
-                    {WORD_STATUSES.map((s) => (
-                      <button
-                        key={s.key}
-                        className={statusOf(selectedCard) === s.key ? 'on' : ''}
-                        title={s.title}
-                        onClick={() => setCardStatus([selectedCard.id], s.key)}
-                      >
-                        {s.label}
-                      </button>
+                )}
+                {/* How often the reader has met this word in earlier stories. A
+                    climbing count is its own small reward, and "first time" says
+                    this one is worth a moment. */}
+                {selectedSeen != null && !selected.loading && !selected.failed && (
+                  <div className="word-sheet-seen">
+                    {selectedSeen === 0
+                      ? 'First time you’ve met this word'
+                      : selectedSeen === 1
+                        ? 'Met once before, in an earlier story'
+                        : `Met ${selectedSeen} times before, in earlier stories`}
+                  </div>
+                )}
+                {/* A keyword-method mnemonic: the sound-alike in capitals, then
+                    the picture. Kept once made, so it is the same picture every
+                    time — which is what makes it one. */}
+                {selectedMnemonic && (
+                  <div className="word-sheet-mnemonic">
+                    <span className="mnemonic-glyph" aria-hidden="true">
+                      💡
+                    </span>
+                    <span>{selectedMnemonic.text}</span>
+                  </div>
+                )}
+                {!selectedMnemonic && selectedIsLeech && !selected.loading && !selected.failed && (
+                  <div className="word-sheet-mnemonic offer">
+                    <span>
+                      You keep looking this one up
+                      {tapCount.get(selectedKey) ? ` — ${tapCount.get(selectedKey)} times` : ''}.
+                    </span>
+                    <button
+                      className="btn small"
+                      disabled={mnemonicBusy === selectedKey}
+                      onClick={() => makeMnemonic(selected.word, selected.meaning, selected.roman)}
+                    >
+                      {mnemonicBusy === selectedKey ? 'Thinking…' : '💡 Make me a mnemonic'}
+                    </button>
+                    {mnemonicError && <span className="mnemonic-error">{mnemonicError}</span>}
+                  </div>
+                )}
+                {/* What the affixes on this word actually do. The word on screen is
+                    already the worked example, so only the rule needs stating; the
+                    canned example rides along as a tooltip. */}
+                {selectedAffixes.length > 0 && (
+                  <div className="word-sheet-affixes">
+                    {selectedAffixes.map((a) => (
+                      <div key={a.label} className="affix-row">
+                        <span className="affix-label" title={a.example}>
+                          {a.label}
+                        </span>
+                        <span className="affix-gloss" title={a.example}>
+                          {a.gloss}
+                        </span>
+                      </div>
                     ))}
                   </div>
-                </>
-              ) : (
-                <>
-                  <button
-                    className="btn small primary"
-                    disabled={!selected.meaning}
-                    onClick={() => addWord(selected.word, selected.meaning, 'inStudy', selected.roman, selected.emoji)}
-                  >
-                    Add to deck
-                  </button>
-                  <button
-                    className="btn small"
-                    disabled={!selected.meaning}
-                    title="Add to the deck already marked as known"
-                    onClick={() => addWord(selected.word, selected.meaning, 'known', selected.roman, selected.emoji)}
-                  >
-                    Add as known
-                  </button>
-                  <button
-                    className="btn small"
-                    disabled={!selected.meaning}
-                    title="Not vocabulary (a name, a brand…) — add it so the story stops flagging it as new, without counting it as a word you know"
-                    onClick={() => addWord(selected.word, selected.meaning, 'ignored', selected.roman, selected.emoji)}
-                  >
-                    Ignore
-                  </button>
-                </>
-              )}
-              <button className="btn small ghost" onClick={() => setSelected(null)}>
-                Close
+                )}
+              </>
+            )}
+            {thumb && selectedHasExtras && (
+              <button className="word-sheet-more" onClick={() => setSheetMore((m) => !m)}>
+                {sheetMore ? 'Less' : 'More'}
               </button>
-            </div>
+            )}
+            {!thumb && (
+              <div className="word-sheet-actions">
+                {selectedCard ? (
+                  <>
+                    <span className="s-tag added">
+                      {selectedCard.ignored
+                        ? 'Ignored ✓'
+                        : selectedCard.known
+                          ? 'Known ✓'
+                          : 'In study ✓'}
+                    </span>
+                    {/* All three statuses at once, so a word can always go back to
+                        any of them — not just out of whichever one it is in. */}
+                    <div className="seg-control small">
+                      {WORD_STATUSES.map((s) => (
+                        <button
+                          key={s.key}
+                          className={statusOf(selectedCard) === s.key ? 'on' : ''}
+                          title={s.title}
+                          onClick={() => setCardStatus([selectedCard.id], s.key)}
+                        >
+                          {s.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      className="btn small primary"
+                      disabled={!selected.meaning}
+                      onClick={() => addWord(selected.word, selected.meaning, 'inStudy', selected.roman, selected.emoji)}
+                    >
+                      Add to deck
+                    </button>
+                    <button
+                      className="btn small"
+                      disabled={!selected.meaning}
+                      title="Add to the deck already marked as known"
+                      onClick={() => addWord(selected.word, selected.meaning, 'known', selected.roman, selected.emoji)}
+                    >
+                      Add as known
+                    </button>
+                    <button
+                      className="btn small"
+                      disabled={!selected.meaning}
+                      title="Not vocabulary (a name, a brand…) — add it so the story stops flagging it as new, without counting it as a word you know"
+                      onClick={() => addWord(selected.word, selected.meaning, 'ignored', selected.roman, selected.emoji)}
+                    >
+                      Ignore
+                    </button>
+                  </>
+                )}
+                <button className="btn small ghost" onClick={() => setSelected(null)}>
+                  Close
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

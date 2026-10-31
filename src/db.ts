@@ -116,6 +116,9 @@ export type StoryKind = 'story' | 'learn'
  *  before it existed, which are all standard. */
 export type StoryRegister = 'standard' | 'casual'
 
+/** Where the word pop-up's buttons go on a phone — see `AppSettings.storyThumb`. */
+export type StoryThumb = 'off' | 'right' | 'left'
+
 /** Which story words get a meaning above them — see `AppSettings.storyGloss`. */
 export type StoryGloss = 'off' | 'first' | 'all'
 
@@ -370,6 +373,10 @@ export interface AppSettings {
    *  for reading at a level where stopping to tap would lose the thread.
    *  Saved as a boolean before 'all' existed: true meant 'first'. */
   storyGloss: StoryGloss | boolean
+  /** One-handed word pop-up on phones: its buttons float up this edge of the
+   *  screen, within thumb reach, over a compact panel. 'off' is the normal
+   *  pop-up. Ignored on wide screens. */
+  storyThumb: StoryThumb
   /** Whether the reader's control bar is expanded (it collapses to a slim
    *  play + progress strip so the story gets the screen). */
   storyControlsOpen: boolean
@@ -406,6 +413,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   storyRoman: 'new',
   storyEmoji: true,
   storyGloss: 'first',
+  storyThumb: 'off',
   storyControlsOpen: true,
   storyColors: DEFAULT_STORY_COLORS,
   storyRegister: 'standard',
