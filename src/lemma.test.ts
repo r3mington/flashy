@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { rootCandidates } from './lemma'
+import { familyStems, rootCandidates } from './lemma'
 
 /** The question every caller actually asks: does this surface word belong to
  *  the card the learner already owns? */
@@ -105,5 +105,32 @@ describe('rootCandidates — Indonesian', () => {
     for (const w of ['ada', 'ke', 'di', 'beli', 'itu', 'menge']) {
       for (const c of rootCandidates(w, 'id')) expect(c.length).toBeGreaterThanOrEqual(2)
     }
+  })
+})
+
+describe('familyStems — Indonesian', () => {
+  const family = (word: string, root: string) => familyStems(word, 'id').has(root)
+
+  it.each([
+    ['makanan', 'makan'],
+    ['dimakan', 'makan'],
+    ['pekerjaan', 'kerja'],
+    ['pekerja', 'kerja'],
+    ['perbaikan', 'baik'],
+    ['memperbaiki', 'baik'],
+    ['kebersihan', 'bersih'],
+    ['penulis', 'tulis'],
+    ['pemukul', 'pukul'],
+    ['permainan', 'main'],
+    ['pelajaran', 'ajar'],
+  ])('%s is built on %s', (word, root) => expect(family(word, root)).toBe(true))
+
+  it.each([
+    ['tahun', 'tahu'], // year is not "know"
+    ['ikan', 'ik'], // fish: what's left after -an is too short to be a root
+  ])('%s is not built on %s', (word, root) => expect(family(word, root)).toBe(false))
+
+  it('leaves other languages to rootCandidates', () => {
+    expect([...familyStems('Manger', 'fr')]).toEqual(['manger'])
   })
 })

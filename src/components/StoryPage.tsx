@@ -53,7 +53,7 @@ import {
   stopSpeaking,
 } from '../speech'
 import { Icon } from './Icon'
-import { rootCandidates } from '../lemma'
+import { familyStems, rootCandidates } from '../lemma'
 import { defKey, splitSentences, tokenizeWords, countWords } from '../text'
 import { storyColorVars } from '../storyColors'
 import { explainAffixes } from '../affixes'
@@ -459,6 +459,29 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       }
     return map
   }, [layout])
+  // Occurrences of each word in the open story, for the pop-up.
+  const storyCounts = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const row of layout.rows)
+      for (const t of row) {
+        if (t.wordIdx < 0) continue
+        const k = defKey(t.tok)
+        map.set(k, (map.get(k) ?? 0) + 1)
+      }
+    return map
+  }, [layout])
+  // Each deck word with the stems it shares with its family (see
+  // `familyStems`), worked out once per deck rather than per tap.
+  const familyIndex = useMemo(
+    () =>
+      (cards ?? [])
+        .filter((c) => !c.ignored)
+        .map((c) => {
+          const key = defKey(c.word)
+          return { card: c, key, stems: familyStems(key, langCode) }
+        }),
+    [cards, langCode],
+  )
   // Read by the scroll handler, which is bound once per story.
   const wordCountRef = useRef(0)
   wordCountRef.current = layout.wordCount
@@ -1237,6 +1260,24 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const selectedAffixes = selected?.root
     ? explainAffixes(selected.word, selected.root, langCode)
     : []
+  // Other words in the deck built on the same root — makanan and dimakan for
+  // makan — so a word is met with the family it belongs to. The root is the
+  // model's when it gave one, else the card the word resolves to; the word's
+  // own card and the root's are left out, since the lines above name them.
+  const selectedFamily = (() => {
+    if (!selected || selected.isName) return []
+    const own = resolveDeckKey(selectedKey)
+    const root = selected.root ? defKey(selected.root) : (own ?? selectedKey)
+    if (root.length < 3) return []
+    const skip = new Set([selectedKey, root, own])
+    return familyIndex
+      .filter((f) => f.stems.has(root) && !skip.has(f.key))
+      .slice(0, 6)
+      .map((f) => f.card)
+  })()
+  // How often the tapped word comes up in this story: a word met five times
+  // here is worth learning now.
+  const selectedHere = selected ? (storyCounts.get(selectedKey) ?? 0) : 0
   // Whether the pop-up has anything beyond the word and its meaning — what
   // the one-handed panel folds behind "More".
   const selectedHasExtras =
@@ -1245,7 +1286,8 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       (selectedSeen != null && !selected.loading && !selected.failed) ||
       !!selectedMnemonic ||
       (selectedIsLeech && !selected.loading && !selected.failed) ||
-      selectedAffixes.length > 0)
+      selectedAffixes.length > 0 ||
+      selectedFamily.length > 0)
 
   // The open story's place in its thread: what came before (for the recap) and
   // whether a next part already exists (which the reader gets a link to).
@@ -2282,6 +2324,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                       : selectedSeen === 1
                         ? 'Met once before, in an earlier story'
                         : `Met ${selectedSeen} times before, in earlier stories`}
+                    {selectedHere >= 2 && ` · appears ${selectedHere} times in this story`}
+                  </div>
+                )}
+                {selectedFamily.length > 0 && (
+                  <div className="word-sheet-family">
+                    <span className="family-label">Same family in your deck</span>
+                    {selectedFamily.map((c) => (
+                      <span key={c.id} className="family-word">
+                        <b>{c.word}</b> {microGloss(c.meaning)}
+                      </span>
+                    ))}
                   </div>
                 )}
                 {/* A keyword-method mnemonic: the sound-alike in capitals, then

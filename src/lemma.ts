@@ -142,3 +142,48 @@ export function rootCandidates(word: string, langCode: string | null): string[] 
   for (const s of [...out]) if (ID_CASUAL_FORMS[s]) out.add(ID_CASUAL_FORMS[s])
   return [...out]
 }
+
+/** Noun- and adjective-forming affixes, which `rootCandidates` leaves on on
+ *  purpose (see above). A word family is exactly what they build: makan,
+ *  makanan, dimakan. */
+const ID_FAMILY_SUFFIXES = ['kan', 'an', 'i']
+const ID_FAMILY_PREFIX_RULES: { prefix: string; restore: string[] }[] = [
+  { prefix: 'peng', restore: ['', 'k'] }, // pengirim → kirim
+  { prefix: 'peny', restore: ['s'] }, // penyanyi → (s)anyi
+  { prefix: 'pem', restore: ['', 'p'] }, // pembaca → baca, pemukul → pukul
+  { prefix: 'pen', restore: ['', 't'] }, // pendengar → dengar, penulis → tulis
+  { prefix: 'per', restore: [''] }, // perbaiki → baik
+  { prefix: 'pel', restore: [''] }, // pelajar → ajar
+  { prefix: 'pe', restore: [''] }, // pekerja → kerja
+  { prefix: 'ke', restore: [''] }, // kebersihan → bersih
+  { prefix: 'se', restore: [''] }, // sebesar → besar
+]
+
+/** Every stem a word could share with others of its family — inflection and
+ *  derivation both peeled. Far looser than `rootCandidates`, and only fit to
+ *  answer "which words in the bank are built on this root?", where the
+ *  caller names the root and asks who reaches it. */
+export function familyStems(word: string, langCode: string | null): Set<string> {
+  const out = new Set(rootCandidates(word, langCode))
+  if (langCode !== 'id') return out
+  // Two passes, so a word wearing both a derivational prefix and a suffix
+  // (perbaikan, kebersihan) gets both off whichever comes first.
+  for (let pass = 0; pass < 2; pass++) {
+    for (const s of [...out]) {
+      for (const suf of ID_FAMILY_SUFFIXES) {
+        if (s.endsWith(suf) && s.length - suf.length >= 3) out.add(s.slice(0, -suf.length))
+      }
+      for (const { prefix, restore } of ID_FAMILY_PREFIX_RULES) {
+        if (!s.startsWith(prefix)) continue
+        for (const c of restore) {
+          const stem = c + s.slice(prefix.length)
+          if (stem.length >= 3) {
+            out.add(stem)
+            for (const r of rootCandidates(stem, langCode)) out.add(r)
+          }
+        }
+      }
+    }
+  }
+  return out
+}
