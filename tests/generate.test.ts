@@ -182,3 +182,56 @@ describe('the request', () => {
     expect(sent.status).toBe(400)
   })
 })
+
+describe('refusals', () => {
+  const answer = (body: object) => ({ ok: true, json: async () => body })
+
+  it('asks Gemini to switch off every adjustable safety filter', async () => {
+    let sentBody: any
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: any) => {
+        sentBody = JSON.parse(init.body)
+        return ok()
+      }),
+    )
+    const { req, res } = reqRes(ask())
+    await (await handler())(req, res)
+    expect(sentBody.safetySettings).toHaveLength(4)
+    for (const s of sentBody.safetySettings) expect(s.threshold).toBe('BLOCK_NONE')
+  })
+
+  it('names a blocked request, with the category, and is not retried', async () => {
+    const calls = stubFetch(() =>
+      answer({
+        promptFeedback: {
+          blockReason: 'SAFETY',
+          safetyRatings: [{ category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', blocked: true }],
+        },
+      }),
+    )
+    const { req, res, sent } = reqRes(ask({ tier: 'story' }))
+    await (await handler())(req, res)
+    expect(sent.status).toBe(422)
+    expect(sent.body.error).toBe('Gemini refused the request (sexual content).')
+    // The fallback would refuse it too.
+    expect(calls).toHaveLength(1)
+  })
+
+  it('names an answer stopped for safety', async () => {
+    stubFetch(() => answer({ candidates: [{ finishReason: 'PROHIBITED_CONTENT' }] }))
+    const { req, res, sent } = reqRes(ask())
+    await (await handler())(req, res)
+    expect(sent.status).toBe(422)
+    expect(sent.body.error).toBe('Gemini refused this part (content Google never allows).')
+  })
+
+  it('keeps an answer that finished normally', async () => {
+    stubFetch(() =>
+      answer({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '{"a":1}' }] } }] }),
+    )
+    const { req, res, sent } = reqRes(ask())
+    await (await handler())(req, res)
+    expect(sent.status).toBe(200)
+  })
+})

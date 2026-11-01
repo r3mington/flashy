@@ -52,6 +52,50 @@ const FALLBACK_RESERVE_MS = 70_000
 /** Nothing useful comes back from a slice shorter than this. */
 const MIN_SLICE_MS = 8_000
 
+/** Gemini's adjustable safety filters, all switched off. The stories are
+ *  fiction for one adult reader, and the defaults refused romance, violence
+ *  and darker plots outright — often on the previous part's text, before a
+ *  word was written. What Google blocks regardless of these settings still
+ *  comes back as a refusal, which `refusal` below names. */
+const SAFETY_SETTINGS = [
+  'HARM_CATEGORY_HARASSMENT',
+  'HARM_CATEGORY_HATE_SPEECH',
+  'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+  'HARM_CATEGORY_DANGEROUS_CONTENT',
+].map((category) => ({ category, threshold: 'BLOCK_NONE' }))
+
+/** Plain words for why Gemini refused, from the two places it says so: a
+ *  block on the request itself, or a candidate stopped for safety. */
+const REFUSAL_WHY: Record<string, string> = {
+  SAFETY: 'its safety filter',
+  SEXUALLY_EXPLICIT: 'sexual content',
+  PROHIBITED_CONTENT: 'content Google never allows',
+  BLOCKLIST: 'a blocked term',
+  SPII: 'personal information',
+  RECITATION: 'text too close to something published',
+  OTHER: 'an unstated reason',
+}
+
+/** The reason Gemini refused, if it did — or null when it simply answered. */
+function refusal(data: any): { code: string; message: string } | null {
+  const blocked: string | undefined = data?.promptFeedback?.blockReason
+  const candidate = data?.candidates?.[0]
+  const finish: string | undefined = candidate?.finishReason
+  const stopped =
+    finish && finish in REFUSAL_WHY && !candidate?.content?.parts?.[0]?.text ? finish : undefined
+  const code = blocked ?? stopped
+  if (!code) return null
+  // Which category tripped, when Gemini says — "sexual content" tells the
+  // reader far more than "safety".
+  const rated: { category?: string; blocked?: boolean; probability?: string }[] =
+    data?.promptFeedback?.safetyRatings ?? candidate?.safetyRatings ?? []
+  const tripped = rated.find((r) => r.blocked || r.probability === 'HIGH')?.category
+  const category = tripped?.replace('HARM_CATEGORY_', '')
+  const why = (category && REFUSAL_WHY[category]) || REFUSAL_WHY[code] || code.toLowerCase()
+  const where = blocked ? 'the request' : 'this part'
+  return { code: category ? `${code}/${category}` : code, message: `Gemini refused ${where} (${why}).` }
+}
+
 class UpstreamError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -87,6 +131,7 @@ async function callModel(
           responseSchema: schema,
           thinkingConfig,
         },
+        safetySettings: SAFETY_SETTINGS,
       }),
       signal: AbortSignal.timeout(timeoutMs),
     })
@@ -176,8 +221,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         )
       }
     }
+    // A refusal is the content, not the connection: the fallback would refuse
+    // it too and a retry would get the same answer, so it is answered with a
+    // 422, which the app does not retry, and says why.
+    const refused = refusal(data)
+    if (refused) {
+      console.warn(
+        JSON.stringify({ at: 'generate/refused', label, tier, model, ms: Date.now() - started, reason: refused.code }),
+      )
+      return res.status(422).json({ error: refused.message })
+    }
     const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text
-    if (!text) return res.status(502).json({ error: 'The model returned no usable output.' })
+    if (!text) {
+      console.warn(
+        JSON.stringify({
+          at: 'generate/empty',
+          label,
+          tier,
+          model,
+          finishReason: data?.candidates?.[0]?.finishReason,
+        }),
+      )
+      return res.status(502).json({ error: 'The model returned no usable output.' })
+    }
 
     const usage = data?.usageMetadata ?? {}
     // What the call actually cost. `thoughtTokens` is the reasoning done
