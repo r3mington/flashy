@@ -4,17 +4,24 @@
     {
       "name": "flashy",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 5199,
-      "autoPort": true,
-      "cwd": "/Users/remixcube/Developer/flashy"
+      "autoPort": true
     },
     {
       "name": "flashy-api",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev:vercel", "--", "--listen", "5199"],
-      "port": 5199,
-      "cwd": "/Users/remixcube/Developer/flashy"
+      "runtimeArgs": [
+        "run",
+        "dev:vercel",
+        "--",
+        "--listen",
+        "5199"
+      ],
+      "port": 5199
     }
   ]
 }

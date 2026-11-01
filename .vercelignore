@@ -1,2 +1,5 @@
 .env
 .env.local
+
+# Local test data — never published
+public/__seed
