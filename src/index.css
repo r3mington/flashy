@@ -2111,6 +2111,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   color: var(--ink-2);
 }
 .story-rate span { min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
+.story-rate span.story-gap { min-width: 78px; }
 /* Bookmark: marker button state + the marked word in the text. */
 .btn.bookmarked { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .story-bookmark-marker {

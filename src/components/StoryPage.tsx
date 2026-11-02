@@ -73,6 +73,10 @@ const RATE_STEP = 0.05
  *  the next one starts. */
 const SENTENCE_PAUSE_MS = 2000
 
+/** Word gap range and step, in ms. */
+const WORD_GAP_MAX = 2000
+const WORD_GAP_STEP = 100
+
 const WORD_STATUSES: { key: WordStatus; label: string; title: string }[] = [
   {
     key: 'inStudy',
@@ -207,6 +211,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // Releases the silent-audio hold that keeps screen-off playback alive.
   const audioFocusRef = useRef<(() => void) | null>(null)
   const rateRef = useRef(0.9)
+  const wordGapRef = useRef(0)
   const sentenceRefs = useRef<(HTMLSpanElement | null)[]>([])
   const bookmarkWordRef = useRef<HTMLElement | null>(null)
   // Scroll-through-the-story progress, shown in the (collapsible) read bar.
@@ -229,6 +234,11 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // effect from the next sentence.
   const rate = settings.storyRate ?? 0.9
   rateRef.current = rate
+  const wordGap = settings.storyWordGap ?? 0
+  wordGapRef.current = wordGap
+  function changeWordGap(delta: number) {
+    saveSettings({ storyWordGap: Math.min(WORD_GAP_MAX, Math.max(0, wordGap + delta)) })
+  }
   function changeRate(delta: number) {
     const next = Math.round(Math.min(RATE_MAX, Math.max(RATE_MIN, rate + delta)) * 100) / 100
     saveSettings({ storyRate: next })
@@ -937,7 +947,18 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       setActiveSentence(i)
       const text = sentences[i].trim()
       if (text) {
-        await speak(text, { voice, lang: langCode ?? undefined, rate: rateRef.current })
+        // With a word gap, the voice gets one word at a time: it has no way to
+        // be told to wait mid-sentence. Each word loses the sentence's tune,
+        // which is the price of the time to think.
+        const gap = wordGapRef.current
+        const pieces = gap > 0 ? text.split(/\s+/).filter(Boolean) : [text]
+        for (const [w, piece] of pieces.entries()) {
+          if (runRef.current !== my) return
+          await speak(piece, { voice, lang: langCode ?? undefined, rate: rateRef.current })
+          if (gap > 0 && w < pieces.length - 1 && runRef.current === my) {
+            await new Promise((r) => setTimeout(r, gap))
+          }
+        }
         // A beat to take the sentence in. Pausing or skipping during it starts
         // a new run, and this one ends at the check below.
         if (runRef.current === my && i < sentences.length - 1) {
@@ -2069,6 +2090,30 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   onClick={() => changeRate(RATE_STEP)}
                   disabled={rate >= RATE_MAX}
                   aria-label="Faster"
+                >
+                  +
+                </button>
+              </div>
+            )}
+            {canRead && (
+              <div
+                className="story-rate"
+                title="Silence between words read aloud — 0 reads each sentence whole"
+              >
+                <button
+                  className="btn small ghost"
+                  onClick={() => changeWordGap(-WORD_GAP_STEP)}
+                  disabled={wordGap <= 0}
+                  aria-label="Shorter gap between words"
+                >
+                  −
+                </button>
+                <span className="story-gap">gap {wordGap} ms</span>
+                <button
+                  className="btn small ghost"
+                  onClick={() => changeWordGap(WORD_GAP_STEP)}
+                  disabled={wordGap >= WORD_GAP_MAX}
+                  aria-label="Longer gap between words"
                 >
                   +
                 </button>
