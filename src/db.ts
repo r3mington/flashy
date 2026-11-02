@@ -119,9 +119,6 @@ export type StoryRegister = 'standard' | 'casual'
 /** Where the word pop-up's buttons go on a phone — see `AppSettings.storyThumb`. */
 export type StoryThumb = 'off' | 'right' | 'left'
 
-/** How the podcast voice speaks — see `PODCAST_STYLES`. */
-export type PodcastStyle = 'natural' | 'clear' | 'veryclear'
-
 /** Which story words get a meaning above them — see `AppSettings.storyGloss`. */
 export type StoryGloss = 'off' | 'first' | 'all'
 
@@ -351,17 +348,6 @@ export interface WordFamily {
   createdAt: number
 }
 
-/** One sentence of a story read by the AI voice, kept so a story plays again
- *  without being made again (see `podcast.ts`). */
-export interface PodcastClip {
-  /** Story, voice, style and a fingerprint of the sentence — see `clipKey`. */
-  key: string
-  storyId: number
-  /** When the story was last played, for keeping only the recent ones. */
-  usedAt: number
-  audio: Blob
-}
-
 /** A keyword-method mnemonic the reader asked for on a word they kept
  *  looking up. Generated once and kept: the same picture every time is what
  *  makes it a memory aid, and a fresh one per tap would be a fresh thing to
@@ -422,12 +408,6 @@ export interface AppSettings {
   /** Silence between words read aloud, in ms. 0 reads each sentence whole;
    *  above it, words are spoken one at a time with this gap between them. */
   storyWordGap: number
-  /** The AI-voice podcast: which voice, how it speaks, how fast it plays, and
-   *  the silence after each sentence in seconds. */
-  podcastVoice: string
-  podcastStyle: PodcastStyle
-  podcastRate: number
-  podcastPause: number
   /** Whether the reader's control bar is expanded (it collapses to a slim
    *  play + progress strip so the story gets the screen). */
   storyControlsOpen: boolean
@@ -467,10 +447,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   storyThumb: 'off',
   storyRate: 0.9,
   storyWordGap: 0,
-  podcastVoice: 'Kore',
-  podcastStyle: 'natural',
-  podcastRate: 0.9,
-  podcastPause: 2,
   storyControlsOpen: true,
   storyColors: DEFAULT_STORY_COLORS,
   storyRegister: 'standard',
@@ -495,7 +471,6 @@ export const db = new Dexie('flashy') as Dexie & {
   wordTaps: EntityTable<WordTap, 'key'>
   mnemonics: EntityTable<Mnemonic, 'key'>
   families: EntityTable<WordFamily, 'root'>
-  podcastClips: EntityTable<PodcastClip, 'key'>
 }
 
 db.version(1).stores({
@@ -604,8 +579,11 @@ db.version(9).stores({
   families: '[deckId+root], deckId',
 })
 
-// AI-voice podcast clips, one row per sentence per voice and style.
-db.version(10).stores({
+// Version 10 added a store for AI-voice podcast audio, since removed. A device
+// that ran it holds version 10, and an app declaring less would refuse to open
+// its database at all — so the history goes on, and this step drops the
+// audio that store held.
+db.version(11).stores({
   decks: '++id, name',
   cards: '++id, deckId, due, [deckId+due], word',
   reviews: '++id, cardId, deckId, ts',
@@ -619,7 +597,7 @@ db.version(10).stores({
   wordTaps: '[deckId+key], deckId',
   mnemonics: '[deckId+key], deckId',
   families: '[deckId+root], deckId',
-  podcastClips: 'key, storyId',
+  podcastClips: null,
 })
 
 /** Record a tap on a word while reading. */

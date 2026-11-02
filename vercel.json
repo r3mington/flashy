@@ -1,20 +1,12 @@
 {
   "functions": {
-    "api/generate.ts": {
-      "maxDuration": 300
-    },
-    "api/speak.ts": {
-      "maxDuration": 120
-    }
+    "api/generate.ts": { "maxDuration": 300 }
   },
   "headers": [
     {
       "source": "/(.*)",
       "headers": [
-        {
-          "key": "X-Robots-Tag",
-          "value": "noindex, nofollow, noarchive"
-        }
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow, noarchive" }
       ]
     }
   ]

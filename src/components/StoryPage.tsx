@@ -113,8 +113,6 @@ interface Props {
   /** Deep link: open this saved story (at its reading marker) on mount. */
   initialStoryId?: number
   onExit: () => void
-  /** Open this story in the AI-voice podcast page. */
-  onPodcast: (storyId: number) => void
 }
 
 interface Definition {
@@ -149,7 +147,7 @@ function planTitle(line: string): string {
   return i > 0 && i < 60 ? line.slice(0, i).trim() : line
 }
 
-export function StoryPage({ deckId, initialStoryId, onExit, onPodcast }: Props) {
+export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const [topic, setTopic] = useState('')
   // Invent a story, or explain a real topic (see `StoryKind`). Only picked for
   // a new thread; a continuation is whatever its thread is.
@@ -1955,8 +1953,8 @@ export function StoryPage({ deckId, initialStoryId, onExit, onPodcast }: Props) 
                 </button>
                 <button
                   className="btn small ghost"
-                  onClick={() => onPodcast(story.id)}
-                  title="Listen to this story read by an AI voice, with its own page and controls"
+                  onClick={() => readAloud(0)}
+                  title="Play the whole story from the start — with lock-screen and headphone controls, so it keeps going with the screen off"
                 >
                   <Icon name="headphones" /> Podcast
                 </button>
