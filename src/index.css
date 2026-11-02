@@ -2110,8 +2110,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   font-size: 13px;
   color: var(--ink-2);
 }
-.story-rate span { min-width: 42px; }
-.story-rate input { width: 110px; }
+.story-rate span { min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
 /* Bookmark: marker button state + the marked word in the text. */
 .btn.bookmarked { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .story-bookmark-marker {

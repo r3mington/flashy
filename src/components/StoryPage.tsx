@@ -63,6 +63,16 @@ import { useSettings, saveSettings } from '../useSettings'
 
 const PHONE_QUERY = '(max-width: 767px)'
 
+/** Read-aloud speed range and step. 5% a tap: fine enough to find the pace
+ *  just past comfortable, which is where listening improves. */
+const RATE_MIN = 0.5
+const RATE_MAX = 1.5
+const RATE_STEP = 0.05
+
+/** The silence after each sentence read aloud: time to take it in before
+ *  the next one starts. */
+const SENTENCE_PAUSE_MS = 2000
+
 const WORD_STATUSES: { key: WordStatus; label: string; title: string }[] = [
   {
     key: 'inStudy',
@@ -188,7 +198,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // incremented run id cancels a superseded loop.
   const [reading, setReading] = useState(false)
   const [activeSentence, setActiveSentence] = useState<number | null>(null)
-  const [rate, setRate] = useState(0.9)
   // "Mark mode": the next word tapped becomes the reading marker instead of
   // showing its definition.
   const [marking, setMarking] = useState(false)
@@ -197,8 +206,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const keepAliveRef = useRef<(() => void) | null>(null)
   // Releases the silent-audio hold that keeps screen-off playback alive.
   const audioFocusRef = useRef<(() => void) | null>(null)
-  const rateRef = useRef(rate)
-  rateRef.current = rate
+  const rateRef = useRef(0.9)
   const sentenceRefs = useRef<(HTMLSpanElement | null)[]>([])
   const bookmarkWordRef = useRef<HTMLElement | null>(null)
   // Scroll-through-the-story progress, shown in the (collapsible) read bar.
@@ -217,6 +225,14 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const timer = useReadingTimer(!!story, reading)
 
   const settings = useSettings()
+  // Remembered across stories; read live by the play loop, so a change takes
+  // effect from the next sentence.
+  const rate = settings.storyRate ?? 0.9
+  rateRef.current = rate
+  function changeRate(delta: number) {
+    const next = Math.round(Math.min(RATE_MAX, Math.max(RATE_MIN, rate + delta)) * 100) / 100
+    saveSettings({ storyRate: next })
+  }
   const { deck, cards, langCode } = useDeck(deckId)
   const savedStories = useLiveQuery(
     () => db.stories.where('deckId').equals(deckId).reverse().sortBy('createdAt'),
@@ -922,6 +938,11 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       const text = sentences[i].trim()
       if (text) {
         await speak(text, { voice, lang: langCode ?? undefined, rate: rateRef.current })
+        // A beat to take the sentence in. Pausing or skipping during it starts
+        // a new run, and this one ends at the check below.
+        if (runRef.current === my && i < sentences.length - 1) {
+          await new Promise((r) => setTimeout(r, SENTENCE_PAUSE_MS))
+        }
       }
       if (runRef.current !== my) return
     }
@@ -952,7 +973,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // Speak a single word (used by the definition popup's pronounce button).
   async function pronounce(text: string) {
     stopSpeaking()
-    await speakIn(text, langCode)
+    await speakIn(text, langCode, { rate })
   }
 
   // Sentence that holds the marker word (for read-aloud resume alignment).
@@ -2033,17 +2054,25 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             </div>
 
             {canRead && (
-              <label className="story-rate" title="Reading speed">
-                <span>{rate.toFixed(2)}×</span>
-                <input
-                  type="range"
-                  min={0.5}
-                  max={1.25}
-                  step={0.05}
-                  value={rate}
-                  onChange={(e) => setRate(Number(e.target.value))}
-                />
-              </label>
+              <div className="story-rate" title="Read-aloud speed">
+                <button
+                  className="btn small ghost"
+                  onClick={() => changeRate(-RATE_STEP)}
+                  disabled={rate <= RATE_MIN}
+                  aria-label="Slower"
+                >
+                  −
+                </button>
+                <span>{Math.round(rate * 100)}%</span>
+                <button
+                  className="btn small ghost"
+                  onClick={() => changeRate(RATE_STEP)}
+                  disabled={rate >= RATE_MAX}
+                  aria-label="Faster"
+                >
+                  +
+                </button>
+              </div>
             )}
             </div>
             )}
