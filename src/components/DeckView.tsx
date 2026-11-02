@@ -22,6 +22,7 @@ interface Props {
   /** Jump straight into a saved story (the "continue reading" shortcut). */
   onOpenStory: (deckId: number, storyId: number) => void
   onListen: () => void
+  onPodcast: () => void
   onTranslate: () => void
   onDeleted: () => void
 }
@@ -49,6 +50,7 @@ export function DeckView({
   onStory,
   onOpenStory,
   onListen,
+  onPodcast,
   onTranslate,
   onDeleted,
 }: Props) {
@@ -290,6 +292,9 @@ export function DeckView({
         </button>
         <button className="btn" onClick={onListen} disabled={cards.length === 0}>
           <Icon name="volume" /> Listen
+        </button>
+        <button className="btn" onClick={onPodcast} title="Your stories, read by an AI voice">
+          <Icon name="headphones" /> Podcast
         </button>
       </div>
 
