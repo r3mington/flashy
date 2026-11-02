@@ -322,6 +322,32 @@ export interface WordTap {
   lastAt: number
 }
 
+/** What a family member's affixes make of the root — the headings the
+ *  family panel groups by, in the order it shows them. */
+export type FamilyGroup = 'doing' | 'done' | 'accidental' | 'state' | 'thing' | 'person' | 'mutual' | 'casual' | 'other'
+
+export interface FamilyForm {
+  word: string
+  meaning: string
+  group: FamilyGroup
+  /** What the affixes do, in a few plain words — "me-: you do it". */
+  affix: string
+  example?: string
+  exampleTranslation?: string
+}
+
+/** Every common word built on one root, asked of the model once per root and
+ *  kept: a family doesn't change, and the second look should be instant and
+ *  work offline. One per root per deck. */
+export interface WordFamily {
+  deckId: number
+  /** The root's `defKey`. */
+  root: string
+  rootMeaning: string
+  forms: FamilyForm[]
+  createdAt: number
+}
+
 /** A keyword-method mnemonic the reader asked for on a word they kept
  *  looking up. Generated once and kept: the same picture every time is what
  *  makes it a memory aid, and a fresh one per tap would be a fresh thing to
@@ -437,6 +463,7 @@ export const db = new Dexie('flashy') as Dexie & {
   translations: EntityTable<TranslationSession, 'id'>
   wordTaps: EntityTable<WordTap, 'key'>
   mnemonics: EntityTable<Mnemonic, 'key'>
+  families: EntityTable<WordFamily, 'root'>
 }
 
 db.version(1).stores({
@@ -526,6 +553,23 @@ db.version(8).stores({
   translations: '++id, deckId, createdAt',
   wordTaps: '[deckId+key], deckId',
   mnemonics: '[deckId+key], deckId',
+})
+
+// Word families, one row per root per deck.
+db.version(9).stores({
+  decks: '++id, name',
+  cards: '++id, deckId, due, [deckId+due], word',
+  reviews: '++id, cardId, deckId, ts',
+  blacklist: '++id, deckId, word',
+  settings: 'key',
+  stories: '++id, deckId, createdAt',
+  snapshots: 'day',
+  reading: 'day',
+  listening: 'day',
+  translations: '++id, deckId, createdAt',
+  wordTaps: '[deckId+key], deckId',
+  mnemonics: '[deckId+key], deckId',
+  families: '[deckId+root], deckId',
 })
 
 /** Record a tap on a word while reading. */

@@ -23,6 +23,7 @@ import {
   defineWord,
   defineWords,
   generateMnemonic,
+  generateFamily,
   writeStoryDraft,
   annotateStory,
   clipWords,
@@ -54,6 +55,7 @@ import {
 } from '../speech'
 import { Icon } from './Icon'
 import { familyStems, rootCandidates } from '../lemma'
+import { familySections, type FamilyStatus } from '../family'
 import { defKey, splitSentences, tokenizeWords, countWords } from '../text'
 import { storyColorVars } from '../storyColors'
 import { explainAffixes } from '../affixes'
@@ -319,6 +321,49 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   }, [mnemonics])
   const [mnemonicBusy, setMnemonicBusy] = useState<string | null>(null)
   const [mnemonicError, setMnemonicError] = useState('')
+
+  // Word families the reader has opened in this deck, one per root (see
+  // `WordFamily`). Asked of the model the first time, read from here after.
+  const families = useLiveQuery(
+    () => db.families.where('deckId').equals(deckId).toArray(),
+    [deckId],
+  )
+  const familyByRoot = useMemo(
+    () => new Map((families ?? []).map((f) => [f.root, f])),
+    [families],
+  )
+  // The root whose family panel is open over the pop-up, and the row in it
+  // showing its example.
+  const [familyRoot, setFamilyRoot] = useState<string | null>(null)
+  const [familyRow, setFamilyRow] = useState<string | null>(null)
+  const [familyBusy, setFamilyBusy] = useState<string | null>(null)
+  const [familyError, setFamilyError] = useState('')
+  useEffect(() => setFamilyRoot(null), [selected?.word])
+
+  /** Open the family panel for a root, looking the family up first if it
+   *  isn't kept yet. */
+  async function openFamily(root: string, meaning?: string) {
+    setFamilyRoot(root)
+    setFamilyRow(null)
+    setFamilyError('')
+    if (familyByRoot.has(root)) return
+    setFamilyBusy(root)
+    try {
+      const f = await generateFamily({ deck: deck!, root, meaning })
+      if (f.forms.length === 0) throw new Error('No family came back — try again.')
+      await db.families.put({
+        deckId,
+        root,
+        rootMeaning: f.rootMeaning,
+        forms: f.forms,
+        createdAt: Date.now(),
+      })
+    } catch (e) {
+      setFamilyError(e instanceof Error ? e.message : 'Could not look up the family.')
+    } finally {
+      setFamilyBusy(null)
+    }
+  }
 
   /** Make and keep a mnemonic for the tapped word. */
   async function makeMnemonic(word: string, meaning: string, roman?: string) {
@@ -1264,12 +1309,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // makan — so a word is met with the family it belongs to. The root is the
   // model's when it gave one, else the card the word resolves to; the word's
   // own card and the root's are left out, since the lines above name them.
+  const selectedOwn = selected ? resolveDeckKey(selectedKey) : null
+  const selectedRoot =
+    selected && !selected.isName
+      ? selected.root
+        ? defKey(selected.root)
+        : (selectedOwn ?? selectedKey)
+      : null
   const selectedFamily = (() => {
-    if (!selected || selected.isName) return []
-    const own = resolveDeckKey(selectedKey)
-    const root = selected.root ? defKey(selected.root) : (own ?? selectedKey)
-    if (root.length < 3) return []
-    const skip = new Set([selectedKey, root, own])
+    const root = selectedRoot
+    if (!root || root.length < 3) return []
+    const skip = new Set([selectedKey, root, selectedOwn])
     return familyIndex
       .filter((f) => f.stems.has(root) && !skip.has(f.key))
       .slice(0, 6)
@@ -1286,8 +1336,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       (selectedSeen != null && !selected.loading && !selected.failed) ||
       !!selectedMnemonic ||
       (selectedIsLeech && !selected.loading && !selected.failed) ||
-      selectedAffixes.length > 0 ||
-      selectedFamily.length > 0)
+      selectedAffixes.length > 0)
 
   // The open story's place in its thread: what came before (for the recap) and
   // whether a next part already exists (which the reader gets a link to).
@@ -2222,7 +2271,128 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         </div>
       )}
 
-      {selected && (
+      {selected && familyRoot && (() => {
+        const saved = familyByRoot.get(familyRoot)
+        const statusOfKey = (k: string): FamilyStatus => {
+          const c = cardByKey.get(k)
+          return !c ? 'none' : c.ignored ? 'ignored' : c.known ? 'known' : 'study'
+        }
+        // Until the family is looked up — or when it can't be, offline — the
+        // members the deck already holds are what there is to show.
+        const forms =
+          saved?.forms ??
+          familyIndex
+            .filter((f) => f.stems.has(familyRoot) && f.key !== familyRoot)
+            .map((f) => ({ word: f.card.word, meaning: f.card.meaning, group: 'other' as const, affix: '' }))
+        const sections = familySections(forms, statusOfKey, (k) => encounters.get(k)?.seen ?? 0)
+        const rootMeaning =
+          saved?.rootMeaning || (selected.root ? selected.rootMeaning : selected.meaning) || ''
+        const back = () => setFamilyRoot(null)
+        return (
+          <div
+            className={`word-sheet-backdrop${thumb ? ' thumb' : ''}`}
+            onClick={() => setSelected(null)}
+          >
+            <div
+              className={`word-sheet family-sheet${thumb ? ' thumb' : ''}`}
+              style={storyColorVars(settings.storyColors)}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {!thumb && (
+                <button className="family-back" onClick={back}>
+                  ← {selected.word}
+                </button>
+              )}
+              <div className="word-sheet-word">
+                {familyRoot}
+                {canRead && (
+                  <button
+                    className="speak-btn"
+                    aria-label={`Pronounce ${familyRoot}`}
+                    onClick={() => pronounce(familyRoot)}
+                  >
+                    <Icon name="volume" />
+                  </button>
+                )}
+              </div>
+              {rootMeaning && <div className="word-sheet-meaning">{rootMeaning}</div>}
+              <div className="family-list">
+                {familyBusy === familyRoot && !saved && (
+                  <p className="note">Looking up the family…</p>
+                )}
+                {familyError && !saved && familyBusy !== familyRoot && (
+                  <p className="note error">
+                    {familyError}{' '}
+                    <button className="btn small" onClick={() => openFamily(familyRoot, rootMeaning)}>
+                      Try again
+                    </button>
+                  </p>
+                )}
+                {!saved && sections.length > 0 && (
+                  <div className="family-group-label">Already in your deck</div>
+                )}
+                {sections.map((sec) => (
+                  <div key={sec.group} className="family-group">
+                    {saved && <div className="family-group-label">{sec.label}</div>}
+                    {sec.rows.map((r) => (
+                      <div key={r.key} className="family-row">
+                        <button
+                          className="family-row-main"
+                          onClick={() => setFamilyRow((cur) => (cur === r.key ? null : r.key))}
+                        >
+                          <i className={`family-dot ${r.status}`} aria-hidden="true" />
+                          <span className="family-word">{r.word}</span>
+                          <span className="family-meaning">{r.meaning}</span>
+                          {(r.affix || r.met > 0) && (
+                            <span className="family-note">
+                              {[r.affix, r.met > 0 ? `met ${r.met}×` : ''].filter(Boolean).join(' · ')}
+                            </span>
+                          )}
+                        </button>
+                        {r.status === 'none' && (
+                          <button
+                            className="family-add"
+                            aria-label={`Add ${r.word} to your deck`}
+                            title="Add to your deck, in study"
+                            onClick={() => addWord(r.word, r.meaning, 'inStudy')}
+                          >
+                            +
+                          </button>
+                        )}
+                        {familyRow === r.key && r.example && (
+                          <div className="family-example">
+                            {r.example}
+                            {r.exampleTranslation && <span>{r.exampleTranslation}</span>}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+              {/* One-handed, the panel is too tall for buttons riding above
+                  it to stay in reach, so they sit along its foot instead. */}
+              {thumb ? (
+                <div className={`thumb-rail family-foot ${thumb}`}>
+                  <button className="thumb-btn icon" aria-label="Back to the word" onClick={back}>
+                    ←
+                  </button>
+                  <button className="thumb-btn icon" aria-label="Close" onClick={() => setSelected(null)}>
+                    ×
+                  </button>
+                </div>
+              ) : (
+                <div className="word-sheet-actions">
+                  <button className="btn small ghost" onClick={() => setSelected(null)}>
+                    Close
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+      {selected && !familyRoot && (
         <div
           className={`word-sheet-backdrop${thumb ? ' thumb' : ''}`}
           onClick={() => setSelected(null)}
@@ -2327,16 +2497,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     {selectedHere >= 2 && ` · appears ${selectedHere} times in this story`}
                   </div>
                 )}
-                {selectedFamily.length > 0 && (
-                  <div className="word-sheet-family">
-                    <span className="family-label">Same family in your deck</span>
-                    {selectedFamily.map((c) => (
-                      <span key={c.id} className="family-word">
-                        <b>{c.word}</b> {microGloss(c.meaning)}
-                      </span>
-                    ))}
-                  </div>
-                )}
                 {/* A keyword-method mnemonic: the sound-alike in capitals, then
                     the picture. Kept once made, so it is the same picture every
                     time — which is what makes it one. */}
@@ -2382,6 +2542,22 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   </div>
                 )}
               </>
+            )}
+            {/* The whole family of the word's root, in a panel of its own so
+                the pop-up stays short. */}
+            {selectedRoot && definable(selectedRoot) && (
+              <button
+                className="word-sheet-family-link"
+                onClick={() =>
+                  openFamily(selectedRoot, selected.root ? selected.rootMeaning : selected.meaning)
+                }
+              >
+                Word family
+                {familyByRoot.get(selectedRoot)
+                  ? ` · ${familyByRoot.get(selectedRoot)!.forms.length} forms`
+                  : ''}
+                {selectedFamily.length > 0 && ` (${selectedFamily.length} in your deck)`} ›
+              </button>
             )}
             {thumb && selectedHasExtras && (
               <button className="word-sheet-more" onClick={() => setSheetMore((m) => !m)}>

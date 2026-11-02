@@ -1,4 +1,12 @@
-import { db, type Deck, type StoryBible, type StoryKind, type StoryRegister } from './db'
+import {
+  db,
+  type Deck,
+  type FamilyForm,
+  type FamilyGroup,
+  type StoryBible,
+  type StoryKind,
+  type StoryRegister,
+} from './db'
 import { langCodeFor } from './speech'
 import { countWords, tokenizeWords } from './text'
 
@@ -1902,6 +1910,63 @@ export async function generateMnemonic(opts: {
   ].join('\n')
   const m = await callGeminiJson<Mnemonic>(prompt, MNEMONIC_SCHEMA, { label: 'mnemonic' })
   return { keyword: (m.keyword ?? '').trim(), mnemonic: (m.mnemonic ?? '').trim() }
+}
+
+const FAMILY_GROUPS = ['doing', 'done', 'accidental', 'state', 'thing', 'person', 'mutual', 'casual', 'other']
+
+const FAMILY_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    rootMeaning: { type: 'STRING' },
+    forms: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          word: { type: 'STRING' },
+          meaning: { type: 'STRING' },
+          group: { type: 'STRING', enum: FAMILY_GROUPS },
+          affix: { type: 'STRING' },
+          example: { type: 'STRING' },
+          exampleTranslation: { type: 'STRING' },
+        },
+        required: ['word', 'meaning', 'group', 'affix'],
+      },
+    },
+  },
+  required: ['rootMeaning', 'forms'],
+}
+
+/** Every common word built on one root, for the reader to explore.
+ *
+ *  "Common" is the whole instruction that matters: a model asked for a word
+ *  family will happily fill every affix slot, including forms nobody says. A
+ *  family the reader can trust is shorter than one that is complete. */
+export async function generateFamily(opts: {
+  deck: Deck
+  root: string
+  meaning?: string
+}): Promise<{ rootMeaning: string; forms: FamilyForm[] }> {
+  const { deck, root, meaning } = opts
+  const id = langCodeFor(deck.language) === 'id'
+  const prompt = [
+    `List the word family of the ${deck.language} root "${root}"${meaning ? ` (${meaning})` : ''} for a learner: the words built on it with prefixes, suffixes or both.`,
+    `Only forms in common, everyday use — words a native speaker would actually say or write. Leave out rare, archaic or merely possible forms. Do not include the root itself. Usually 4 to 12 forms; fewer is fine.`,
+    id
+      ? `Include the common casual spoken forms too (e.g. megang for memegang, kepegang for terpegang), in group "casual".`
+      : `Include common casual spoken forms too, in group "casual".`,
+    `For each: "meaning" — a concise English meaning; "group" — doing (active verb), done (passive), accidental (happened without intent / able to), state (being in a state, reflexive or intransitive), thing (a noun for a thing, place, result or tool), person (a noun for a person who does it), mutual (doing it to each other or together), casual, or other; "affix" — what the affixes do, in under 8 plain English words, starting with the affix (e.g. "me-: you do it to something"); "example" — one short, natural everyday sentence using it; "exampleTranslation" — its English.`,
+    `Return "rootMeaning": the root's own concise English meaning.`,
+  ].join('\n')
+  const out = await callGeminiJson<{ rootMeaning: string; forms: FamilyForm[] }>(prompt, FAMILY_SCHEMA, {
+    label: 'family',
+  })
+  const seen = new Set<string>([root.toLowerCase()])
+  const forms = (out.forms ?? [])
+    .map((f) => ({ ...f, word: (f.word ?? '').trim(), meaning: (f.meaning ?? '').trim() }))
+    .filter((f) => f.word && f.meaning && !seen.has(f.word.toLowerCase()) && seen.add(f.word.toLowerCase()))
+    .map((f) => ({ ...f, group: (FAMILY_GROUPS.includes(f.group) ? f.group : 'other') as FamilyGroup }))
+  return { rootMeaning: (out.rootMeaning ?? '').trim(), forms }
 }
 
 const DEFINE_SCHEMA = {
