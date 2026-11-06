@@ -4,6 +4,8 @@ import {
   ApiError,
   chunkForRewrite,
   worthRetrying,
+  isRefusal,
+  trimForRetry,
   GLOSSARY_CHUNK_WORDS,
   SIMPLIFY_CHUNK_WORDS,
   groupParagraphs,
@@ -198,5 +200,40 @@ describe('chunkForRewrite', () => {
     const story = `${para(300, 'a')}\n\n${para(90, 'b')}\n\n${para(200, 'c')}`
     const chunks = chunkForRewrite(story, 'id', 150)
     expect(chunks.reduce((n, c) => n + countWords(c.text, 'id'), 0)).toBe(countWords(story, 'id'))
+  })
+})
+
+describe('isRefusal', () => {
+  it('is only the server\'s refusal answer', () => {
+    expect(isRefusal(new ApiError(422, 'Gemini refused the request'))).toBe(true)
+    expect(isRefusal(new ApiError(500, 'boom'))).toBe(false)
+    expect(isRefusal(new Error('offline'))).toBe(false)
+  })
+})
+
+describe('trimForRetry', () => {
+  const bible = {
+    logline: 'x',
+    cast: [{ name: 'Sari', role: 'lead', wants: 'answers', secret: 'something dark' }],
+    places: [],
+    facts: ['a fact'],
+    openThreads: ['a question'],
+  }
+  const story = ['one.', 'two.', 'three.', 'four.', 'five.'].join('\n\n')
+
+  it('keeps only the closing paragraphs, and marks the cut', () => {
+    expect(trimForRetry({ title: 't', story }).story).toBe('[…]\n\nthree.\n\nfour.\n\nfive.')
+  })
+
+  it('leaves a short part whole', () => {
+    expect(trimForRetry({ title: 't', story: 'one.\n\ntwo.' }).story).toBe('one.\n\ntwo.')
+  })
+
+  it('drops the cast\'s secrets and keeps everything else', () => {
+    const out = trimForRetry({ title: 't', story, bible, direction: 'go on' })
+    expect(out.bible?.cast).toEqual([{ name: 'Sari', role: 'lead', wants: 'answers' }])
+    expect(out.bible?.facts).toEqual(['a fact'])
+    expect(out.direction).toBe('go on')
+    expect(out.title).toBe('t')
   })
 })

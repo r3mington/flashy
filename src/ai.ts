@@ -1380,6 +1380,31 @@ export function worthRetrying(e: unknown): boolean {
   return e.status === 429 || e.status >= 500
 }
 
+/** Gemini refused the content — the server's 422. Retrying the same prompt
+ *  gets the same answer; only a different prompt can get past it. */
+export function isRefusal(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 422
+}
+
+/** How much of the previous part a refused continuation is retried with. */
+const RETRY_TAIL_PARAGRAPHS = 3
+
+/** A continuation's source cut down for a second try after Gemini refused the
+ *  first. Google's unswitchable block gives no reason and usually trips on the
+ *  previous part's text, so the retry keeps only its closing paragraphs — enough
+ *  to pick up from — and drops the cast's secrets, the other place a dark turn
+ *  is spelled out. */
+export function trimForRetry<T extends { story: string; bible?: StoryBible }>(from: T): T {
+  const paragraphs = from.story.split(/\n\s*\n/).filter((p) => p.trim())
+  const tail = paragraphs.slice(-RETRY_TAIL_PARAGRAPHS).join('\n\n')
+  const story = paragraphs.length > RETRY_TAIL_PARAGRAPHS ? `[…]\n\n${tail}` : tail
+  const bible = from.bible && {
+    ...from.bible,
+    cast: from.bible.cast.map(({ secret: _secret, ...c }) => c),
+  }
+  return { ...from, story, ...(bible ? { bible } : {}) }
+}
+
 /** How close to the requested length is close enough to stop topping up. */
 const LENGTH_TOLERANCE = 0.9
 /** Cap on top-up passes — each one is another round-trip. */
@@ -1545,115 +1570,142 @@ export async function writeStoryDraft(
   const outline = opts.outline ?? (planned && planned.length > 0 ? planned : undefined)
 
   if (kind === 'learn') {
-    const brief = learnBrief({
-      language: deck.language,
-      band,
-      lengthWords,
-      topic: threadTopic || topic || '',
-      outline,
-      partIndex,
-      previous: continueFrom,
-      bible,
-      steer,
-      wanted,
-      register,
-    })
-    const prose = await writeAndPolish(brief.prompt, brief.ending)
+    const briefFrom = (from: typeof continueFrom) =>
+      learnBrief({
+        language: deck.language,
+        band,
+        lengthWords,
+        topic: threadTopic || topic || '',
+        outline,
+        partIndex,
+        previous: from,
+        bible: from?.bible,
+        steer,
+        wanted,
+        register,
+      })
+    const brief = briefFrom(continueFrom)
+    const prose = await writeAndPolish(
+      brief.prompt,
+      brief.ending,
+      continueFrom && briefFrom(trimForRetry(continueFrom)).prompt,
+    )
     return planned && planned.length > 0 ? { ...prose, outline: planned } : prose
   }
 
   // One short brief. Everything in it is either a real constraint (language,
   // length, ending) or a craft ask — what makes a story worth reading. The
   // bookkeeping a story also needs is done by other passes over the text.
-  const prompt = [
-    continueFrom
-      ? `Write the next part of a serial story in ${deck.language}, about ${lengthWords} words. Continue from where the previous part ends — same people, same world — and make something new happen.`
-      : `Write a story in ${deck.language}, about ${lengthWords} words.`,
-    !continueFrom && topic ? `The reader asked for: "${topic}". The story must genuinely be this.` : '',
-    threadTopic
-      ? `The reader asked for "${threadTopic}" when this serial began; it stays that kind of story${steer ? ' unless their steer below takes it elsewhere' : ''}.`
-      : '',
-    continueFrom ? `Previous part, titled "${continueFrom.title}":\n${continueFrom.story}` : '',
-    bible
-      ? [
-          `Already true — don't contradict it, and don't re-introduce these people:`,
-          `Cast: ${bible.cast
-            .map((c) => `${c.name} (${c.role}; wants ${c.wants}${c.secret ? `; secretly: ${c.secret}` : ''})`)
-            .join('; ')}`,
-          bible.facts.length > 0 ? `Facts: ${bible.facts.join('; ')}` : '',
-          bible.openThreads.length > 0 ? `Open questions: ${bible.openThreads.join('; ')}` : '',
-        ]
-          .filter(Boolean)
-          .join('\n')
-      : '',
-    continueFrom && (bible?.openThreads?.length ?? 0) === 0
-      ? `The previous part settled its story, so start new trouble early — a different kind from before.`
-      : '',
-    steer
-      ? `The reader steered this part: "${steer}". Follow it, whatever kind of steer it is — something that happens, a change of tone or genre, a jump in time, a focus on one person, how the part should end. Act on it early in this part. It outranks everything else in this brief, including the kind of story this began as, how big the trouble may be, and how to end.`
-      : '',
-    levelSpec(deck.language, band, 'story', register),
-    // Scale and pace are here because "a story of someone in Japan" came back
-    // as a thriller: a visa held hostage, a boss stealing from his own till to
-    // frame a worker, all inside the first part. Every craft ask below pulled
-    // toward more plot, and nothing said how much the story could hold.
-    continueFrom
-      ? steer
-        ? `Make the trouble the size the reader's steer calls for, and no bigger.`
-        : `Keep the trouble the size of the story the reader asked for. It can grow, but one step at a time — no crime, betrayal or conspiracy the story hasn't already earned.`
-      : `Make the trouble the size of what the reader asked for. Unless they asked for crime, danger or suspense, this is ordinary life: a choice, a misunderstanding, a small loss, something someone wants and isn't sure they can have — no crimes, betrayals, schemes or hidden money. This is the opening: let the reader get to know one person — their day, their habits, what they want and why — and let ONE thing change. One development, not a chain of revelations.`,
-    // The believability lines are here because a reader stopped believing a
-    // serial: a killer, caught, accused her escaped victim with her garden full
-    // of bodies — a turn bought by making a clever character act against
-    // everything she knew. A twist is only worth something if it costs no one
-    // their sense.
-    [
-      `What makes it worth reading:`,
-      `- someone who wants something specific, and what it costs them to go after it`,
-      `- people who act on what they want and what they know. Nobody does something foolish so the plot can happen: a dangerous person is clever, a cornered one acts in their own interest. If someone does something strange, they have a reason the reader can see, or will`,
-      `- a moment that changes how the reader sees someone — it can be small: a kindness, a lie told to spare someone, a detail that gives away a past. It follows from what is already in the story. Never a coincidence, never someone suddenly acting out of character`,
-      `- people who say less than they mean; show what they feel through what they do and say, never by naming the feeling`,
-      `- one or two concrete details that belong only to this story, and let one come back later meaning more than it did`,
-      `- plain words can still be beautiful: an exact image, and a short sentence landing after longer ones`,
-    ].join('\n'),
-    continueFrom
-      ? `Before writing, ask of each person: knowing what they know now, what would they really do next? Start there, not from the twist you want.`
-      : '',
-    continueFrom
-      ? `At most one new named character.`
-      : `Two or three named characters, with names natural for ${deck.language} speakers.`,
-    endingSpec(ending),
-    `Separate paragraphs with a blank line.`,
-    wanted.length > 0 ? `Use some of these words where they fit naturally: ${wanted.join(', ')}` : '',
-    !continueFrom && avoidThemes.length > 0
-      ? `Recent stories were about: ${avoidThemes.join('; ')}. Make this one different.`
-      : '',
-    !continueFrom && avoidNames.length > 0
-      ? `Don't reuse these names: ${avoidNames.join(', ')}.`
-      : '',
-    `Return a short title and the story, both in ${deck.language}.`,
-  ]
-    .filter(Boolean)
-    .join('\n')
+  // `from` is the part being continued, or a cut-down copy of it when
+  // Gemini refused the full one (see `trimForRetry`).
+  const storyBrief = (from: typeof continueFrom) => {
+    const bible = from?.bible
+    return [
+      from
+        ? `Write the next part of a serial story in ${deck.language}, about ${lengthWords} words. Continue from where the previous part ends — same people, same world — and make something new happen.`
+        : `Write a story in ${deck.language}, about ${lengthWords} words.`,
+      !from && topic ? `The reader asked for: "${topic}". The story must genuinely be this.` : '',
+      threadTopic
+        ? `The reader asked for "${threadTopic}" when this serial began; it stays that kind of story${steer ? ' unless their steer below takes it elsewhere' : ''}.`
+        : '',
+      from ? `Previous part, titled "${from.title}":\n${from.story}` : '',
+      bible
+        ? [
+            `Already true — don't contradict it, and don't re-introduce these people:`,
+            `Cast: ${bible.cast
+              .map((c) => `${c.name} (${c.role}; wants ${c.wants}${c.secret ? `; secretly: ${c.secret}` : ''})`)
+              .join('; ')}`,
+            bible.facts.length > 0 ? `Facts: ${bible.facts.join('; ')}` : '',
+            bible.openThreads.length > 0 ? `Open questions: ${bible.openThreads.join('; ')}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n')
+        : '',
+      from && (bible?.openThreads?.length ?? 0) === 0
+        ? `The previous part settled its story, so start new trouble early — a different kind from before.`
+        : '',
+      steer
+        ? `The reader steered this part: "${steer}". Follow it, whatever kind of steer it is — something that happens, a change of tone or genre, a jump in time, a focus on one person, how the part should end. Act on it early in this part. It outranks everything else in this brief, including the kind of story this began as, how big the trouble may be, and how to end.`
+        : '',
+      levelSpec(deck.language, band, 'story', register),
+      // Scale and pace are here because "a story of someone in Japan" came back
+      // as a thriller: a visa held hostage, a boss stealing from his own till to
+      // frame a worker, all inside the first part. Every craft ask below pulled
+      // toward more plot, and nothing said how much the story could hold.
+      from
+        ? steer
+          ? `Make the trouble the size the reader's steer calls for, and no bigger.`
+          : `Keep the trouble the size of the story the reader asked for. It can grow, but one step at a time — no crime, betrayal or conspiracy the story hasn't already earned.`
+        : `Make the trouble the size of what the reader asked for. Unless they asked for crime, danger or suspense, this is ordinary life: a choice, a misunderstanding, a small loss, something someone wants and isn't sure they can have — no crimes, betrayals, schemes or hidden money. This is the opening: let the reader get to know one person — their day, their habits, what they want and why — and let ONE thing change. One development, not a chain of revelations.`,
+      // The believability lines are here because a reader stopped believing a
+      // serial: a killer, caught, accused her escaped victim with her garden full
+      // of bodies — a turn bought by making a clever character act against
+      // everything she knew. A twist is only worth something if it costs no one
+      // their sense.
+      [
+        `What makes it worth reading:`,
+        `- someone who wants something specific, and what it costs them to go after it`,
+        `- people who act on what they want and what they know. Nobody does something foolish so the plot can happen: a dangerous person is clever, a cornered one acts in their own interest. If someone does something strange, they have a reason the reader can see, or will`,
+        `- a moment that changes how the reader sees someone — it can be small: a kindness, a lie told to spare someone, a detail that gives away a past. It follows from what is already in the story. Never a coincidence, never someone suddenly acting out of character`,
+        `- people who say less than they mean; show what they feel through what they do and say, never by naming the feeling`,
+        `- one or two concrete details that belong only to this story, and let one come back later meaning more than it did`,
+        `- plain words can still be beautiful: an exact image, and a short sentence landing after longer ones`,
+      ].join('\n'),
+      from
+        ? `Before writing, ask of each person: knowing what they know now, what would they really do next? Start there, not from the twist you want.`
+        : '',
+      from
+        ? `At most one new named character.`
+        : `Two or three named characters, with names natural for ${deck.language} speakers.`,
+      endingSpec(ending),
+      `Separate paragraphs with a blank line.`,
+      wanted.length > 0 ? `Use some of these words where they fit naturally: ${wanted.join(', ')}` : '',
+      !from && avoidThemes.length > 0
+        ? `Recent stories were about: ${avoidThemes.join('; ')}. Make this one different.`
+        : '',
+      !from && avoidNames.length > 0
+        ? `Don't reuse these names: ${avoidNames.join(', ')}.`
+        : '',
+      `Return a short title and the story, both in ${deck.language}.`,
+    ]
+      .filter(Boolean)
+      .join('\n')
+  }
 
-  return writeAndPolish(prompt, endingSpec(ending))
+  return writeAndPolish(
+    storyBrief(continueFrom),
+    endingSpec(ending),
+    continueFrom && storyBrief(trimForRetry(continueFrom)),
+  )
 
   /** Write to a brief, then the passes every draft gets: top-ups while it is
    *  short, the vocabulary edit and the world record. `endingLine` is the
-   *  brief's ending, handed to the top-up, whose text becomes the new end. */
-  async function writeAndPolish(prompt: string, endingLine: string): Promise<StoryProse> {
-    let draft = await step(
-      'write',
-      'Writing',
-      (onMeta) =>
-        callGeminiJson<StoryDraft>(prompt, STORY_SCHEMA, {
-          tier: 'story',
-          effort: 'medium',
-          label: 'write',
-          onMeta,
-        }),
-      (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
-    )
+   *  brief's ending, handed to the top-up, whose text becomes the new end.
+   *  `retryPrompt`, for a continuation, is the brief with the previous part
+   *  cut down — tried once if Gemini refuses the full one. */
+  async function writeAndPolish(
+    prompt: string,
+    endingLine: string,
+    retryPrompt?: string,
+  ): Promise<StoryProse> {
+    const write = (key: string, label: string, brief: string) =>
+      step(
+        key,
+        label,
+        (onMeta) =>
+          callGeminiJson<StoryDraft>(brief, STORY_SCHEMA, {
+            tier: 'story',
+            effort: 'medium',
+            label: key,
+            onMeta,
+          }),
+        (p) => `${countWords(p.story, langCode)} of ${lengthWords} words`,
+      )
+    let draft = await write('write', 'Writing', prompt).catch((e) => {
+      if (!retryPrompt || !isRefusal(e)) throw e
+      console.warn('[story] write refused — retrying with only the end of the previous part')
+      return write('write-short', 'Writing again from a shorter recap', retryPrompt)
+    })
     // Everything above this line is irreplaceable; everything below it is
     // improvement. Hand it over before going on.
     await opts.onDraft?.(draft)
