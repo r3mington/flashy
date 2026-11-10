@@ -182,20 +182,14 @@ button { font-family: inherit; }
   gap: 8px;
 }
 
-.page-head .read-timer {
-  margin-left: auto;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--accent);
-  background: var(--accent-soft);
-  padding: 4px 10px;
-  border-radius: 999px;
-  white-space: nowrap;
-}
+/* While a story is open the heading steps back to one quiet line — the
+   reader needs the room more than the page needs its title. */
+.page-head.is-reading { margin: 10px 0 12px; gap: 10px; }
+.page-head.is-reading h1 { font-size: 15px; letter-spacing: 0; color: var(--ink-2); }
+.page-head.is-reading .sub { font-size: 12.5px; }
 
 /* Today's reading, in one compact line: words, known, studying, time. */
-.page-head .read-today {
-  margin-left: auto;
+.read-today {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -214,6 +208,10 @@ button { font-family: inherit; }
   color: var(--accent);
 }
 .read-today .rt-study b { color: var(--green); }
+.page-head .read-today { margin-left: auto; }
+/* In the reader: a second, quieter row of the sticky bar. */
+.story-bar-today { margin-top: 6px; }
+.story-bar-today .read-today { font-size: 12px; }
 .read-today svg { vertical-align: -2px; }
 
 .eyebrow {

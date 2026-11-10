@@ -1485,31 +1485,38 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // A story can be about anything; an explanation has to be about something.
   const canRun = bankSize > 0 && (formKind !== 'learn' || continuing !== null || topic.trim() !== '')
 
+  // Today's reading in one compact line. In the page head on the form and the
+  // list; in the reader it moves into the sticky bar, so it stays in view
+  // while the story scrolls.
+  const todayLine = (
+    <span
+      className="read-today"
+      title={`Today: ${timer.todayWords.toLocaleString()} story words read · ${today.known} words marked known · ${today.study} words put into study · ${formatDuration(timer.todaySecs)} reading`}
+    >
+      <span className="rt-label">Today</span>
+      <span>
+        <b>{timer.todayWords.toLocaleString()}</b> words
+      </span>
+      <span className="rt-known">
+        <b>+{today.known}</b> known
+      </span>
+      <span className="rt-study">
+        <b>+{today.study}</b> studying
+      </span>
+      <span>
+        <Icon name="clock" /> <b>{formatDuration(timer.todaySecs)}</b>
+      </span>
+    </span>
+  )
+
   return (
     <>
-      <div className="page-head">
+      <div className={`page-head${story ? ' is-reading' : ''}`}>
         <h1>Story</h1>
         <span className="sub">
           {deck.name} · built from your {bankSize} {bankSize === 1 ? 'word' : 'words'}
         </span>
-        <span
-          className="read-today"
-          title={`Today: ${timer.todayWords.toLocaleString()} story words read · ${today.known} words marked known · ${today.study} words put into study · ${formatDuration(timer.todaySecs)} reading`}
-        >
-          <span className="rt-label">Today</span>
-          <span>
-            <b>{timer.todayWords.toLocaleString()}</b> words
-          </span>
-          <span className="rt-known">
-            <b>+{today.known}</b> known
-          </span>
-          <span className="rt-study">
-            <b>+{today.study}</b> studying
-          </span>
-          <span>
-            <Icon name="clock" /> <b>{formatDuration(timer.todaySecs)}</b>
-          </span>
-        </span>
+        {story === null && todayLine}
       </div>
 
       {story === null ? (
@@ -2025,6 +2032,8 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 <Icon name={controlsOpen ? 'chevronUp' : 'chevronDown'} />
               </button>
             </div>
+            {/* Always in view while reading, folded or not. */}
+            <div className="story-bar-today">{todayLine}</div>
 
             {controlsOpen && (
             <div className="story-bar-controls">
