@@ -133,6 +133,8 @@ if (cmd === 'full' || cmd === 'learn' || cmd === 'continue') {
     troubleAge: prev
       ? (prev.openStreak ?? ((prev.bible?.openThreads?.length ?? 0) > 0 ? 1 : 0))
       : undefined,
+    // GOAL sets a serial's long-running goal; a continuation keeps its own.
+    goal: prev ? prev.goal : process.env.GOAL || undefined,
     onProgress: () => {},
   })
   const prevStreak = prev ? (prev.openStreak ?? ((prev.bible?.openThreads?.length ?? 0) > 0 ? 1 : 0)) : 0
@@ -143,11 +145,14 @@ if (cmd === 'full' || cmd === 'learn' || cmd === 'continue') {
     kind,
     register,
     part,
+    goal: prev ? prev.goal : process.env.GOAL || undefined,
     ...story,
     outline: story.outline ?? prev?.outline,
   })
   if (story.outline) console.log(`\n----- plan -----\n${story.outline.map((p, i) => `${i + 1}. ${p}`).join('\n')}`)
   console.log(`\n===== ${story.title} =====\n\n${story.story}\n\n----- summary -----\n${story.summary}\n\n----- translation -----\n${story.translation}`)
+  if (story.bible?.goalProgress) console.log(`\n----- towards the goal -----\n${story.bible.goalProgress}`)
+  if (story.nextChoices) console.log(`\n----- what happens next? -----\n${story.nextChoices.map((c) => `• ${c}`).join('\n')}`)
 } else if (cmd === 'bare') {
   // The stripped pipeline the user proposes: one prompt, no plan, no angle,
   // no beats — just "a story on this theme at this level".

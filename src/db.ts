@@ -30,6 +30,10 @@ export interface Card {
    *  stop flagging it as new: out of study, and counted as neither known nor
    *  learning anywhere in the stats. Mutually exclusive with `known`. */
   ignored?: boolean
+  /** When the card was last moved between in study / known / ignored, so the
+   *  reader can count what changed today. Absent on cards not moved since
+   *  this was tracked. Plain, non-indexed. */
+  statusAt?: number
   /** How many times this word was tapped for its definition while reading a
    *  story — a "struggle" signal for sorting the deck. Plain, non-indexed. */
   lookups?: number
@@ -104,6 +108,9 @@ export interface StoryBible {
   /** Learn threads only: the key terms explained so far, so a later part
    *  uses them instead of explaining them again. */
   terms?: string[]
+  /** Story threads with a goal only: one English sentence on how far the
+   *  serial has got towards it (see `SavedStory.goal`). */
+  goalProgress?: string
 }
 
 /** What a thread is: an invented story, or a real topic explained in parts.
@@ -157,6 +164,13 @@ export interface SavedStory {
    *  attention can go on the language rather than on decoding what happens.
    *  Absent on stories made before it existed. Plain, not indexed. */
   summary?: string
+  /** Thread roots only: the reader's loose, long-running goal for the serial —
+   *  where they'd like it to head over many parts. Editable when continuing.
+   *  Plain, not indexed. */
+  goal?: string
+  /** Three short English directions the next part could take, read off this
+   *  part with its bible, offered as one-tap choices at the end. Plain. */
+  nextChoices?: string[]
   /** Words the learner keeps forgetting that were seeded into this part. */
   focusWords?: string[]
   /** What the reader asked to happen next in this part, if they steered it.
@@ -663,7 +677,7 @@ export function statusOf(c: Card): WordStatus {
  *  always written together, so a card can never end up as both. The scheduler
  *  state is never touched: the way out of a state is to answer the card. */
 export function statusPatch(status: WordStatus): Partial<Card> {
-  return { known: status === 'known', ignored: status === 'ignored' }
+  return { known: status === 'known', ignored: status === 'ignored', statusAt: Date.now() }
 }
 
 /** Move cards between statuses. The one writer for the whole app. */

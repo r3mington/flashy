@@ -193,6 +193,29 @@ button { font-family: inherit; }
   white-space: nowrap;
 }
 
+/* Today's reading, in one compact line: words, known, studying, time. */
+.page-head .read-today {
+  margin-left: auto;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.read-today b { color: var(--ink); font-weight: 600; }
+.read-today .rt-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+}
+.read-today .rt-study b { color: var(--green); }
+.read-today svg { vertical-align: -2px; }
+
 .eyebrow {
   font-size: 12px;
   font-weight: 600;
@@ -1610,6 +1633,50 @@ button { font-family: inherit; }
 .story-next-link:active { transform: translateY(1px); }
 .story-next-title { font-size: 15px; font-weight: 600; line-height: 1.4; }
 .story-next-meta { font-size: 12.5px; color: var(--ink-2); line-height: 1.4; }
+
+/* What the reader marked while reading this part: known first, then study. */
+.story-marked { margin: 22px 0 6px; display: grid; gap: 14px; }
+.story-marked-group .eyebrow { margin-bottom: 6px; }
+.story-marked ul { margin: 0; padding: 0; list-style: none; font-size: 14px; line-height: 1.55; }
+.story-marked li { padding: 3px 0; border-bottom: 1px solid var(--line); }
+.story-marked li:last-child { border-bottom: 0; }
+.story-marked li b { color: var(--ink); margin-right: 6px; }
+.story-marked li span { color: var(--ink-2); }
+
+/* Where the serial stands against the reader's long-running goal. */
+.story-goal-progress {
+  margin: 18px 0 6px;
+  padding-left: 12px;
+  border-left: 3px solid var(--accent);
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+.story-form .story-goal-progress { margin: 0 0 14px; }
+.story-goal-progress b { color: var(--ink); margin-right: 4px; }
+
+/* One-tap directions for the next part. */
+.story-choices { margin: 22px 0 6px; display: grid; gap: 8px; }
+.story-choices .eyebrow { margin-bottom: 2px; }
+.story-choice {
+  appearance: none;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+.story-choice:hover { background: var(--accent-soft); border-color: var(--accent); }
+.story-choice:active { transform: translateY(1px); }
+.story-choice:disabled { opacity: 0.5; cursor: default; }
+.story-choice.other { color: var(--ink-2); font-size: 14px; }
 .story-body {
   white-space: pre-wrap;
   line-height: 1.7;

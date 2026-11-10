@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, inRotation, type Card } from '../db'
+import { db, inRotation, statusPatch, type Card } from '../db'
 import { DAY, startOfDay } from '../time'
 import { schedule, previewInterval, type Grade } from '../srs'
 import { Flashcard } from './Flashcard'
@@ -129,7 +129,7 @@ export function StudySrs({
 
   async function markKnown() {
     if (!current || !queue) return
-    await db.cards.update(current.id, { known: true })
+    await db.cards.update(current.id, statusPatch('known'))
     updateAppBadge()
     setKnownCount((k) => k + 1)
     setFlipped(false)

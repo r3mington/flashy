@@ -39,7 +39,7 @@ import {
 import { definable, missingDefinitions } from '../glossary'
 import { coverage, coverageShares, difficulty, type WordKind } from '../coverage'
 import { leeches } from '../stats'
-import { formatDuration } from '../time'
+import { formatDuration, startOfToday } from '../time'
 import {
   clearMediaSession,
   holdAudioFocus,
@@ -225,6 +225,13 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // Deck words at the moment the story was opened — keeps the "new words" chip
   // list stable while words are added (added ones show a ✓ instead of vanishing).
   const [baselineKeys, setBaselineKeys] = useState<Set<string>>(new Set())
+  // Each deck word's status when the story was opened, so the end of the
+  // story can list what the reader marked known or put into study while
+  // reading it.
+  const [baselineStatus, setBaselineStatus] = useState<Map<string, WordStatus>>(new Map())
+  // The serial's long-running goal, as typed in the form: a new thread's, or
+  // the one being continued (prefilled from its root, and editable).
+  const [goal, setGoal] = useState('')
 
   // Daily reading log — ticks only while a story is open.
   const timer = useReadingTimer(!!story, reading)
@@ -680,9 +687,10 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
 
   /** Generate a story — a fresh one, or the next part of the thread being
    *  continued, optionally steered by what the reader asked for. */
-  async function run() {
-    const from = continuing
-    const steer = direction.trim()
+  async function run(override?: { from: SavedStory; steer: string; goal?: string }) {
+    const from = override ? override.from : continuing
+    const steer = (override ? override.steer : direction).trim()
+    const goalText = (override ? (override.goal ?? '') : goal).trim()
     setLoading(true)
     setSteps([])
     setError('')
@@ -706,6 +714,11 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       }
       const threadRoot = from ? (thread.find((s) => !s.parentId) ?? thread[0]) : undefined
       const runKind: StoryKind = from ? (threadRoot?.kind ?? 'story') : kind
+      const runGoal = runKind === 'learn' ? undefined : goalText || undefined
+      // The goal lives on the thread's root; an edit made while continuing
+      // replaces it for every later part.
+      if (from && threadRoot && runKind !== 'learn' && (threadRoot.goal ?? '') !== (runGoal ?? ''))
+        await db.stories.update(threadRoot.id, { goal: runGoal })
       // Speech, like kind, belongs to the thread: a story that starts casual
       // stays casual.
       const runRegister: StoryRegister = from
@@ -732,13 +745,13 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       const contentKeys = new Set<string>()
       for (const s of savedStories ?? [])
         for (const g of s.glossary ?? []) if (g.isNew) contentKeys.add(defKey(g.word))
-      const recurWords = from
-        ? []
-        : dueForRecurrence(
-            allStats,
-            (savedStories ?? []).map((s) => s.createdAt),
-            (k) => !allNames.has(k) && contentKeys.has(k) && (isNewWord(k) || isInStudy(k)),
-          )
+      // Continuations get them too: a reader who lives in serials would
+      // otherwise never have a word brought back on schedule.
+      const recurWords = dueForRecurrence(
+        allStats,
+        (savedStories ?? []).map((s) => s.createdAt),
+        (k) => !allNames.has(k) && contentKeys.has(k) && (isNewWord(k) || isInStudy(k)),
+      )
       // Filled in by onDraft, below: the row exists from the moment the story
       // does, and the polish passes update it rather than deciding whether it
       // gets saved at all.
@@ -754,6 +767,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         focusWords: focusWords.length > 0 ? focusWords : undefined,
         chosen: from && steer ? steer : undefined,
         topic: from ? undefined : topic.trim() || undefined,
+        goal: from ? undefined : runGoal,
         kind: runKind === 'learn' ? runKind : undefined,
         register: runRegister === 'casual' ? runRegister : undefined,
         // Parts always attach to the thread's root, never to another part.
@@ -777,6 +791,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         partIndex: thread.length,
         focusWords,
         recurWords,
+        goal: runGoal,
         // Steer fresh stories away from themes already covered (recent first).
         // What a past story was ABOUT, not what it was called. The summary
         // (clipped) says what actually happened; older stories fall back to
@@ -820,11 +835,13 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         bible: draft.bible,
         // A new Learn thread's plan, kept on its root for every later part.
         outline: draft.outline,
+        nextChoices: draft.nextChoices,
       }
       if (id === null) id = await db.stories.add(record)
       else await db.stories.update(id, record)
       setContinuing(null)
       setDirection('')
+      setGoal('')
       openStory({ ...record, id })
       window.scrollTo({ top: 0 })
     } catch (e) {
@@ -890,6 +907,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     // Land on the saved reading marker so "resume where I left off" is one tap.
     setActiveSentence(s.bookmark ?? null)
     setBaselineKeys(new Set((cards ?? []).map((c) => defKey(c.word))))
+    setBaselineStatus(new Map((cards ?? []).map((c) => [defKey(c.word), statusOf(c)])))
     // Remember it as the most recently read story (homepage shortcut).
     void db.stories.update(s.id, { lastOpenedAt: Date.now() })
   }
@@ -911,8 +929,22 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // Continue a thread: new parts always pick up from its latest part.
   function continueThread(root: SavedStory, parts: SavedStory[]) {
     setContinuing(parts.length > 0 ? parts[parts.length - 1] : root)
+    setGoal(root.goal ?? '')
     setStory(null)
     setError('')
+  }
+
+  /** One tap on a suggested next step: write the next part straight away,
+   *  steered by it. The form shows the progress, as it does for any part. */
+  function chooseNext(latest: SavedStory, choice: string) {
+    const root = (savedStories ?? []).find((s) => s.id === (latest.parentId ?? latest.id))
+    setContinuing(latest)
+    setDirection(choice)
+    setGoal(root?.goal ?? '')
+    setStory(null)
+    setError('')
+    window.scrollTo({ top: 0 })
+    void run({ from: latest, steer: choice, goal: root?.goal })
   }
 
   // Read the story aloud, sentence by sentence, highlighting the current one.
@@ -1204,6 +1236,30 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     })
   }
 
+  // Today's word-bank changes, for the header: words moved to known today,
+  // and words that entered study today — added today, or moved back into
+  // study today. Ignored words are not vocabulary and count as neither.
+  const dayStart = startOfToday()
+  const today = { known: 0, study: 0 }
+  for (const c of cards ?? []) {
+    const movedToday = (c.statusAt ?? 0) >= dayStart
+    if (c.known) {
+      if (movedToday) today.known++
+    } else if (!c.ignored && (movedToday || c.createdAt >= dayStart)) today.study++
+  }
+
+  // Words whose status the reader changed while this story was open — marked
+  // known, or put into study (a word added from the story counts as both new
+  // and changed). Ignored words are left out: they are not vocabulary.
+  const marked = story
+    ? (cards ?? []).filter((c) => {
+        const now = statusOf(c)
+        return now !== 'ignored' && baselineStatus.get(defKey(c.word)) !== now
+      })
+    : []
+  const markedKnown = marked.filter((c) => c.known)
+  const markedStudy = marked.filter((c) => !c.known)
+
   // Words worth surfacing under the story. The glossary now holds EVERY word
   // (function words included), so require the model's content-word isNew flag —
   // otherwise "ke", "dan" etc. would flood the list — and still drop anything
@@ -1408,6 +1464,24 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const nextInPlan = contRoot?.outline?.[contThread.length]
   // The open part's plan, read off its thread's root.
   const plan = story?.kind === 'learn' ? chain[0]?.outline : undefined
+  // The serial's long-running goal: the same field starting a thread and
+  // continuing one, where it arrives filled in and can be changed.
+  const goalField = (
+    <div className="field">
+      <label htmlFor="story-goal">Where should the series head? (optional)</label>
+      <textarea
+        id="story-goal"
+        value={goal}
+        onChange={(e) => setGoal(e.target.value)}
+        placeholder="e.g. she saves enough to open her own café · the two of them end up together · he finally forgives his brother"
+      />
+      <p className="note">
+        A loose goal for the whole series. Each part can move towards it, stall, or set it back —
+        it won’t all happen at once.
+      </p>
+    </div>
+  )
+
   // A story can be about anything; an explanation has to be about something.
   const canRun = bankSize > 0 && (formKind !== 'learn' || continuing !== null || topic.trim() !== '')
 
@@ -1418,8 +1492,23 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         <span className="sub">
           {deck.name} · built from your {bankSize} {bankSize === 1 ? 'word' : 'words'}
         </span>
-        <span className="read-timer" title="Time spent reading stories today">
-          <Icon name="clock" /> {formatDuration(timer.todaySecs)} today
+        <span
+          className="read-today"
+          title={`Today: ${timer.todayWords.toLocaleString()} story words read · ${today.known} words marked known · ${today.study} words put into study · ${formatDuration(timer.todaySecs)} reading`}
+        >
+          <span className="rt-label">Today</span>
+          <span>
+            <b>{timer.todayWords.toLocaleString()}</b> words
+          </span>
+          <span className="rt-known">
+            <b>+{today.known}</b> known
+          </span>
+          <span className="rt-study">
+            <b>+{today.study}</b> studying
+          </span>
+          <span>
+            <Icon name="clock" /> <b>{formatDuration(timer.todaySecs)}</b>
+          </span>
         </span>
       </div>
 
@@ -1438,11 +1527,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     onClick={() => {
                       setContinuing(null)
                       setDirection('')
+                      setGoal('')
                     }}
                   >
                     ✕
                   </button>
                 </div>
+                {formKind === 'story' && contRoot?.goal && continuing.bible?.goalProgress && (
+                  <p className="note story-goal-progress">
+                    <b>Towards your goal</b> {continuing.bible.goalProgress}
+                  </p>
+                )}
                 {formKind === 'learn' && nextInPlan && (
                   <p className="note">
                     Next in the series: <b>{planTitle(nextInPlan)}</b>
@@ -1466,6 +1561,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     }
                   />
                 </div>
+                {formKind === 'story' && goalField}
               </>
             ) : (
               <>
@@ -1507,6 +1603,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                     }
                   />
                 </div>
+                {kind === 'story' && goalField}
               </>
             )}
             <div className="field">
@@ -2235,6 +2332,67 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             ))}
           </div>
           {showTranslation && <div className="story-translation">{story.translation}</div>}
+
+          {(markedKnown.length > 0 || markedStudy.length > 0) && (
+            <div className="story-marked">
+              {markedKnown.length > 0 && (
+                <div className="story-marked-group">
+                  <div className="eyebrow">Marked known this time · {markedKnown.length}</div>
+                  <ul>
+                    {markedKnown.map((c) => (
+                      <li key={c.id}>
+                        <b>{c.word}</b> <span>{c.meaning}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {markedStudy.length > 0 && (
+                <div className="story-marked-group">
+                  <div className="eyebrow">Now studying · {markedStudy.length}</div>
+                  <ul>
+                    {markedStudy.map((c) => (
+                      <li key={c.id}>
+                        <b>{c.word}</b> <span>{c.meaning}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
+          {!nextPart && story.kind !== 'learn' && chain[0]?.goal && story.bible?.goalProgress && (
+            <p className="story-goal-progress">
+              <b>Towards your goal</b> {story.bible.goalProgress}
+            </p>
+          )}
+
+          {!nextPart && story.kind !== 'learn' && (story.nextChoices?.length ?? 0) > 0 && (
+            <div className="story-choices">
+              <div className="eyebrow">What happens next?</div>
+              {story.nextChoices!.map((choice) => (
+                <button
+                  key={choice}
+                  className="story-choice"
+                  disabled={loading}
+                  title="Write the next part this way"
+                  onClick={() => chooseNext(story, choice)}
+                >
+                  {choice}
+                </button>
+              ))}
+              <button
+                className="story-choice other"
+                disabled={loading}
+                onClick={() => {
+                  if (chainGroup) continueThread(chainGroup.root, chainGroup.parts)
+                }}
+              >
+                Something else…
+              </button>
+            </div>
+          )}
 
           {nextPart && (
             <div className="story-next">

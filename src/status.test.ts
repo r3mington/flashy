@@ -45,9 +45,16 @@ describe('statusPatch', () => {
   })
 
   it('round-trips through every status', () => {
-    expect(statusPatch('known')).toEqual({ known: true, ignored: false })
-    expect(statusPatch('ignored')).toEqual({ known: false, ignored: true })
-    expect(statusPatch('inStudy')).toEqual({ known: false, ignored: false })
+    expect(statusPatch('known')).toMatchObject({ known: true, ignored: false })
+    expect(statusPatch('ignored')).toMatchObject({ known: false, ignored: true })
+    expect(statusPatch('inStudy')).toMatchObject({ known: false, ignored: false })
+  })
+
+  it('stamps when the status changed, so today’s changes can be counted', () => {
+    const before = Date.now()
+    const p = statusPatch('known')
+    expect(p.statusAt).toBeGreaterThanOrEqual(before)
+    expect(p.statusAt).toBeLessThanOrEqual(Date.now())
   })
 
   it('leaves the schedule alone — the way out of a state is to answer the card', () => {

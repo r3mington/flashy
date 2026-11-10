@@ -6,6 +6,9 @@ import { useFlushLoop } from './useFlushLoop'
 export interface ReadingTimer {
   /** Seconds read today, this session included — for the header clock. */
   todaySecs: number
+  /** Story words read today, the open story's not-yet-banked progress
+   *  included. Refreshes with the clock's tick while reading. */
+  todayWords: number
   /** Best position reached in the open story, in words. The scroll measurer
    *  raises this; nothing else should lower it. */
   seen: React.RefObject<number>
@@ -50,6 +53,9 @@ const ACTIVITY_EVENTS = ['scroll', 'wheel', 'pointerdown', 'touchstart', 'keydow
 export function useReadingTimer(active: boolean, readingAloud = false): ReadingTimer {
   const [baseSecs, setBaseSecs] = useState(0)
   const [sessionSecs, setSessionSecs] = useState(0)
+  // Words already banked in today's log row; the open story's unbanked gain
+  // is added on top at render time.
+  const [baseWords, setBaseWords] = useState(0)
 
   const dayRef = useRef(startOfToday())
   const baseRef = useRef(0)
@@ -64,7 +70,10 @@ export function useReadingTimer(active: boolean, readingAloud = false): ReadingT
   const storyRef = useRef<number | null>(null)
 
   useEffect(() => {
-    db.reading.get(dayRef.current).then((r) => setBaseSecs(r?.seconds ?? 0))
+    db.reading.get(dayRef.current).then((r) => {
+      setBaseSecs(r?.seconds ?? 0)
+      setBaseWords(r?.words ?? 0)
+    })
   }, [])
 
   const lastActivityRef = useRef(Date.now())
@@ -111,8 +120,12 @@ export function useReadingTimer(active: boolean, readingAloud = false): ReadingT
     baseRef.current = 0
     sessRef.current = 0
     setBaseSecs(0)
+    setBaseWords(0)
     setSessionSecs(0)
-    void db.reading.get(today).then((r) => setBaseSecs(r?.seconds ?? 0))
+    void db.reading.get(today).then((r) => {
+      setBaseSecs(r?.seconds ?? 0)
+      setBaseWords(r?.words ?? 0)
+    })
   }
 
   // Only refs are read, so this closure's identity never matters to callers.
@@ -127,6 +140,7 @@ export function useReadingTimer(active: boolean, readingAloud = false): ReadingT
     highRef.current = mark
     db.stories.update(id, { wordsRead: mark })
     bumpReading(dayRef.current, { addWords: gained })
+    setBaseWords((w) => w + gained)
   }
 
   useFlushLoop(() => {
@@ -143,5 +157,13 @@ export function useReadingTimer(active: boolean, readingAloud = false): ReadingT
     seenRef.current = story?.wordsRead ?? 0
   }
 
-  return { todaySecs: baseSecs + sessionSecs, seen: seenRef, flush, adopt }
+  return {
+    todaySecs: baseSecs + sessionSecs,
+    // Read during render on purpose: the one-second tick re-renders while
+    // reading, which is when the open story's progress moves.
+    todayWords: baseWords + Math.max(0, seenRef.current - highRef.current),
+    seen: seenRef,
+    flush,
+    adopt,
+  }
 }

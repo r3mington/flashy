@@ -379,6 +379,8 @@ export interface Story {
   summary?: string
   /** Learn threads: the series plan, returned with the first part only. */
   outline?: string[]
+  /** Story threads: three short English directions the next part could take. */
+  nextChoices?: string[]
 }
 
 const GLOSSARY_ARRAY = {
@@ -422,6 +424,7 @@ const BIBLE_SCHEMA = {
   type: 'OBJECT',
   properties: {
     characterNames: { type: 'ARRAY', items: { type: 'STRING' } },
+    nextChoices: { type: 'ARRAY', items: { type: 'STRING' } },
     bible: {
       type: 'OBJECT',
       properties: {
@@ -443,6 +446,7 @@ const BIBLE_SCHEMA = {
         facts: { type: 'ARRAY', items: { type: 'STRING' } },
         openThreads: { type: 'ARRAY', items: { type: 'STRING' } },
         terms: { type: 'ARRAY', items: { type: 'STRING' } },
+        goalProgress: { type: 'STRING' },
       },
       required: ['logline', 'cast', 'places', 'facts', 'openThreads'],
     },
@@ -1346,9 +1350,11 @@ async function extractBible(opts: {
   /** The world before this part, when it continues a serial. */
   previous?: StoryBible
   kind: StoryKind
+  /** The reader's long-running goal for the serial, if they set one. */
+  goal?: string
   onMeta?: (m: CallMeta) => void
-}): Promise<{ characterNames: string[]; bible: StoryBible }> {
-  const { deck, story, previous, kind, onMeta } = opts
+}): Promise<{ characterNames: string[]; bible: StoryBible; nextChoices?: string[] }> {
+  const { deck, story, previous, kind, goal, onMeta } = opts
   const prompt = kind === 'learn' ? learnBiblePrompt(deck, story, previous) : [
     previous
       ? `Below is the latest part of a serial story in ${deck.language}. Update the record of its world so the next part stays consistent.`
@@ -1358,16 +1364,36 @@ async function extractBible(opts: {
       : '',
     `Return "characterNames": every personal name used in the story, spelled exactly as in the text.`,
     `And "bible": "logline" — ONE English sentence recapping what happened in this ${previous ? 'part' : 'story'}, shown to the reader as "Previously…" before the next part; "cast" — the named characters who still matter, each with their role, what they want, and "secret": what they know or have done that the others don't, as far as the story shows (empty if nothing); "places" — the locations; "facts" — at most 8 concrete details a later part must not contradict; "openThreads" — the questions the story leaves open. If it settles everything, openThreads is empty — never invent one.`,
+    goal
+      ? `The reader has a long-running goal for this serial: "${goal}". Give the bible a "goalProgress": ONE short English sentence on where the story now stands against that goal — what has been gained, lost or set up so far, and what still stands in the way. Honest: if this part moved away from it or did nothing for it, say so.`
+      : '',
+    `And "nextChoices": exactly three directions the next part could take, in English, each under 12 words, written as something that happens ("Rina tells her mother the truth"). Each follows from where this part ends and from what the people in it want. Make them genuinely different from each other: one quiet, one bold, one that surprises.${goal ? ' At least one moves towards the reader\'s goal, and none of them reaches it outright.' : ''} No spoilers of the secrets above — a choice is something the reader would want to see, not a reveal.`,
     `Story:\n${story}`,
   ]
     .filter(Boolean)
     .join('\n')
-  const out = await callGeminiJson<{ characterNames: string[]; bible: StoryBible }>(
-    prompt,
-    BIBLE_SCHEMA,
-    { label: 'bible', budgetMs: CHUNK_BUDGET_MS, tries: CHUNK_TRIES, onMeta },
-  )
-  return { characterNames: out.characterNames ?? [], bible: out.bible ?? EMPTY_BIBLE }
+  const out = await callGeminiJson<{
+    characterNames: string[]
+    bible: StoryBible
+    nextChoices?: string[]
+  }>(prompt, BIBLE_SCHEMA, {
+    label: 'bible',
+    budgetMs: CHUNK_BUDGET_MS,
+    tries: CHUNK_TRIES,
+    onMeta,
+  })
+  const bible = out.bible ?? EMPTY_BIBLE
+  // A goal-less thread has no progress to report, whatever the model says.
+  if (!goal) delete bible.goalProgress
+  const nextChoices =
+    kind === 'learn'
+      ? undefined
+      : (out.nextChoices ?? []).map((c) => c.trim()).filter(Boolean).slice(0, 3)
+  return {
+    characterNames: out.characterNames ?? [],
+    bible,
+    ...(nextChoices && nextChoices.length > 0 ? { nextChoices } : {}),
+  }
 }
 
 /** Whether a failed call is the kind another attempt might survive: the model
@@ -1519,6 +1545,9 @@ export async function writeStoryDraft(
     /** Words met in earlier stories and due to be met again (see
      *  `dueForRecurrence`) — next in line after the focus words. */
     recurWords?: string[]
+    /** Story threads: the reader's loose, long-running goal for the serial —
+     *  worked towards across parts, never reached in one. */
+    goal?: string
     /** Called with the story the moment it exists, before the passes that only
      *  improve it. The caller saves it here, so nothing that has been written
      *  can be lost to a top-up, a vocabulary edit or a closed tab. */
@@ -1534,6 +1563,7 @@ export async function writeStoryDraft(
   const { avoidThemes = [], avoidNames = [], focusWords = [], recurWords = [] } = opts
   const { kind = 'story', register = 'standard', partIndex = 0 } = opts
   const topic = opts.topic?.trim()
+  const goal = kind === 'learn' ? undefined : opts.goal?.trim() || undefined
   const ending =
     opts.ending ??
     pickSerialEnding(continueFrom?.bible?.openThreads?.length ?? 0, opts.troubleAge)
@@ -1626,6 +1656,16 @@ export async function writeStoryDraft(
         : '',
       steer
         ? `The reader steered this part: "${steer}". Follow it, whatever kind of steer it is — something that happens, a change of tone or genre, a jump in time, a focus on one person, how the part should end. Act on it early in this part. It outranks everything else in this brief, including the kind of story this began as, how big the trouble may be, and how to end.`
+        : '',
+      // The goal is a horizon, not a plot for this part: the serial cadence
+      // still decides how the part ends, and the steer still wins.
+      goal
+        ? [
+            `The reader has a long-running goal for this serial, to be worked towards over many parts: "${goal}".`,
+            from
+              ? `This part may move one step towards it, stall, or suffer a setback that makes it harder — whatever the story calls for. Never reach the whole goal in one part, and never forget it.${bible?.goalProgress ? ` Where it stands so far: ${bible.goalProgress}` : ''}${steer ? ' The reader\'s steer for this part comes first.' : ''}`
+              : `This is the first part: set the goal up — let the reader see what is wanted and what stands in the way — and do not reach it. One small step at most.`,
+          ].join('\n')
         : '',
       levelSpec(deck.language, band, 'story', register),
       // Scale and pace are here because "a story of someone in Japan" came back
@@ -1759,7 +1799,7 @@ export async function writeStoryDraft(
       step(
         'bible',
         'Noting who and what',
-        (onMeta) => extractBible({ deck, story: written, previous: bible, kind, onMeta }),
+        (onMeta) => extractBible({ deck, story: written, previous: bible, kind, goal, onMeta }),
         (w) => `${w.characterNames.length} names, ${w.bible.openThreads.length} open threads`,
       ).catch(() => {
         console.warn('[story] bible failed — carrying the previous one forward')
