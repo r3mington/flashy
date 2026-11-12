@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Card } from './db'
-import { bandProgress, commonStatuses, entriesOf, type CommonList } from './commonWords'
+import { bandProgress, commonStatuses, entriesOf, entryCards, type CommonList } from './commonWords'
 
 function card(word: string, over: Partial<Card> = {}): Card {
   return {
@@ -52,21 +52,35 @@ describe('commonStatuses', () => {
     expect(s.get('pekerjaan')).toBeUndefined()
   })
 
-  it('prefers known over in study, and ignores ignored cards', () => {
+  it('prefers known over in study over ignored among covering cards', () => {
     const s = commonStatuses(
       entries,
-      [card('makan'), card('dimakan', { known: true }), card('rumah', { ignored: true })],
+      [card('dimakan', { known: true }), card('makannya'), card('rumah', { ignored: true })],
       'id',
     )
     expect(s.get('makan')).toBe('known')
-    expect(s.get('rumah')).toBeUndefined()
+    expect(s.get('rumah')).toBe('ignored')
+  })
+
+  it('lets the card for the entry word itself decide', () => {
+    // A known "pekerjaan"-style cover through a root must not hide that the
+    // reader set "kerja" itself to ignored.
+    const s = commonStatuses(entries, [card('bekerja', { known: true }), card('kerja', { ignored: true })], 'id')
+    expect(s.get('kerja')).toBe('ignored')
   })
 })
 
 describe('bandProgress', () => {
   it('counts known and in-study words inside the band only', () => {
     const s = commonStatuses(entries, [card('makan', { known: true }), card('kerja'), card('rumah')], 'id')
-    expect(bandProgress(entries, s, 2)).toEqual({ size: 2, known: 1, study: 1 })
-    expect(bandProgress(entries, s, 10)).toEqual({ size: 5, known: 1, study: 2 })
+    expect(bandProgress(entries, s, 2)).toEqual({ size: 2, known: 1, study: 1, ignored: 0 })
+    expect(bandProgress(entries, s, 10)).toEqual({ size: 5, known: 1, study: 2, ignored: 0 })
+  })
+})
+
+describe('entryCards', () => {
+  it('finds the entry word and its forms, never a word that only shares the root', () => {
+    const cards = [card('makan', { id: 1 }), card('dimakan', { id: 2 }), card('makanan', { id: 3 })]
+    expect(entryCards(entries[0], cards).map((c) => c.id)).toEqual([1, 2])
   })
 })
