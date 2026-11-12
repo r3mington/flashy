@@ -2789,3 +2789,83 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .thumb-rail.family-foot.right { justify-content: flex-end; }
 .thumb-rail.family-foot.left { justify-content: flex-start; }
 .family-example span { display: block; color: var(--ink-3); font-style: normal; font-size: 13px; }
+
+/* ---------- Common words ---------- */
+/* Four band bars, then the list. Missing words dim, studying in the
+   reader's study colour, known in full ink (set on .common-page). */
+.cw-bands { display: grid; gap: 4px; margin: 6px 0 22px; }
+.cw-band {
+  appearance: none;
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cw-band:last-child { border-bottom: 0; }
+.cw-band-head { display: flex; align-items: baseline; justify-content: space-between; font-size: 15px; }
+.cw-band-pct { font-variant-numeric: tabular-nums; font-weight: 600; }
+.cw-bar { display: flex; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.cw-bar-known { background: color-mix(in srgb, var(--cw-known) 85%, transparent); }
+.cw-bar-study { background: var(--cw-study); }
+.cw-band-counts { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.cw-known { color: var(--cw-known); }
+.cw-study { color: var(--cw-study); }
+
+.cw-section { margin-top: 22px; scroll-margin-top: 12px; content-visibility: auto; contain-intrinsic-size: auto 30000px; }
+.cw-section-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+.cw-list { list-style: none; margin: 0; padding: 0; }
+.cw-row {
+  display: grid;
+  grid-template-columns: 3.2em minmax(6em, auto) 1fr auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  font-size: 14.5px;
+}
+.cw-rank { color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; opacity: 0.7; }
+.cw-word { font-weight: 600; color: var(--ink-2); }
+.cw-row.is-missing .cw-meaning { opacity: 0.75; }
+.cw-meaning { color: var(--ink-2); font-size: 13.5px; min-width: 0; overflow-wrap: anywhere; }
+.cw-status { font-size: 12px; }
+.cw-row.is-known .cw-word, .cw-row.is-known .cw-status { color: var(--cw-known); }
+.cw-row.is-study .cw-word, .cw-row.is-study .cw-status { color: var(--cw-study); }
+.cw-add {
+  appearance: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.cw-add:hover { border-color: var(--cw-study); color: var(--cw-study); }
+.cw-add:disabled { opacity: 0.4; cursor: default; }
+.cw-credit { margin-top: 28px; font-size: 12px; }
+@media (max-width: 560px) {
+  .cw-row { grid-template-columns: 2.6em 1fr auto; }
+  .cw-meaning { grid-column: 2; grid-row: 2; margin-top: -2px; }
+  .cw-row > :last-child { grid-column: 3; grid-row: 1; }
+}

@@ -23,6 +23,8 @@ interface Props {
   onOpenStory: (deckId: number, storyId: number) => void
   onListen: () => void
   onTranslate: () => void
+  /** Open the common-words page. */
+  onCommon: () => void
   onDeleted: () => void
 }
 
@@ -50,6 +52,7 @@ export function DeckView({
   onOpenStory,
   onListen,
   onTranslate,
+  onCommon,
   onDeleted,
 }: Props) {
   const [search, setSearch] = useState('')
@@ -291,6 +294,15 @@ export function DeckView({
         <button className="btn" onClick={onListen} disabled={cards.length === 0}>
           <Icon name="volume" /> Listen
         </button>
+        {langCode === 'id' && (
+          <button
+            className="btn"
+            onClick={onCommon}
+            title="The 4,000 most common words, checked against this deck"
+          >
+            Common words
+          </button>
+        )}
       </div>
 
       <ContinueReading deckId={deckId} onOpen={onOpenStory} />

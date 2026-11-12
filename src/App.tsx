@@ -14,6 +14,7 @@ import { Options } from './components/Options'
 import { StoryPage } from './components/StoryPage'
 import { ListenPage } from './components/ListenPage'
 import { TranslatePage } from './components/TranslatePage'
+import { CommonWordsPage } from './components/CommonWordsPage'
 import { Login } from './components/Login'
 
 export type Route =
@@ -26,6 +27,7 @@ export type Route =
   | { name: 'story'; deckId: number; storyId?: number }
   | { name: 'listen'; deckId: number }
   | { name: 'translate'; deckId: number; sessionId?: number }
+  | { name: 'common'; deckId: number }
   | { name: 'drill' }
 
 const ROUTE_KEY = 'flashy:route'
@@ -65,6 +67,8 @@ function routeToHash(r: Route): string {
       return `#/deck/${r.deckId}/listen`
     case 'translate':
       return `#/deck/${r.deckId}/translate${r.sessionId != null ? `/${r.sessionId}` : ''}`
+    case 'common':
+      return `#/deck/${r.deckId}/common`
   }
 }
 
@@ -74,7 +78,7 @@ function hashToRoute(hash: string): Route | null {
   if (path === 'dashboard') return { name: 'dashboard' }
   if (path === 'options') return { name: 'options' }
   if (path === 'drill') return { name: 'drill' }
-  const m = path.match(/^deck\/(\d+)(?:\/(review|flip|story|listen|translate)(?:\/(\d+))?)?$/)
+  const m = path.match(/^deck\/(\d+)(?:\/(review|flip|story|listen|translate|common)(?:\/(\d+))?)?$/)
   if (m) {
     const deckId = Number(m[1])
     switch (m[2]) {
@@ -88,6 +92,8 @@ function hashToRoute(hash: string): Route | null {
         return { name: 'listen', deckId }
       case 'translate':
         return { name: 'translate', deckId, sessionId: m[3] ? Number(m[3]) : undefined }
+      case 'common':
+        return { name: 'common', deckId }
       default:
         return { name: 'deck', deckId }
     }
@@ -232,7 +238,8 @@ export default function App() {
     route.name === 'study-flip' ||
     route.name === 'story' ||
     route.name === 'listen' ||
-    route.name === 'translate'
+    route.name === 'translate' ||
+    route.name === 'common'
 
   return (
     <div className="shell">
@@ -309,6 +316,7 @@ export default function App() {
             onOpenStory={(deckId, storyId) => setRoute({ name: 'story', deckId, storyId })}
             onListen={() => setRoute({ name: 'listen', deckId: route.deckId })}
             onTranslate={() => setRoute({ name: 'translate', deckId: route.deckId })}
+            onCommon={() => setRoute({ name: 'common', deckId: route.deckId })}
             onDeleted={() => setRoute({ name: 'decks' })}
           />
         </div>
@@ -335,6 +343,14 @@ export default function App() {
       {route.name === 'listen' && (
         <div className="view" key={`listen-${route.deckId}`}>
           <ListenPage
+            deckId={route.deckId}
+            onExit={() => setRoute({ name: 'deck', deckId: route.deckId })}
+          />
+        </div>
+      )}
+      {route.name === 'common' && (
+        <div className="view" key={`common-${route.deckId}`}>
+          <CommonWordsPage
             deckId={route.deckId}
             onExit={() => setRoute({ name: 'deck', deckId: route.deckId })}
           />
