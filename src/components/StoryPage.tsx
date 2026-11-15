@@ -70,7 +70,7 @@ import {
 import { Icon } from './Icon'
 import { PromptPreview } from './PromptPreview'
 import { familyStems, rootCandidates } from '../lemma'
-import { familySections, type FamilyStatus } from '../family'
+import { familySections, listFamily, type FamilyList, type FamilyStatus } from '../family'
 import { defKey, splitSentences, tokenizeWords, countWords } from '../text'
 import { storyColorVars } from '../storyColors'
 import { explainAffixes } from '../affixes'
@@ -300,6 +300,28 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   }, [langCode])
   const commonEntries = useMemo(() => (commonList ? entriesOf(commonList) : []), [commonList])
   const commonIndex = useMemo(() => rankIndex(commonEntries), [commonEntries])
+  // The word families that go with the list — each root's counted forms with
+  // their meanings — loaded behind the page like the list. Kept as a promise
+  // too, so a family opened before the file arrives waits for it rather than
+  // asking the model for what the file already says.
+  const familyListLoad = useMemo(
+    () =>
+      langCode === 'id'
+        ? import('../data/word-families-id.json')
+            .then((m) => m.default as unknown as FamilyList)
+            .catch(() => null)
+        : null,
+    [langCode],
+  )
+  const [familyList, setFamilyList] = useState<FamilyList | null>(null)
+  useEffect(() => {
+    setFamilyList(null)
+    let live = true
+    void familyListLoad?.then((l) => live && setFamilyList(l))
+    return () => {
+      live = false
+    }
+  }, [familyListLoad])
 
   // Cards keyed by defKey(word) — for resolving a tapped word to its card.
   const cardByKey = useMemo(() => {
@@ -391,8 +413,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const [mnemonicBusy, setMnemonicBusy] = useState<string | null>(null)
   const [mnemonicError, setMnemonicError] = useState('')
 
-  // Word families the reader has opened in this deck, one per root (see
-  // `WordFamily`). Asked of the model the first time, read from here after.
+  // Word families asked of the model, one per root per deck (see
+  // `WordFamily`) — only for roots the common-words list does not reach, or
+  // in other languages. The list's own families come first (`listedFamily`).
   const families = useLiveQuery(
     () => db.families.where('deckId').equals(deckId).toArray(),
     [deckId],
@@ -409,13 +432,24 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const [familyError, setFamilyError] = useState('')
   useEffect(() => setFamilyRoot(null), [selected?.word])
 
-  /** Open the family panel for a root, looking the family up first if it
-   *  isn't kept yet. */
+  /** A root's family from the common-words list: its entry's meaning and
+   *  the counted forms built on it, or null when the list doesn't hold the
+   *  root. A listed root with no other common forms is an empty family, not
+   *  a reason to ask the model for one. */
+  function listedFamily(root: string, list = familyList) {
+    const entry = list ? commonIndex.get(root) : undefined
+    if (!list || !entry) return null
+    return { rootMeaning: entry.meaning, forms: listFamily(list, entry.word, langCode) }
+  }
+
+  /** Open the family panel for a root. The list's family when it has one;
+   *  otherwise one asked of the model, once, and kept. */
   async function openFamily(root: string, meaning?: string) {
     setFamilyRoot(root)
     setFamilyRow(null)
     setFamilyError('')
     if (familyByRoot.has(root)) return
+    if (familyListLoad && listedFamily(root, await familyListLoad)) return
     setFamilyBusy(root)
     try {
       const f = await generateFamily({ deck: deck!, root, meaning })
@@ -2634,18 +2668,24 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       )}
 
       {selected && familyRoot && (() => {
-        const saved = familyByRoot.get(familyRoot)
+        const saved = listedFamily(familyRoot) ?? familyByRoot.get(familyRoot)
         const statusOfKey = (k: string): FamilyStatus => {
           const c = cardByKey.get(k)
           return !c ? 'none' : c.ignored ? 'ignored' : c.known ? 'known' : 'study'
         }
         // Until the family is looked up — or when it can't be, offline — the
         // members the deck already holds are what there is to show.
-        const forms =
-          saved?.forms ??
-          familyIndex
-            .filter((f) => f.stems.has(familyRoot) && f.key !== familyRoot)
-            .map((f) => ({ word: f.card.word, meaning: f.card.meaning, group: 'other' as const, affix: '' }))
+        // Alongside a looked-up family, deck words it leaves out (a casual
+        // form, a rarer derivation) still show, under "Other forms".
+        const inDeck = familyIndex
+          .filter((f) => f.stems.has(familyRoot) && f.key !== familyRoot)
+          .map((f) => ({ word: f.card.word, meaning: f.card.meaning, group: 'other' as const, affix: '' }))
+        const forms = saved
+          ? [
+              ...saved.forms,
+              ...inDeck.filter((d) => !saved.forms.some((f) => defKey(f.word) === defKey(d.word))),
+            ]
+          : inDeck
         const sections = familySections(forms, statusOfKey, (k) => encounters.get(k)?.seen ?? 0)
         const rootMeaning =
           saved?.rootMeaning || (selected.root ? selected.rootMeaning : selected.meaning) || ''
@@ -2692,6 +2732,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 )}
                 {!saved && sections.length > 0 && (
                   <div className="family-group-label">Already in your deck</div>
+                )}
+                {saved && sections.length === 0 && (
+                  <p className="note">No other common forms of this word.</p>
                 )}
                 {sections.map((sec) => (
                   <div key={sec.group} className="family-group">
@@ -2919,9 +2962,10 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 }
               >
                 Word family
-                {familyByRoot.get(selectedRoot)
-                  ? ` · ${familyByRoot.get(selectedRoot)!.forms.length} forms`
-                  : ''}
+                {(() => {
+                  const n = (listedFamily(selectedRoot) ?? familyByRoot.get(selectedRoot))?.forms.length
+                  return n ? ` · ${n} form${n === 1 ? '' : 's'}` : ''
+                })()}
                 {selectedFamily.length > 0 && ` (${selectedFamily.length} in your deck)`} ›
               </button>
             )}
