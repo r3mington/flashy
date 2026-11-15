@@ -14,6 +14,8 @@
  *    npx tsx scripts/story-lab.mts continue <file.json> "steer"  # next part, full pipeline
  *    npx tsx scripts/story-lab.mts learn "the history of Indonesia"  # a Learn series, part 1
  *    REGISTER=casual npx tsx scripts/story-lab.mts full "a ride to the beach"  # casual speech
+ *    REGISTER=friend npx tsx scripts/story-lab.mts full "a ride to the beach"  # told aloud by someone in it
+ *    COMMON=pasar,hujan npx tsx scripts/story-lab.mts full "..."  # common words to slip in
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 
@@ -100,7 +102,7 @@ if (cmd === 'full' || cmd === 'learn' || cmd === 'continue') {
   const kind = prev ? (prev.kind ?? 'story') : cmd === 'learn' ? 'learn' : 'story'
   const part = prev ? (prev.part ?? 1) + 1 : 1
   // Speech belongs to the thread, as in the app.
-  const register = prev ? (prev.register ?? 'standard') : process.env.REGISTER === 'casual' ? 'casual' : 'standard'
+  const register = prev ? (prev.register ?? 'standard') : process.env.REGISTER === 'casual' || process.env.REGISTER === 'friend' ? process.env.REGISTER : 'standard'
   // AVOID/RECUR simulate what StoryPage passes from the reader's history.
   const avoidThemes = (process.env.AVOID ?? '').split('|').filter(Boolean)
   const avoidNames = (process.env.NAMES ?? '').split(',').filter(Boolean)
@@ -135,6 +137,7 @@ if (cmd === 'full' || cmd === 'learn' || cmd === 'continue') {
       : undefined,
     // GOAL sets a serial's long-running goal; a continuation keeps its own.
     goal: prev ? prev.goal : process.env.GOAL || undefined,
+    commonWords: (process.env.COMMON ?? '').split(',').filter(Boolean),
     onProgress: () => {},
   })
   const prevStreak = prev ? (prev.openStreak ?? ((prev.bible?.openThreads?.length ?? 0) > 0 ? 1 : 0)) : 0
@@ -152,6 +155,9 @@ if (cmd === 'full' || cmd === 'learn' || cmd === 'continue') {
   if (story.outline) console.log(`\n----- plan -----\n${story.outline.map((p, i) => `${i + 1}. ${p}`).join('\n')}`)
   console.log(`\n===== ${story.title} =====\n\n${story.story}\n\n----- summary -----\n${story.summary}\n\n----- translation -----\n${story.translation}`)
   if (story.bible?.goalProgress) console.log(`\n----- towards the goal -----\n${story.bible.goalProgress}`)
+  if (story.bible?.relationships?.length)
+    console.log(`\n----- how people stand -----\n${story.bible.relationships.map((r: any) => `• ${r.pair} — ${r.standing}`).join('\n')}`)
+  if (story.bible?.seeds?.length) console.log(`\n----- planted, not yet paid off -----\n${story.bible.seeds.map((x: string) => `• ${x}`).join('\n')}`)
   if (story.nextChoices) console.log(`\n----- what happens next? -----\n${story.nextChoices.map((c) => `• ${c}`).join('\n')}`)
 } else if (cmd === 'bare') {
   // The stripped pipeline the user proposes: one prompt, no plan, no angle,

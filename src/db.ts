@@ -111,6 +111,14 @@ export interface StoryBible {
   /** Story threads with a goal only: one English sentence on how far the
    *  serial has got towards it (see `SavedStory.goal`). */
   goalProgress?: string
+  /** Story threads: how the pairs that matter stand with each other right
+   *  now, and which way it is moving — the slow thread a serial is followed
+   *  for. The writer's, never shown. Missing on older bibles. */
+  relationships?: { pair: string; standing: string }[]
+  /** Story threads: small things planted in earlier parts and not yet paid
+   *  off — an object, a habit, a promise, an unanswered message — so a later
+   *  part can bring one back meaning more. Missing on older bibles. */
+  seeds?: string[]
 }
 
 /** What a thread is: an invented story, or a real topic explained in parts.
@@ -121,7 +129,13 @@ export type StoryKind = 'story' | 'learn'
  *  textbook teaches; casual is how people actually talk to each other day to
  *  day — for Indonesian, nggak, udah, kok, sih, Kak. Missing on rows saved
  *  before it existed, which are all standard. */
-export type StoryRegister = 'standard' | 'casual'
+export type StoryRegister = 'standard' | 'casual' | 'friend'
+
+/** Whether a thread is written in real spoken forms at all — casual talk, or
+ *  the friend-narrated kind where the telling is casual too. */
+export function isCasual(register: StoryRegister | undefined): boolean {
+  return register === 'casual' || register === 'friend'
+}
 
 /** Where the word pop-up's buttons go on a phone — see `AppSettings.storyThumb`. */
 export type StoryThumb = 'off' | 'right' | 'left'

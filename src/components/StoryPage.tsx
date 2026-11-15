@@ -5,6 +5,7 @@ import { useReadingTimer } from '../useReadingTimer'
 import {
   db,
   inRotation,
+  isCasual,
   newCardDefaults,
   recordWordTap,
   setCardStatus,
@@ -19,12 +20,15 @@ import {
   type WordStatus,
 } from '../db'
 import { dueForRecurrence, encounterStats, fadeLevel } from '../encounters'
+import { commonStatuses, entriesOf, unmetCommon, type CommonList } from '../commonWords'
 import {
   defineWord,
   defineWords,
   generateMnemonic,
   generateFamily,
   writeStoryDraft,
+  buildStoryBrief,
+  unsuitableForStory,
   annotateStory,
   clipWords,
   ApiError,
@@ -34,6 +38,7 @@ import {
   bandOf,
   FREQ_BANDS,
   type StoryStep,
+  type StoryBrief,
   type VocabLevel,
 } from '../ai'
 import { definable, missingDefinitions } from '../glossary'
@@ -54,6 +59,7 @@ import {
   stopSpeaking,
 } from '../speech'
 import { Icon } from './Icon'
+import { PromptPreview } from './PromptPreview'
 import { familyStems, rootCandidates } from '../lemma'
 import { familySections, type FamilyStatus } from '../family'
 import { defKey, splitSentences, tokenizeWords, countWords } from '../text'
@@ -232,6 +238,11 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // The serial's long-running goal, as typed in the form: a new thread's, or
   // the one being continued (prefilled from its root, and editable).
   const [goal, setGoal] = useState('')
+  // The prompt preview: what the writer would be told, built but not sent.
+  const [preview, setPreview] = useState<{
+    brief: StoryBrief
+    input: Parameters<typeof writeStoryDraft>[0]
+  } | null>(null)
 
   // Daily reading log — ticks only while a story is open.
   const timer = useReadingTimer(!!story, reading)
@@ -264,6 +275,21 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     [cards, reviews],
   )
 
+
+  // The common-words list (Indonesian only, and a large file, so it loads
+  // behind the page). Without it stories are written as before.
+  const [commonList, setCommonList] = useState<CommonList | null>(null)
+  useEffect(() => {
+    if (langCode !== 'id') return
+    let live = true
+    import('../data/common-words-id.json')
+      .then((m) => live && setCommonList(m.default as unknown as CommonList))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [langCode])
+  const commonEntries = useMemo(() => (commonList ? entriesOf(commonList) : []), [commonList])
 
   // Cards keyed by defKey(word) — for resolving a tapped word to its card.
   const cardByKey = useMemo(() => {
@@ -685,73 +711,138 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const bankSize = cards.filter((c) => !c.ignored).length
 
 
-  /** Generate a story — a fresh one, or the next part of the thread being
-   *  continued, optionally steered by what the reader asked for. */
-  async function run(override?: { from: SavedStory; steer: string; goal?: string }) {
+  /** Everything the story writer is handed for the next story: the same
+   *  inputs whether it is about to be written or only previewed. */
+  function draftInputs(override?: { from: SavedStory; steer: string; goal?: string }) {
     const from = override ? override.from : continuing
     const steer = (override ? override.steer : direction).trim()
     const goalText = (override ? (override.goal ?? '') : goal).trim()
+    let troubleAge = 0
+    let thread: SavedStory[] = []
+    if (from) {
+      const rootId = from.parentId ?? from.id
+      thread = (savedStories ?? [])
+        .filter((s) => s.id === rootId || s.parentId === rootId)
+        .sort((a, b) => a.createdAt - b.createdAt)
+      for (const part of thread)
+        troubleAge = (part.bible?.openThreads?.length ?? 0) > 0 ? troubleAge + 1 : 0
+    }
+    const threadRoot = from ? (thread.find((s) => !s.parentId) ?? thread[0]) : undefined
+    const runKind: StoryKind = from ? (threadRoot?.kind ?? 'story') : kind
+    const runGoal = runKind === 'learn' ? undefined : goalText || undefined
+    // Speech, like kind, belongs to the thread: a story that starts casual
+    // stays casual.
+    const runRegister: StoryRegister = from
+      ? (threadRoot?.register ?? 'standard')
+      : settings.storyRegister
+    // Words met in earlier stories whose spacing says it is time to meet
+    // them again — still new, or still in study. Known words are not
+    // re-encounters, just words. The open story is none, so nothing is
+    // excluded from the count here.
+    const allStats = encounterStats(savedStories ?? [], langCode)
+    // Character names from every story, not just the open one: "Rina" is
+    // not in the deck, so without this she would count as a new word due
+    // to come round again.
+    const allNames = new Set<string>()
+    for (const s of savedStories ?? [])
+      for (const name of s.characterNames ?? [])
+        for (const part of tokenizeWords(name, langCode)) {
+          const k = defKey(part)
+          if (k) allNames.add(k)
+        }
+    // Content words only. Every glossary flags its content words as isNew;
+    // a word no glossary ever flagged is a "dan" or a "di", which turns up
+    // in any story unasked and should not take one of the few slots.
+    const contentKeys = new Set<string>()
+    for (const s of savedStories ?? [])
+      for (const g of s.glossary ?? []) if (g.isNew) contentKeys.add(defKey(g.word))
+    // Continuations get them too: a reader who lives in serials would
+    // otherwise never have a word brought back on schedule.
+    const recurWords = dueForRecurrence(
+      allStats,
+      (savedStories ?? []).map((s) => s.createdAt),
+      (k) => !allNames.has(k) && contentKeys.has(k) && (isNewWord(k) || isInStudy(k)),
+    )
+    // A few of the commonest words the reader has never met — not in the
+    // deck, not read in any story so far.
+    const commonWords =
+      commonEntries.length > 0
+        ? unmetCommon(
+            commonEntries,
+            commonStatuses(commonEntries, cards ?? [], langCode),
+            (k) => allStats.has(k) || allNames.has(k),
+            { skip: (w) => unsuitableForStory(w, deck!.language, runRegister) },
+          )
+        : []
+    const input: Parameters<typeof writeStoryDraft>[0] = {
+      deck: deck!,
+      learningWords: cards!.filter(inRotation).map((c) => c.word),
+      vocabLevel,
+      topic: from ? undefined : topic || undefined,
+      lengthWords: length,
+      troubleAge: from ? troubleAge : undefined,
+      kind: runKind,
+      register: runRegister,
+      outline: threadRoot?.outline,
+      partIndex: thread.length,
+      focusWords,
+      recurWords,
+      commonWords,
+      goal: runGoal,
+      // Steer fresh stories away from themes already covered (recent first).
+      // What a past story was ABOUT, not what it was called. The summary
+      // (clipped) says what actually happened; older stories fall back to
+      // the planner-era premise, then the title.
+      avoidThemes: from
+        ? undefined
+        : (savedStories ?? [])
+            .slice(0, 8)
+            .map(
+              (s) =>
+                (s.summary && clipWords(s.summary, 22)) ||
+                s.premise ||
+                (s.topic ? `${s.title} (${s.topic})` : s.title),
+            ),
+      // Same idea for the cast: the reader shouldn't meet the same three
+      // people in every story. Continuations keep their thread's cast.
+      avoidNames: from
+        ? undefined
+        : [
+            ...new Set((savedStories ?? []).slice(0, 8).flatMap((s) => s.characterNames ?? [])),
+          ].slice(0, 24),
+      continueFrom: from
+        ? {
+            title: from.title,
+            story: from.story,
+            direction: steer || undefined,
+            bible: from.bible,
+            // The thread root's topic — what the reader asked for when the
+            // thread began — anchors every part to that kind of story.
+            topic: (savedStories ?? []).find((s) => s.id === (from.parentId ?? from.id))?.topic,
+          }
+        : undefined,
+    }
+    return { from, steer, threadRoot, runKind, runGoal, runRegister, input }
+  }
+
+  /** Build the next story's prompt from the form as it stands, and show it. */
+  function showPrompt() {
+    const { input } = draftInputs()
+    setPreview({ brief: buildStoryBrief(input), input })
+  }
+
+  /** Generate a story — a fresh one, or the next part of the thread being
+   *  continued, optionally steered by what the reader asked for. */
+  async function run(override?: { from: SavedStory; steer: string; goal?: string }) {
     setLoading(true)
     setSteps([])
     setError('')
     try {
-      // Every part of the thread being continued — its own turns, tones,
-      // pairings and settings shouldn't be replayed, and how many parts there
-      // are decides whether this one pays a running question off, leaves
-      // everything open, or (for a first story) simply ends.
-      // How long the thread's current trouble has been open: the streak of
-      // consecutive parts, ending at the newest, whose bible still carried
-      // open threads. Feeds the ending roll — young trouble always survives.
-      let troubleAge = 0
-      let thread: SavedStory[] = []
-      if (from) {
-        const rootId = from.parentId ?? from.id
-        thread = (savedStories ?? [])
-          .filter((s) => s.id === rootId || s.parentId === rootId)
-          .sort((a, b) => a.createdAt - b.createdAt)
-        for (const part of thread)
-          troubleAge = (part.bible?.openThreads?.length ?? 0) > 0 ? troubleAge + 1 : 0
-      }
-      const threadRoot = from ? (thread.find((s) => !s.parentId) ?? thread[0]) : undefined
-      const runKind: StoryKind = from ? (threadRoot?.kind ?? 'story') : kind
-      const runGoal = runKind === 'learn' ? undefined : goalText || undefined
+      const { from, steer, threadRoot, runKind, runGoal, runRegister, input } = draftInputs(override)
       // The goal lives on the thread's root; an edit made while continuing
       // replaces it for every later part.
       if (from && threadRoot && runKind !== 'learn' && (threadRoot.goal ?? '') !== (runGoal ?? ''))
         await db.stories.update(threadRoot.id, { goal: runGoal })
-      // Speech, like kind, belongs to the thread: a story that starts casual
-      // stays casual.
-      const runRegister: StoryRegister = from
-        ? (threadRoot?.register ?? 'standard')
-        : settings.storyRegister
-      // Words met in earlier stories whose spacing says it is time to meet
-      // them again — still new, or still in study. Known words are not
-      // re-encounters, just words. The open story is none, so nothing is
-      // excluded from the count here.
-      const allStats = encounterStats(savedStories ?? [], langCode)
-      // Character names from every story, not just the open one: "Rina" is
-      // not in the deck, so without this she would count as a new word due
-      // to come round again.
-      const allNames = new Set<string>()
-      for (const s of savedStories ?? [])
-        for (const name of s.characterNames ?? [])
-          for (const part of tokenizeWords(name, langCode)) {
-            const k = defKey(part)
-            if (k) allNames.add(k)
-          }
-      // Content words only. Every glossary flags its content words as isNew;
-      // a word no glossary ever flagged is a "dan" or a "di", which turns up
-      // in any story unasked and should not take one of the few slots.
-      const contentKeys = new Set<string>()
-      for (const s of savedStories ?? [])
-        for (const g of s.glossary ?? []) if (g.isNew) contentKeys.add(defKey(g.word))
-      // Continuations get them too: a reader who lives in serials would
-      // otherwise never have a word brought back on schedule.
-      const recurWords = dueForRecurrence(
-        allStats,
-        (savedStories ?? []).map((s) => s.createdAt),
-        (k) => !allNames.has(k) && contentKeys.has(k) && (isNewWord(k) || isInStudy(k)),
-      )
       // Filled in by onDraft, below: the row exists from the moment the story
       // does, and the polish passes update it rather than deciding whether it
       // gets saved at all.
@@ -769,61 +860,17 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
         topic: from ? undefined : topic.trim() || undefined,
         goal: from ? undefined : runGoal,
         kind: runKind === 'learn' ? runKind : undefined,
-        register: runRegister === 'casual' ? runRegister : undefined,
+        register: isCasual(runRegister) ? runRegister : undefined,
         // Parts always attach to the thread's root, never to another part.
         parentId: from ? (from.parentId ?? from.id) : undefined,
         createdAt,
       })
       const draft = await writeStoryDraft({
+        ...input,
         onDraft: async (first) => {
           id = await db.stories.add({ ...base(), title: first.title, story: first.story })
         },
-        deck: deck!,
-        learningWords: cards!.filter(inRotation).map((c) => c.word),
-        vocabLevel,
-        topic: from ? undefined : topic || undefined,
-        lengthWords: length,
         onProgress: setSteps,
-        troubleAge: from ? troubleAge : undefined,
-        kind: runKind,
-        register: runRegister,
-        outline: threadRoot?.outline,
-        partIndex: thread.length,
-        focusWords,
-        recurWords,
-        goal: runGoal,
-        // Steer fresh stories away from themes already covered (recent first).
-        // What a past story was ABOUT, not what it was called. The summary
-        // (clipped) says what actually happened; older stories fall back to
-        // the planner-era premise, then the title.
-        avoidThemes: from
-          ? undefined
-          : (savedStories ?? [])
-              .slice(0, 8)
-              .map(
-                (s) =>
-                  (s.summary && clipWords(s.summary, 22)) ||
-                  s.premise ||
-                  (s.topic ? `${s.title} (${s.topic})` : s.title),
-              ),
-        // Same idea for the cast: the reader shouldn't meet the same three
-        // people in every story. Continuations keep their thread's cast.
-        avoidNames: from
-          ? undefined
-          : [
-              ...new Set((savedStories ?? []).slice(0, 8).flatMap((s) => s.characterNames ?? [])),
-            ].slice(0, 24),
-        continueFrom: from
-          ? {
-              title: from.title,
-              story: from.story,
-              direction: steer || undefined,
-              bible: from.bible,
-              // The thread root's topic — what the reader asked for when the
-              // thread began — anchors every part to that kind of story.
-              topic: (savedStories ?? []).find((s) => s.id === (from.parentId ?? from.id))?.topic,
-            }
-          : undefined,
       })
       // The polish passes have run; write what they made of it. (If onDraft
       // never fired the write itself failed, and there is nothing to save.)
@@ -1645,9 +1692,23 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   >
                     Casual
                   </button>
+                  <button
+                    type="button"
+                    className={formRegister === 'friend' ? 'on' : ''}
+                    title="Told out loud by someone in the story, casual from the first word to the last"
+                    onClick={() => saveSettings({ storyRegister: 'friend' })}
+                  >
+                    Told by a friend
+                  </button>
                 </div>
                 <p className="note">
-                  {formRegister === 'casual'
+                  {formRegister === 'friend'
+                    ? formKind === 'learn'
+                      ? 'Explained out loud, the way a friend would, in the words people really use.'
+                      : langCode === 'id'
+                        ? 'Someone in the story tells it to you out loud — “Jadi gini ceritanya…” — so every line, not just the talk, is how people really speak.'
+                        : 'Someone in the story tells it to you out loud, so every line, not just the talk, is how people really speak.'
+                    : formRegister === 'casual'
                     ? langCode === 'id'
                       ? 'How people really talk — nggak, udah, kok, sih, Kak — with much of it told in conversation.'
                       : 'How people really talk to each other, with much of it told in conversation.'
@@ -1683,7 +1744,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   : `Writes the next part of the story, picking up where it left off.`
                 : formKind === 'learn'
                   ? `Plans a short series on the topic, then explains the first part in casual, everyday ${deck.language}, weaving in words you're learning.`
-                  : formRegister === 'casual'
+                  : isCasual(formRegister)
                     ? `Writes a story in ${deck.language} as people really speak it, weaving in words you're learning.`
                     : `Writes a casual, everyday ${deck.language} story, weaving in words you're learning.`}{' '}
               Tap any word in the result for its meaning.
@@ -1693,6 +1754,11 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 {formKind === 'learn' ? 'Weaving in' : 'Building the plot around'} {focusWords.length}{' '}
                 words you keep forgetting —{' '}
                 <b>{focusWords.join(', ')}</b> — so you meet each of them several times in context.
+              </p>
+            )}
+            {commonEntries.length > 0 && (
+              <p className="note">
+                Also slips in a few of the commonest words you haven’t met yet.
               </p>
             )}
             {steps.length > 0 && (
@@ -1737,6 +1803,14 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             )}
             {error && <p className="note error-note">{error}</p>}
             <div className="story-form-actions">
+              <button
+                className="btn ghost"
+                onClick={showPrompt}
+                disabled={loading || !canRun}
+                title="See the exact instructions the story writer would get, without sending anything"
+              >
+                See prompt
+              </button>
               <button className="btn ghost" onClick={onExit}>
                 Cancel
               </button>
@@ -1756,6 +1830,14 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                       : 'Generate story'}
               </button>
             </div>
+            {preview && (
+              <PromptPreview
+                brief={preview.brief}
+                input={preview.input}
+                onReroll={showPrompt}
+                onClose={() => setPreview(null)}
+              />
+            )}
           </div>
 
           {threads.length > 0 && (

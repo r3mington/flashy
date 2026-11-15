@@ -2904,3 +2904,31 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   .cw-meaning { grid-column: 2; }
   .cw-choices { margin-left: 2.6em; }
 }
+
+/* ---------- prompt preview (story debugging) ---------- */
+
+.modal.prompt-preview { max-width: 860px; }
+.prompt-facts { margin: 12px 0 18px; display: grid; gap: 6px; }
+.prompt-facts > div { display: grid; grid-template-columns: minmax(120px, 34%) 1fr; gap: 12px; font-size: 14px; }
+.prompt-facts dt { color: var(--ink-2); margin: 0; }
+.prompt-facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+.prompt-when { color: var(--ink-3); }
+.prompt-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+.prompt-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 13px/1.55 ui-monospace, 'SF Mono', Menlo, monospace;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  margin: 8px 0 0;
+  max-height: 60vh;
+  overflow: auto;
+  color: var(--ink);
+}
+.prompt-retry { margin-top: 16px; }
+.prompt-retry summary { cursor: pointer; color: var(--ink-2); font-size: 14px; }
+@media (max-width: 560px) {
+  .prompt-facts > div { grid-template-columns: 1fr; gap: 0; }
+}

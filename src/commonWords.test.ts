@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { Card } from './db'
-import { bandProgress, commonStatuses, entriesOf, entryCards, type CommonList } from './commonWords'
+import {
+  bandProgress,
+  commonStatuses,
+  entriesOf,
+  entryCards,
+  unmetCommon,
+  type CommonList,
+} from './commonWords'
 
 function card(word: string, over: Partial<Card> = {}): Card {
   return {
@@ -82,5 +89,38 @@ describe('entryCards', () => {
   it('finds the entry word and its forms, never a word that only shares the root', () => {
     const cards = [card('makan', { id: 1 }), card('dimakan', { id: 2 }), card('makanan', { id: 3 })]
     expect(entryCards(entries[0], cards).map((c) => c.id)).toEqual([1, 2])
+  })
+})
+
+describe('unmetCommon', () => {
+  const entries = entriesOf({
+    language: 'Indonesian',
+    source: '',
+    license: '',
+    words: [
+      ['yang', 'that', []],
+      ['makan', 'to eat', ['dimakan']],
+      ['kerja', 'to work', ['bekerja']],
+      ['pasar', 'market', []],
+      ['hujan', 'rain', []],
+    ],
+  })
+
+  it('leaves out words in the deck and words already read, in any form', () => {
+    const statuses = commonStatuses(entries, [card('kerja')], 'id')
+    const read = new Set(['yang', 'dimakan'])
+    const out = unmetCommon(entries, statuses, (k) => read.has(k))
+    expect(out.sort()).toEqual(['hujan', 'pasar'])
+  })
+
+  it('draws only from the commonest few, and no more than asked', () => {
+    const out = unmetCommon(entries, new Map(), () => false, { limit: 2, window: 3 })
+    expect(out).toHaveLength(2)
+    expect(out.every((w) => ['yang', 'makan', 'kerja'].includes(w))).toBe(true)
+  })
+
+  it('skips words the story should not use', () => {
+    const out = unmetCommon(entries, new Map(), () => false, { skip: (w) => w !== 'pasar' })
+    expect(out).toEqual(['pasar'])
   })
 })

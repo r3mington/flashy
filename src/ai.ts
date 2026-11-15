@@ -1,5 +1,6 @@
 import {
   db,
+  isCasual,
   type Deck,
   type FamilyForm,
   type FamilyGroup,
@@ -447,6 +448,15 @@ const BIBLE_SCHEMA = {
         openThreads: { type: 'ARRAY', items: { type: 'STRING' } },
         terms: { type: 'ARRAY', items: { type: 'STRING' } },
         goalProgress: { type: 'STRING' },
+        relationships: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: { pair: { type: 'STRING' }, standing: { type: 'STRING' } },
+            required: ['pair', 'standing'],
+          },
+        },
+        seeds: { type: 'ARRAY', items: { type: 'STRING' } },
       },
       required: ['logline', 'cast', 'places', 'facts', 'openThreads'],
     },
@@ -1023,9 +1033,13 @@ async function simplifyStory(opts: {
   band: VocabBand
   kind: StoryKind
   register: StoryRegister
+  /** Words the writer was asked to use because the reader is learning them.
+   *  They stay, whatever their frequency — swapping one out for an easier
+   *  word removes the very thing the story was built to show. */
+  keepWords?: string[]
   onMeta?: (m: CallMeta) => void
 }): Promise<string> {
-  const { deck, story, band, kind, register, onMeta } = opts
+  const { deck, story, band, kind, register, keepWords = [], onMeta } = opts
   const langCode = langCodeFor(deck.language)
   const chunks = chunkForRewrite(story, langCode, SIMPLIFY_CHUNK_WORDS)
   const metas: CallMeta[] = []
@@ -1048,8 +1062,11 @@ async function simplifyStory(opts: {
         : '',
       // The audit is hunting for words above the band, and to a model that
       // knows written Indonesian best, nggak and udah look like errors.
-      register === 'casual'
-        ? `The story is written in casual spoken ${deck.language} on purpose. Never list a casual spoken form (${langCode === 'id' ? 'nggak, udah, aja, gimana, kok, sih, ngomong, bilangin and the like' : 'contractions, particles, spoken verb forms'}) — they are what the reader is here to learn.`
+      keepWords.length > 0
+        ? `Never list any of these words, or any form of them — the reader is learning them and they are in the story on purpose: ${keepWords.join(', ')}.`
+        : '',
+      isCasual(register)
+        ? `The story is written in casual spoken ${deck.language} on purpose${register === 'friend' ? ', narration included — someone is telling it out loud' : ''}. Never list a casual spoken form (${langCode === 'id' ? 'nggak, udah, aja, gimana, kok, sih, ngomong, bilangin and the like' : 'contractions, particles, spoken verb forms'}) — they are what the reader is here to learn.`
         : '',
       `If every word is inside the vocabulary, return an empty list. That is a normal answer, not a failure.`,
       `Story:\n${story}`,
@@ -1092,7 +1109,10 @@ async function simplifyStory(opts: {
       `• Keep the length. Replacing one hard word with three easy ones is right; dropping the sentence is not.`,
       `• Keep every detail. Where a hard word names something specific, say the same specific thing in a few easy words rather than swapping in a plainer detail.`,
       `• Where a sentence is already simple enough, leave it alone word for word.`,
-      register === 'casual'
+      keepWords.length > 0
+        ? `• Leave these words, and every form of them, exactly as they are — the reader is learning them: ${keepWords.join(', ')}.`
+        : '',
+      isCasual(register)
         ? `• The text is in casual spoken ${deck.language} on purpose. Keep every casual form as it is — never "correct" one to its standard written form — and keep any replacement word casual too.`
         : '',
       // An easy word can be a wrong one: "annexed" swapped for "took" is a
@@ -1165,11 +1185,43 @@ const ID_CASUAL_STORY = [
   `Narration between the dialogue stays plain and relaxed — simple spoken Indonesian, never bookish. The casual forms belong to the people talking.`,
 ]
 
+/** Indonesian words a story should never be handed to "use", even though
+ *  they are among the commonest: the written register every story is told
+ *  to avoid, and — in a casual or friend-told story — the standard forms of
+ *  the words people actually say (saya for aku, tidak for nggak, lihat for
+ *  liat). Handing the writer "saya" asks it to break its own speech rules;
+ *  the common-words list surfaced exactly that in the prompt preview. */
+const ID_WRITTEN_ONLY = [
+  'beliau', 'tersebut', 'sehingga', 'namun', 'adapun', 'seraya', 'sembari', 'oleh', 'demikian',
+  'ialah', 'merupakan', 'apabila',
+]
+const ID_STANDARD_NOT_SPOKEN = [
+  'saya', 'anda', 'tidak', 'sudah', 'saja', 'lihat', 'melihat', 'begitu', 'begini', 'bagaimana',
+  'memang', 'benar', 'tahu', 'kalau', 'sampai', 'pakai', 'belum', 'nanti', 'seperti', 'hanya',
+  'mengapa', 'kenapa', 'bicara', 'berbicara', 'mengerti', 'menunggu', 'mencari', 'bertanya',
+  'menonton', 'berpikir', 'dekat', 'habis', 'sedang', 'bahwa', 'agar', 'kepada', 'telah',
+  'jika', 'bila', 'adalah', 'ingin', 'pada', 'tak', 'sangat', 'akan',
+]
+
+/** Whether a common word is wrong to hand the writer for this story — see
+ *  `ID_WRITTEN_ONLY`. Only Indonesian has such a list so far. */
+export function unsuitableForStory(
+  word: string,
+  language: string,
+  register: StoryRegister,
+): boolean {
+  if (langCodeFor(language) !== 'id') return false
+  const w = word.toLowerCase()
+  if (ID_WRITTEN_ONLY.includes(w)) return true
+  return isCasual(register) && ID_STANDARD_NOT_SPOKEN.includes(w)
+}
+
 /** What a casual thread asks for on top of the level. A story is told largely
  *  through talk, because talk is what the reader wants to be able to follow;
  *  an explainer has no one talking, so its own voice relaxes instead. */
-function casualSpec(language: string, kind: StoryKind): string {
+function casualSpec(language: string, kind: StoryKind, register: StoryRegister): string {
   const id = langCodeFor(language) === 'id'
+  if (kind !== 'learn' && register === 'friend') return friendSpec(language)
   if (kind === 'learn')
     return id
       ? `CASUAL SPEECH — write it the way someone would explain it out loud to a friend, not the way a textbook writes it: nggak, udah, aja, gimana, emang, kayak, banget, and the odd kok, sih or lho. Relaxed, not slangy.`
@@ -1183,6 +1235,30 @@ function casualSpec(language: string, kind: StoryKind): string {
   return [
     `CASUAL SPEECH — this reader wants to understand people the way they really talk.`,
     `• Tell a good half of the story through people talking to each other: ordinary exchanges as well as the important ones.`,
+    ...lines.map((l) => `• ${l}`),
+  ].join('\n')
+}
+
+/** A story told out loud by someone who was there. Casual threads kept their
+ *  narration plain, which left half of every story in a register nobody
+ *  speaks; here the telling itself is speech, so every sentence is the
+ *  language the reader wants to follow — the way a friend tells you what
+ *  happened to them, asides and all. */
+function friendSpec(language: string): string {
+  const id = langCodeFor(language) === 'id'
+  const lines = id
+    ? [
+        ...ID_CASUAL_STORY.slice(0, -1),
+        `The telling uses the same spoken forms as the dialogue — nggak, udah, aja, banget, kayak, gitu, soalnya, makanya, pas, tadi, tuh — and the turns of someone telling a story: "Jadi gini…", "Terus…", "Eh, ternyata…", "Ya udah…", "Tau nggak…". Where a speaker would reach for one, not on every line.`,
+      ]
+    : [
+        `Both the telling and the dialogue are ${language} the way native speakers really talk day to day — the contractions, dropped words, fillers and particles of real speech, not textbook forms.`,
+      ]
+  return [
+    `TOLD BY A FRIEND — this reader wants to understand people the way they really talk, so the whole story is told OUT LOUD by one of the people in it, in the first person, the way you tell a friend over coffee what happened to you. There is no neutral narrator: every sentence, not only the dialogue, is casual spoken ${language}.`,
+    `• The one telling it speaks to the listener now and then — a question, an aside, what they thought of someone — and only knows what they saw, heard or guessed.`,
+    `• It is still a story with scenes: things happen in order, and people talk to each other in “…”, in ordinary exchanges as well as the important ones. Never a summary of events.`,
+    `• The one telling it has a name, and someone says it early on. In a later part of a serial, the same person goes on telling it.`,
     ...lines.map((l) => `• ${l}`),
   ].join('\n')
 }
@@ -1203,7 +1279,7 @@ function levelSpec(
     kind === 'learn'
       ? `${language_}, as a friend who knows the subject would explain it over dinner. Don't simplify the THINKING — plain words, adult ideas.`
       : `${language_}, dialogue in “…”. Don't simplify the STORY — write something an adult would want to finish.`
-  return register === 'casual' ? `${level}\n${casualSpec(language, kind)}` : level
+  return isCasual(register) ? `${level}\n${casualSpec(language, kind, register)}` : level
 }
 
 /** How a Learn part ends: on the question the next part of the plan answers,
@@ -1249,10 +1325,26 @@ async function planCourse(opts: {
   return (out.parts ?? []).map((p) => p.trim()).filter(Boolean).slice(0, 8)
 }
 
-function endingSpec(ending: SerialEnding): string {
-  return ending === 'resolve'
-    ? `End by settling the story, in a scene the reader watches, and let it change or cost someone something. No moral, no summary.`
-    : `End on something unresolved, so the reader wants the next part — a question about someone in it as much as about what happens, at a natural beat, not mid-scene.`
+/** The shapes a part can stop on. One instruction to "end on something
+ *  unresolved" came back as the same ending every time — a question hanging
+ *  in the last line — and a reader who can see the cliffhanger coming stops
+ *  feeling it. None of these needs a bigger plot than the story has. */
+export const HOOK_SHAPES = [
+  `a question someone asks out loud that nobody answers yet`,
+  `a decision someone has just made, before the reader sees them act on it`,
+  `a message, a call or a person arriving — the reader sees who it is, not yet what they want`,
+  `one small thing someone notices that doesn't fit with what they were told`,
+  `something said that can't be taken back, and the moment right after it`,
+  `a quiet moment in which the reader understands something one of the people in it doesn't yet`,
+]
+
+/** Rolled once per part: the brief, its retry and any top-up must all be
+ *  told the same ending. */
+function endingSpec(ending: SerialEnding, continuing = false): string {
+  if (ending === 'resolve')
+    return `End by settling the story, in a scene the reader watches, and let it change or cost someone something. No moral, no summary.`
+  const shape = HOOK_SHAPES[Math.floor(Math.random() * HOOK_SHAPES.length)]
+  return `End on something unresolved, so the reader wants the next part — a question about someone in it as much as about what happens, at a natural beat, not mid-scene. This time, stop on ${shape}. Keep it the size of this story: no sudden danger it hasn't earned${continuing ? ', and not the same kind of ending the previous part had' : ''}.`
 }
 
 /** Grow a story that came back short: hand the draft back and ask for the
@@ -1364,6 +1456,8 @@ async function extractBible(opts: {
       : '',
     `Return "characterNames": every personal name used in the story, spelled exactly as in the text.`,
     `And "bible": "logline" — ONE English sentence recapping what happened in this ${previous ? 'part' : 'story'}, shown to the reader as "Previously…" before the next part; "cast" — the named characters who still matter, each with their role, what they want, and "secret": what they know or have done that the others don't, as far as the story shows (empty if nothing); "places" — the locations; "facts" — at most 8 concrete details a later part must not contradict; "openThreads" — the questions the story leaves open. If it settles everything, openThreads is empty — never invent one.`,
+    `Also in the bible, "relationships": the pairs of people whose standing with each other matters to the story, at most 5 — "pair" as "A & B", and "standing": one short English phrase on how the two stand right now, which way this ${previous ? 'part' : 'story'} moved it (warmer, cooler, more tense, unchanged) and what did that. Only what the story shows; never invent a feeling.`,
+    `And "seeds": at most 6 small concrete things the story has planted and not yet paid off — an object, a habit, a promise, something left unsaid or unanswered.${previous ? ' Carry forward the earlier ones still waiting, drop any this part brought back and used up, and add the one or two this part planted.' : ''} Small things, not plot questions; those are openThreads.`,
     goal
       ? `The reader has a long-running goal for this serial: "${goal}". Give the bible a "goalProgress": ONE short English sentence on where the story now stands against that goal — what has been gained, lost or set up so far, and what still stands in the way. Honest: if this part moved away from it or did nothing for it, say so.`
       : '',
@@ -1439,6 +1533,8 @@ const MAX_EXTENSIONS = 2
 /** Most words from the reader's bank handed to the writer. A handful it can
  *  actually use; hundreds only pull every story toward the same topics. */
 const MAX_WANTED_WORDS = 20
+/** How many of those slots go to common words the reader has never met. */
+const MAX_COMMON_WORDS = 6
 
 /** A running trace of one generation: the passes, in order, with what each
  *  produced and what it cost. Shared by the two halves of a generation, so the
@@ -1500,104 +1596,54 @@ export function createTrace(onProgress?: (steps: StoryStep[]) => void): Trace {
   return { steps, step }
 }
 
-export async function writeStoryDraft(
-  opts: {
-    deck: Deck
-    /** The words being learned. The writer sees a sample of these, not all. */
-    learningWords: string[]
-    /** How hard the story's vocabulary may be (see `VOCAB_BANDS`). */
-    vocabLevel: VocabLevel
-    topic?: string
-    lengthWords: number
-    /** Summaries of the learner's previous stories — steer clear of their themes. */
-    avoidThemes?: string[]
-    /** Character names the learner's recent stories used — pick new ones. */
-    avoidNames?: string[]
-    /** Continue this existing story instead of starting a fresh one. `direction`
-     *  is the reader's optional steer for what should happen next, `bible` the
-     *  world state the previous part left behind, `topic` what the reader asked
-     *  for when the thread began — the genre anchor. */
-    continueFrom?: {
-      title: string
-      story: string
-      direction?: string
-      bible?: StoryBible
-      topic?: string
-    }
-    /** How this part ends. Rolled from the thread's open tension when not
-     *  given (see `pickSerialEnding`); a caller (or the lab) may force it. */
-    ending?: SerialEnding
-    /** Consecutive parts the current trouble has been open (see
-     *  `pickSerialEnding`). Omitted = old enough to resolve. */
-    troubleAge?: number
-    /** Story (the default) or a real topic explained — see `StoryKind`. */
-    kind?: StoryKind
-    /** Standard (the default) or casual speech — see `StoryRegister`. */
-    register?: StoryRegister
-    /** Learn threads: the series plan, from the root. Planned here when a new
-     *  Learn thread starts without one. */
-    outline?: string[]
-    /** Learn threads: which part of the plan this is, from 0 — the number of
-     *  parts the thread already has. */
-    partIndex?: number
-    /** Words the learner keeps forgetting — first in line for the story. */
-    focusWords?: string[]
-    /** Words met in earlier stories and due to be met again (see
-     *  `dueForRecurrence`) — next in line after the focus words. */
-    recurWords?: string[]
-    /** Story threads: the reader's loose, long-running goal for the serial —
-     *  worked towards across parts, never reached in one. */
-    goal?: string
-    /** Called with the story the moment it exists, before the passes that only
-     *  improve it. The caller saves it here, so nothing that has been written
-     *  can be lost to a top-up, a vocabulary edit or a closed tab. */
-    onDraft?: (draft: StoryDraft) => void | Promise<void>
-    /** Called with the running trace whenever a pass starts or finishes, so the
-     *  UI can show what the wait is for and what each pass cost. */
-    onProgress?: (steps: StoryStep[]) => void
-  },
-  /** Passed when the caller runs both halves and wants one shared trace. */
-  trace?: Trace,
-): Promise<StoryProse> {
+/** Everything the writing call is told, and the rolls that went into it. */
+export interface StoryBrief {
+  /** The prompt sent to the writer. */
+  prompt: string
+  /** For a continuation: the same brief with the previous part cut down,
+   *  sent once if Gemini refuses the full one (see `trimForRetry`). */
+  retryPrompt?: string
+  /** How the part was rolled to end (stories only). */
+  ending: SerialEnding
+  /** The brief's ending line, handed to any top-up. */
+  endingLine: string
+  /** The reader's words the writer is asked to use, in priority order. */
+  wanted: string[]
+  /** A new Learn thread whose series plan is made by its own call first —
+   *  the plan then appears in this prompt, which is shown here without it. */
+  needsPlan: boolean
+}
+
+/** Build the writing call's prompt without sending it. `writeStoryDraft`
+ *  sends what this returns; the prompt preview shows it. The random parts —
+ *  the ending roll, the cliffhanger shape, the handful of bank words — are
+ *  rolled afresh on every call, so two calls can differ in exactly those. */
+export function buildStoryBrief(opts: Parameters<typeof writeStoryDraft>[0]): StoryBrief {
   const { deck, learningWords, vocabLevel, lengthWords, continueFrom } = opts
   const { avoidThemes = [], avoidNames = [], focusWords = [], recurWords = [] } = opts
+  const commonWords = (opts.commonWords ?? []).slice(0, MAX_COMMON_WORDS)
   const { kind = 'story', register = 'standard', partIndex = 0 } = opts
   const topic = opts.topic?.trim()
   const goal = kind === 'learn' ? undefined : opts.goal?.trim() || undefined
   const ending =
     opts.ending ??
     pickSerialEnding(continueFrom?.bible?.openThreads?.length ?? 0, opts.troubleAge)
-  const bible = continueFrom?.bible
-  const langCode = langCodeFor(deck.language)
   const band = bandFor(vocabLevel)
-  const { step } = trace ?? createTrace(opts.onProgress)
 
   // Forgotten words first, then the ones due again, then a random handful of
   // the rest — a different handful each time, so stories don't keep landing
   // on the same corner of the bank.
   const shuffled = [...learningWords].sort(() => Math.random() - 0.5)
-  const wanted = [...new Set([...focusWords, ...recurWords, ...shuffled])].slice(
+  const wanted = [...new Set([...focusWords, ...commonWords, ...recurWords, ...shuffled])].slice(
     0,
     MAX_WANTED_WORDS,
   )
   const steer = continueFrom?.direction?.trim()
   const threadTopic = continueFrom?.topic?.trim()
+  const endingLine = endingSpec(ending, !!continueFrom)
 
-  // A new Learn thread is planned before it is written. Best-effort: without
-  // a plan the part is still written, it just can't promise what comes next.
-  const planned =
-    kind === 'learn' && !continueFrom && !opts.outline && topic
-      ? await step(
-          'plan',
-          'Planning the series',
-          (onMeta) => planCourse({ deck, topic, lengthWords, onMeta }),
-          (parts) => `${parts.length} parts`,
-        ).catch((): string[] => {
-          console.warn('[story] plan failed — writing the first part without one')
-          return []
-        })
-      : undefined
-  const outline = opts.outline ?? (planned && planned.length > 0 ? planned : undefined)
+  const outline = opts.outline
+  const needsPlan = kind === 'learn' && !continueFrom && !outline && !!topic
 
   if (kind === 'learn') {
     const briefFrom = (from: typeof continueFrom) =>
@@ -1615,12 +1661,14 @@ export async function writeStoryDraft(
         register,
       })
     const brief = briefFrom(continueFrom)
-    const prose = await writeAndPolish(
-      brief.prompt,
-      brief.ending,
-      continueFrom && briefFrom(trimForRetry(continueFrom)).prompt,
-    )
-    return planned && planned.length > 0 ? { ...prose, outline: planned } : prose
+    return {
+      prompt: brief.prompt,
+      retryPrompt: continueFrom && briefFrom(trimForRetry(continueFrom)).prompt,
+      ending,
+      endingLine: brief.ending,
+      wanted,
+      needsPlan,
+    }
   }
 
   // One short brief. Everything in it is either a real constraint (language,
@@ -1647,9 +1695,21 @@ export async function writeStoryDraft(
               .join('; ')}`,
             bible.facts.length > 0 ? `Facts: ${bible.facts.join('; ')}` : '',
             bible.openThreads.length > 0 ? `Open questions: ${bible.openThreads.join('; ')}` : '',
+            (bible.relationships?.length ?? 0) > 0
+              ? `How people stand with each other: ${bible.relationships!.map((r) => `${r.pair} — ${r.standing}`).join('; ')}`
+              : '',
           ]
             .filter(Boolean)
             .join('\n')
+        : '',
+      // The slow thread. Trouble comes and goes every few parts; what a
+      // reader follows a serial for is two people getting closer or further
+      // apart, and that only works if it moves a step at a time.
+      from
+        ? `Let how two of these people stand with each other move ONE small step in this part — closer or further apart — through something one of them does, or doesn't do, for the other. Never a leap: trust, liking and grudges build slowly, across parts.`
+        : '',
+      (bible?.seeds?.length ?? 0) > 0
+        ? `Small things planted earlier and still waiting: ${bible!.seeds!.join('; ')}. Bring ONE of them back in this part so that it now matters, or means more than it did — in passing, without explaining the link. Leave the rest for later.`
         : '',
       from && (bible?.openThreads?.length ?? 0) === 0
         ? `The previous part settled its story, so start new trouble early — a different kind from before.`
@@ -1690,6 +1750,7 @@ export async function writeStoryDraft(
         `- people who say less than they mean; show what they feel through what they do and say, never by naming the feeling`,
         `- one or two concrete details that belong only to this story, and let one come back later meaning more than it did`,
         `- plain words can still be beautiful: an exact image, and a short sentence landing after longer ones`,
+        `- room to be funny: people are funny without meaning to be — a dry remark, a small embarrassment, a habit that drives someone else mad. One light moment even in a serious part, coming from who these people are, never from wordplay or a joke that needs explaining`,
       ].join('\n'),
       from
         ? `Before writing, ask of each person: knowing what they know now, what would they really do next? Start there, not from the twist you want.`
@@ -1697,7 +1758,7 @@ export async function writeStoryDraft(
       from
         ? `At most one new named character.`
         : `Two or three named characters, with names natural for ${deck.language} speakers.`,
-      endingSpec(ending),
+      endingLine,
       `Separate paragraphs with a blank line.`,
       wanted.length > 0 ? `Use some of these words where they fit naturally: ${wanted.join(', ')}` : '',
       !from && avoidThemes.length > 0
@@ -1712,11 +1773,114 @@ export async function writeStoryDraft(
       .join('\n')
   }
 
-  return writeAndPolish(
-    storyBrief(continueFrom),
-    endingSpec(ending),
-    continueFrom && storyBrief(trimForRetry(continueFrom)),
-  )
+  return {
+    prompt: storyBrief(continueFrom),
+    retryPrompt: continueFrom && storyBrief(trimForRetry(continueFrom)),
+    ending,
+    endingLine,
+    wanted,
+    needsPlan,
+  }
+}
+
+export async function writeStoryDraft(
+  opts: {
+    deck: Deck
+    /** The words being learned. The writer sees a sample of these, not all. */
+    learningWords: string[]
+    /** How hard the story's vocabulary may be (see `VOCAB_BANDS`). */
+    vocabLevel: VocabLevel
+    topic?: string
+    lengthWords: number
+    /** Summaries of the learner's previous stories — steer clear of their themes. */
+    avoidThemes?: string[]
+    /** Character names the learner's recent stories used — pick new ones. */
+    avoidNames?: string[]
+    /** Continue this existing story instead of starting a fresh one. `direction`
+     *  is the reader's optional steer for what should happen next, `bible` the
+     *  world state the previous part left behind, `topic` what the reader asked
+     *  for when the thread began — the genre anchor. */
+    continueFrom?: {
+      title: string
+      story: string
+      direction?: string
+      bible?: StoryBible
+      topic?: string
+    }
+    /** How this part ends. Rolled from the thread's open tension when not
+     *  given (see `pickSerialEnding`); a caller (or the lab) may force it. */
+    ending?: SerialEnding
+    /** Consecutive parts the current trouble has been open (see
+     *  `pickSerialEnding`). Omitted = old enough to resolve. */
+    troubleAge?: number
+    /** Story (the default) or a real topic explained — see `StoryKind`. */
+    kind?: StoryKind
+    /** Standard (the default), casual speech, or told aloud by a friend — see
+     *  `StoryRegister`. */
+    register?: StoryRegister
+    /** Learn threads: the series plan, from the root. Planned here when a new
+     *  Learn thread starts without one. */
+    outline?: string[]
+    /** Learn threads: which part of the plan this is, from 0 — the number of
+     *  parts the thread already has. */
+    partIndex?: number
+    /** Words the learner keeps forgetting — first in line for the story. */
+    focusWords?: string[]
+    /** Words met in earlier stories and due to be met again (see
+     *  `dueForRecurrence`) — next in line after the focus words. */
+    recurWords?: string[]
+    /** Everyday words the reader has never met — the commonest ones first
+     *  (see `unmetCommon`). A few get in ahead of the bank's random handful:
+     *  a word everyone says is worth more than one the deck happens to hold. */
+    commonWords?: string[]
+    /** Story threads: the reader's loose, long-running goal for the serial —
+     *  worked towards across parts, never reached in one. */
+    goal?: string
+    /** Called with the story the moment it exists, before the passes that only
+     *  improve it. The caller saves it here, so nothing that has been written
+     *  can be lost to a top-up, a vocabulary edit or a closed tab. */
+    onDraft?: (draft: StoryDraft) => void | Promise<void>
+    /** Called with the running trace whenever a pass starts or finishes, so the
+     *  UI can show what the wait is for and what each pass cost. */
+    onProgress?: (steps: StoryStep[]) => void
+  },
+  /** Passed when the caller runs both halves and wants one shared trace. */
+  trace?: Trace,
+): Promise<StoryProse> {
+  const { deck, lengthWords, continueFrom } = opts
+  const { kind = 'story', register = 'standard' } = opts
+  const topic = opts.topic?.trim()
+  const goal = kind === 'learn' ? undefined : opts.goal?.trim() || undefined
+  const bible = continueFrom?.bible
+  const langCode = langCodeFor(deck.language)
+  const band = bandFor(opts.vocabLevel)
+  const steer = continueFrom?.direction?.trim()
+  const { step } = trace ?? createTrace(opts.onProgress)
+
+  // A new Learn thread is planned before it is written. Best-effort: without
+  // a plan the part is still written, it just can't promise what comes next.
+  const planned =
+    kind === 'learn' && !continueFrom && !opts.outline && topic
+      ? await step(
+          'plan',
+          'Planning the series',
+          (onMeta) => planCourse({ deck, topic, lengthWords, onMeta }),
+          (parts) => `${parts.length} parts`,
+        ).catch((): string[] => {
+          console.warn('[story] plan failed — writing the first part without one')
+          return []
+        })
+      : undefined
+  const outline = opts.outline ?? (planned && planned.length > 0 ? planned : undefined)
+
+
+  // Everything the writer is told, built in one place so the prompt preview
+  // shows exactly what would be sent (see `buildStoryBrief`).
+  const brief = buildStoryBrief({ ...opts, outline })
+  const { wanted } = brief
+  const prose = await writeAndPolish(brief.prompt, brief.endingLine, brief.retryPrompt)
+  return planned && planned.length > 0 ? { ...prose, outline: planned } : prose
+
 
   /** Write to a brief, then the passes every draft gets: top-ups while it is
    *  short, the vocabulary edit and the world record. `endingLine` is the
@@ -1790,7 +1954,7 @@ export async function writeStoryDraft(
       step(
         'simplify',
         'Making the words easier',
-        (onMeta) => simplifyStory({ deck, story: written, band, kind, register, onMeta }),
+        (onMeta) => simplifyStory({ deck, story: written, band, kind, register, keepWords: wanted, onMeta }),
         (after) => `${swappedWords(written, after, langCode)} words swapped out`,
       ).catch(() => {
         console.warn('[story] simplify failed — the story stands as written')

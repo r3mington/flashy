@@ -122,3 +122,44 @@ export function bandProgress(
   }
   return { size: Math.min(size, entries.length), known, study, ignored }
 }
+
+/** Common words the reader has never met: not in the deck in any form, and
+ *  not read in any story — handed to the story writer so the next story
+ *  closes a gap in what everyone says, rather than only drawing on whatever
+ *  the deck happens to hold.
+ *
+ *  "Never read" is what keeps this honest. A deck rarely has a card for
+ *  "yang" or "di", but anyone who has read one story has met them, and they
+ *  need no help turning up in the next. Once a word here has been read, the
+ *  story page's own spacing (`dueForRecurrence`) is what brings it back.
+ *
+ *  A random few from the commonest `window` rather than the very first ones:
+ *  a writer told to use the same six words every time writes the same story. */
+export function unmetCommon(
+  entries: CommonEntry[],
+  statuses: Map<string, CommonStatus>,
+  met: (key: string) => boolean,
+  opts: {
+    limit?: number
+    window?: number
+    random?: () => number
+    /** Words wrong for this story whatever their frequency — the formal
+     *  "saya" in a story told in casual speech (see `unsuitableForStory`). */
+    skip?: (word: string) => boolean
+  } = {},
+): string[] {
+  const { limit = 6, window = 24, random = Math.random, skip } = opts
+  const pool: string[] = []
+  for (const e of entries) {
+    if (pool.length >= window) break
+    if (statuses.has(e.word)) continue
+    if (skip?.(e.word)) continue
+    if ([e.word, ...e.forms].some((f) => met(defKey(f)))) continue
+    pool.push(e.word)
+  }
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1))
+    ;[pool[i], pool[j]] = [pool[j], pool[i]]
+  }
+  return pool.slice(0, limit)
+}

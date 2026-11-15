@@ -6,6 +6,7 @@ import {
   worthRetrying,
   isRefusal,
   trimForRetry,
+  unsuitableForStory,
   GLOSSARY_CHUNK_WORDS,
   SIMPLIFY_CHUNK_WORDS,
   groupParagraphs,
@@ -235,5 +236,22 @@ describe('trimForRetry', () => {
     expect(out.bible?.facts).toEqual(['a fact'])
     expect(out.direction).toBe('go on')
     expect(out.title).toBe('t')
+  })
+})
+
+describe('unsuitableForStory', () => {
+  it('keeps written-register words out of every Indonesian story', () => {
+    expect(unsuitableForStory('tersebut', 'Indonesian', 'standard')).toBe(true)
+  })
+
+  it('keeps standard forms out of casual and friend-told stories only', () => {
+    expect(unsuitableForStory('saya', 'Indonesian', 'standard')).toBe(false)
+    expect(unsuitableForStory('saya', 'Indonesian', 'casual')).toBe(true)
+    expect(unsuitableForStory('Anda', 'Indonesian', 'friend')).toBe(true)
+    expect(unsuitableForStory('pasar', 'Indonesian', 'friend')).toBe(false)
+  })
+
+  it('leaves other languages alone', () => {
+    expect(unsuitableForStory('saya', 'Malay', 'casual')).toBe(false)
   })
 })
