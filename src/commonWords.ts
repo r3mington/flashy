@@ -163,3 +163,75 @@ export function unmetCommon(
   }
   return pool.slice(0, limit)
 }
+
+/** Where a word sits in the list, and how it was found there. */
+export interface RankHit {
+  /** Place in the list, from 1. */
+  rank: number
+  /** The entry the place belongs to. */
+  word: string
+  /** `word`: it is the entry, or one of the forms counted into it.
+   *  `root`: only the word it is built on is listed — the place is the
+   *  root's, not the word's own, and has to be shown as such. */
+  via: 'word' | 'root'
+}
+
+/** Every spelling the list knows, pointing at the entry it was counted into.
+ *  An entry's own word beats a form of some other entry ("pekerjaan" is its
+ *  own entry before it is a form of "kerja"); between two entries claiming
+ *  the same form, the commoner one keeps it. */
+export function rankIndex(entries: CommonEntry[]): Map<string, CommonEntry> {
+  const index = new Map<string, CommonEntry>()
+  for (const e of entries) {
+    const k = defKey(e.word)
+    if (k) index.set(k, e)
+  }
+  for (const e of entries) {
+    for (const f of e.forms) {
+      const k = defKey(f)
+      if (k && !index.has(k)) index.set(k, e)
+    }
+  }
+  return index
+}
+
+/** The place of a tapped word in the list, or null when neither it nor the
+ *  word it is built on is there.
+ *
+ *  The word itself (or a listed form of it) first. Failing that its root:
+ *  the one the dictionary named if there is one — it read the sentence —
+ *  and otherwise whatever stripping affixes turns up, the commonest match. */
+export function rankOf(
+  index: Map<string, CommonEntry>,
+  word: string,
+  langCode: string | null,
+  root?: string,
+): RankHit | null {
+  const key = defKey(word)
+  if (!key) return null
+  const own = index.get(key)
+  if (own) return { rank: own.rank, word: own.word, via: 'word' }
+
+  const named = root ? index.get(defKey(root)) : undefined
+  if (named) return { rank: named.rank, word: named.word, via: 'root' }
+
+  let best: CommonEntry | undefined
+  for (const c of rootCandidates(key, langCode)) {
+    const e = c === key ? undefined : index.get(c)
+    if (e && (!best || e.rank < best.rank)) best = e
+  }
+  return best ? { rank: best.rank, word: best.word, via: 'root' } : null
+}
+
+/** Which colour of badge a place earns — the same five steps as the
+ *  dictionary's own estimate (`FREQ_BANDS`), so both read alike. */
+export function rankBand(rank: number): number {
+  return rank <= 500 ? 1 : rank <= 1000 ? 2 : rank <= 2000 ? 3 : rank <= 4000 ? 4 : 5
+}
+
+/** "164th", "2nd", "1,013th". */
+export function ordinal(n: number): string {
+  const tens = n % 100
+  const suffix = tens >= 11 && tens <= 13 ? 'th' : (['th', 'st', 'nd', 'rd'][n % 10] ?? 'th')
+  return `${n.toLocaleString('en-US')}${suffix}`
+}

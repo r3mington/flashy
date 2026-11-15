@@ -20,7 +20,16 @@ import {
   type WordStatus,
 } from '../db'
 import { dueForRecurrence, encounterStats, fadeLevel } from '../encounters'
-import { commonStatuses, entriesOf, unmetCommon, type CommonList } from '../commonWords'
+import {
+  commonStatuses,
+  entriesOf,
+  ordinal,
+  rankBand,
+  rankIndex,
+  rankOf,
+  unmetCommon,
+  type CommonList,
+} from '../commonWords'
 import {
   defineWord,
   defineWords,
@@ -290,6 +299,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     }
   }, [langCode])
   const commonEntries = useMemo(() => (commonList ? entriesOf(commonList) : []), [commonList])
+  const commonIndex = useMemo(() => rankIndex(commonEntries), [commonEntries])
 
   // Cards keyed by defKey(word) — for resolving a tapped word to its card.
   const cardByKey = useMemo(() => {
@@ -1435,7 +1445,36 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   // not vocabulary.
   const selectedSeen =
     selected && !selected.isName ? (encounters.get(defKey(selected.word))?.seen ?? 0) : null
-  const selectedBand = selected?.band ? FREQ_BANDS.find((b) => b.band === selected.band) : undefined
+  // How common the tapped word is. With the common-words list loaded this is
+  // its counted place there — the same number the Common words page shows —
+  // and a word the list does not reach is past its end. Without the list
+  // (another language, or still loading) it is the dictionary's own estimate.
+  const selectedFreq = ((): { band: number; label: string; hint: string } | undefined => {
+    if (!selected || selected.isName) return undefined
+    if (commonEntries.length > 0) {
+      if (selected.loading || selected.failed) return undefined
+      const hit = rankOf(commonIndex, selected.word, langCode, selected.root)
+      const size = commonEntries.length.toLocaleString('en-US')
+      if (!hit)
+        return { band: 5, label: `${size}+`, hint: `Not among the ${size} most common words` }
+      const place = `${ordinal(hit.rank)} most common word`
+      return hit.via === 'word'
+        ? {
+            band: rankBand(hit.rank),
+            label: `#${hit.rank.toLocaleString('en-US')}`,
+            hint:
+              defKey(hit.word) === defKey(selected.word)
+                ? place
+                : `${place}, counted with “${hit.word}”`,
+          }
+        : {
+            band: rankBand(hit.rank),
+            label: `root #${hit.rank.toLocaleString('en-US')}`,
+            hint: `Built on “${hit.word}”, the ${place}. This form is not listed on its own.`,
+          }
+    }
+    return selected.band ? FREQ_BANDS.find((b) => b.band === selected.band) : undefined
+  })()
   // A word the reader has had to look up five times is a leech — the normal
   // route is not working for it, and it is offered a mnemonic. Once made,
   // the mnemonic shows whatever the count.
@@ -2778,9 +2817,13 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 !selectedInDeck &&
                 !selected.loading &&
                 !selected.failed && <span className="state-pill new">new</span>}
-              {selectedBand && !selected.isName && (
-                <span className={`state-pill freq freq-${selectedBand.band}`} title={selectedBand.hint}>
-                  {selectedBand.label}
+              {selectedFreq && (
+                <span
+                  className={`state-pill freq freq-${selectedFreq.band}`}
+                  title={selectedFreq.hint}
+                  aria-label={selectedFreq.hint}
+                >
+                  {selectedFreq.label}
                 </span>
               )}
             </div>

@@ -5,6 +5,10 @@ import {
   commonStatuses,
   entriesOf,
   entryCards,
+  ordinal,
+  rankBand,
+  rankIndex,
+  rankOf,
   unmetCommon,
   type CommonList,
 } from './commonWords'
@@ -122,5 +126,42 @@ describe('unmetCommon', () => {
   it('skips words the story should not use', () => {
     const out = unmetCommon(entries, new Map(), () => false, { skip: (w) => w !== 'pasar' })
     expect(out).toEqual(['pasar'])
+  })
+})
+
+describe('rankOf', () => {
+  const index = rankIndex(entriesOf(list))
+
+  it('gives a listed word its own place', () => {
+    expect(rankOf(index, 'Kerja,', 'id')).toEqual({ rank: 2, word: 'kerja', via: 'word' })
+  })
+
+  it('gives a listed form the place of its entry', () => {
+    expect(rankOf(index, 'bukunya', 'id')).toEqual({ rank: 4, word: 'buku', via: 'word' })
+  })
+
+  it('keeps a derived word with its own entry apart from its root', () => {
+    expect(rankOf(index, 'pekerjaan', 'id')).toEqual({ rank: 3, word: 'pekerjaan', via: 'word' })
+  })
+
+  it('falls back to the root, and says so', () => {
+    expect(rankOf(index, 'memakannya', 'id')).toEqual({ rank: 1, word: 'makan', via: 'root' })
+    expect(rankOf(index, 'xyzzy', 'id', 'rumah')).toEqual({ rank: 5, word: 'rumah', via: 'root' })
+  })
+
+  it('is null for a word the list does not reach', () => {
+    expect(rankOf(index, 'rumpun', 'id')).toBeNull()
+  })
+})
+
+describe('rankBand and ordinal', () => {
+  it('steps at 500, 1,000, 2,000 and 4,000', () => {
+    expect([1, 500, 501, 1000, 1001, 2000, 2001, 4000].map(rankBand)).toEqual([1, 1, 2, 2, 3, 3, 4, 4])
+  })
+
+  it('writes places the way they are said', () => {
+    expect([1, 2, 3, 4, 11, 12, 13, 21, 112, 164, 1013].map(ordinal)).toEqual([
+      '1st', '2nd', '3rd', '4th', '11th', '12th', '13th', '21st', '112th', '164th', '1,013th',
+    ])
   })
 })
