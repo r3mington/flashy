@@ -18,6 +18,7 @@ export type IconName =
   | 'chevronUp'
   | 'chevronDown'
   | 'sparkle'
+  | 'sliders'
 
 /** Paths are drawn on a 24×24 grid, stroked (not filled) unless noted. */
 const PATHS: Record<IconName, React.ReactNode> = {
@@ -86,6 +87,13 @@ const PATHS: Record<IconName, React.ReactNode> = {
   chevronDown: <path d="m6.5 9.5 5.5 5.5 5.5-5.5" />,
   sparkle: (
     <path d="M12 4.25c.55 3.6 2.15 5.2 5.75 5.75-3.6.55-5.2 2.15-5.75 5.75-.55-3.6-2.15-5.2-5.75-5.75 3.6-.55 5.2-2.15 5.75-5.75Z" />
+  ),
+  sliders: (
+    <>
+      <path d="M4.5 7.5h8.25M16.75 7.5h2.75M4.5 16.5h2.75M11.25 16.5h8.25" />
+      <circle cx="14.75" cy="7.5" r="2" />
+      <circle cx="9.25" cy="16.5" r="2" />
+    </>
   ),
 }
 

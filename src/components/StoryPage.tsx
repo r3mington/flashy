@@ -1438,7 +1438,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
   const hasEmoji =
     (story?.glossary ?? []).some((g) => g.emoji) || (cards ?? []).some((c) => c.emoji)
   const showEmoji = settings.storyEmoji
-  const controlsOpen = settings.storyControlsOpen
+  const moreOpen = settings.storyMoreOpen
   const progressPct = Math.round(progress * 100)
   // Where the saved marker sits along the story, as a tick on the progress bar.
   const bookmarkPct =
@@ -2147,9 +2147,10 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
             <span title="Estimated time to read">~{stats.readMin} min read</span>
           </div>
 
-          <div className={`story-read-bar${controlsOpen ? '' : ' collapsed'}`}>
-            {/* Always-visible strip: play, how far through you are, and the
-                collapse toggle — everything else folds away behind it. */}
+          <div className={`story-read-bar${moreOpen ? ' more-open' : ''}`}>
+            {/* One slim, always-visible row: play, how far through you are,
+                the marker, and a "more" toggle. Everything used less often
+                folds away behind that toggle. */}
             <div className="story-bar-head">
               {canRead && (
                 <button
@@ -2178,19 +2179,63 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 <span className="story-progress-pct">{progressPct}%</span>
               </div>
               <button
-                className="btn small ghost icon-btn"
-                onClick={() => saveSettings({ storyControlsOpen: !controlsOpen })}
-                aria-expanded={controlsOpen}
-                title={controlsOpen ? 'Hide the reading controls' : 'Show the reading controls'}
-                aria-label={controlsOpen ? 'Hide the reading controls' : 'Show the reading controls'}
+                className={`btn small story-mark-btn ${marking ? 'accent' : 'ghost'}${
+                  !marking && story.bookmark != null ? ' bookmarked' : ''
+                }`}
+                onClick={() => setMarking((m) => !m)}
+                title={
+                  marking
+                    ? 'Cancel — or tap a word in the story'
+                    : story.bookmark != null
+                      ? 'Move your reading marker'
+                      : 'Mark your place — then tap a word'
+                }
+                aria-label={
+                  marking
+                    ? 'Cancel marking'
+                    : story.bookmark != null
+                      ? 'Move marker'
+                      : 'Mark spot'
+                }
               >
-                <Icon name={controlsOpen ? 'chevronUp' : 'chevronDown'} />
+                {marking ? (
+                  <>
+                    <Icon name="x" /> Tap a word
+                  </>
+                ) : (
+                  <>
+                    <Icon name="bookmark" />
+                    <span className="bar-label">
+                      {story.bookmark != null ? 'Move marker' : 'Mark spot'}
+                    </span>
+                  </>
+                )}
+              </button>
+              {!marking && story.bookmark != null && (
+                <button
+                  className="btn small ghost story-mark-btn"
+                  onClick={jumpToBookmark}
+                  title="Go to your marker"
+                  aria-label="Go to marker"
+                >
+                  <Icon name="bookmarkGo" />
+                  <span className="bar-label">Go to marker</span>
+                </button>
+              )}
+              <button
+                className={`btn small icon-btn ${moreOpen ? '' : 'ghost'}`}
+                onClick={() => saveSettings({ storyMoreOpen: !moreOpen })}
+                aria-expanded={moreOpen}
+                title={moreOpen ? 'Hide the other reading controls' : 'Audio, text size, speed and more'}
+                aria-label={moreOpen ? 'Hide the other reading controls' : 'More reading controls'}
+              >
+                <Icon name="sliders" />
               </button>
             </div>
             {/* Always in view while reading, folded or not. */}
             <div className="story-bar-today">{todayLine}</div>
 
-            {controlsOpen && (
+            {moreOpen && (
             <div className="story-bar-controls">
             {canRead && (
               <div className="story-play-group">
@@ -2220,45 +2265,6 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   <Icon name="headphones" /> Podcast
                 </button>
               </div>
-            )}
-
-            <button
-              className={`btn small ${marking ? 'accent' : 'ghost'}${
-                !marking && story.bookmark != null ? ' bookmarked' : ''
-              }`}
-              onClick={() => setMarking((m) => !m)}
-              title={
-                marking
-                  ? 'Cancel — or tap a word in the story'
-                  : story.bookmark != null
-                    ? 'Move your reading marker'
-                    : 'Mark your place — then tap a word'
-              }
-            >
-              {marking ? (
-                <>
-                  <Icon name="x" /> Tap a word
-                </>
-              ) : (
-                <>
-                  <Icon name="bookmark" /> {story.bookmark != null ? 'Move marker' : 'Mark spot'}
-                </>
-              )}
-            </button>
-            {!marking && story.bookmark != null && (
-              <>
-                <button className="btn small ghost" onClick={jumpToBookmark} title="Go to your marker">
-                  <Icon name="bookmarkGo" /> Go to marker
-                </button>
-                <button
-                  className="btn small ghost icon-btn"
-                  onClick={() => setBookmark(undefined)}
-                  title="Remove the reading marker"
-                  aria-label="Remove the reading marker"
-                >
-                  <Icon name="x" />
-                </button>
-              </>
             )}
 
             {hasRoman && (
@@ -2345,7 +2351,7 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                 >
                   −
                 </button>
-                <span>{Math.round(rate * 100)}%</span>
+                <span className="story-gap">speed {Math.round(rate * 100)}%</span>
                 <button
                   className="btn small ghost"
                   onClick={() => changeRate(RATE_STEP)}
@@ -2379,6 +2385,15 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   +
                 </button>
               </div>
+            )}
+            {story.bookmark != null && (
+              <button
+                className="btn small ghost"
+                onClick={() => setBookmark(undefined)}
+                title="Remove the reading marker"
+              >
+                <Icon name="x" /> Remove marker
+              </button>
             )}
             </div>
             )}

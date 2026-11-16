@@ -210,7 +210,7 @@ button { font-family: inherit; }
 .read-today .rt-study b { color: var(--green); }
 .page-head .read-today { margin-left: auto; }
 /* In the reader: a second, quieter row of the sticky bar. */
-.story-bar-today { margin-top: 6px; }
+.story-bar-today { margin-top: 4px; }
 .story-bar-today .read-today { font-size: 12px; }
 .read-today svg { vertical-align: -2px; }
 
@@ -2097,7 +2097,7 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   top: 0;
   z-index: 5;
   margin-bottom: 14px;
-  padding: 8px 0;
+  padding: 6px 0;
   background: var(--bg);
   border-bottom: 1px solid var(--line);
 }
@@ -2105,15 +2105,22 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 .story-bar-head {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 .story-bar-head .story-progress { flex: 1; }
+/* The marker buttons: icon + word on wide screens, icon alone on a phone,
+   so the whole bar stays one row. */
+.story-mark-btn { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.story-bar-head .icon-btn { flex-shrink: 0; }
+/* The "more" panel: everything used less often, under a hairline rule. */
 .story-bar-controls {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px 12px;
   flex-wrap: wrap;
-  margin-top: 10px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
   animation: bar-open 0.18s ease;
 }
 @keyframes bar-open {
@@ -2162,6 +2169,11 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   text-align: right;
 }
 .story-mark-hint { color: var(--accent); margin: 0 0 10px; }
+@media (max-width: 560px) {
+  .story-mark-btn .bar-label { display: none; }
+  .story-bar-head { gap: 8px; }
+  .story-progress { gap: 6px; }
+}
 /* While marking, invite taps and calm the definition-word styling. */
 .story-body.marking .story-word { cursor: crosshair; text-decoration-color: transparent; }
 .story-body.marking .story-word:hover { background: var(--accent-soft); }

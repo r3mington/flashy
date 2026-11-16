@@ -436,9 +436,11 @@ export interface AppSettings {
   /** Silence between words read aloud, in ms. 0 reads each sentence whole;
    *  above it, words are spoken one at a time with this gap between them. */
   storyWordGap: number
-  /** Whether the reader's control bar is expanded (it collapses to a slim
-   *  play + progress strip so the story gets the screen). */
-  storyControlsOpen: boolean
+  /** Whether the reader's "more" panel is open: the controls used less often
+   *  (podcast, sentence skip, text size, speed, word gap, pop-up options).
+   *  Closed, the bar is one slim row of play, progress and the marker. Was
+   *  `storyControlsOpen` (default open) before the marker moved out of it. */
+  storyMoreOpen: boolean
   /** Colour per kind of word in a story. */
   storyColors: StoryColors
   /** The speech last picked for a new story, so the form remembers it. */
@@ -475,7 +477,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   storyThumb: 'off',
   storyRate: 0.9,
   storyWordGap: 0,
-  storyControlsOpen: true,
+  storyMoreOpen: false,
   storyColors: DEFAULT_STORY_COLORS,
   storyRegister: 'standard',
   sheetUrl: '',
