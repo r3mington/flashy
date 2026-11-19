@@ -483,6 +483,13 @@ export function DeckView({
                     <span className="state-pill ignored" title="Not vocabulary — out of study, counted as neither known nor learning">
                       ignored
                     </span>
+                  ) : card.known && card.auto === 'known' ? (
+                    <span
+                      className="state-pill known"
+                      title="Known because the word it is built on is — namamu because you know nama. Set it yourself and it stays as you set it."
+                    >
+                      auto-known
+                    </span>
                   ) : card.known ? (
                     <span className="state-pill known">known</span>
                   ) : (

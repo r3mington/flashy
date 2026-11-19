@@ -5,6 +5,7 @@ import { liveQuery } from 'dexie'
 import { db, recordDailySnapshot } from './db'
 import { useSettings } from './useSettings'
 import { dailySheetSave } from './sheets'
+import { watchAutoKnown } from './autoKnown'
 import { DeckList } from './components/DeckList'
 import { DeckView } from './components/DeckView'
 import { StudySrs } from './components/StudySrs'
@@ -172,6 +173,10 @@ export default function App() {
       document.removeEventListener('visibilitychange', onHide)
     }
   }, [])
+
+  // Forms of known words (namamu, while nama is known) kept known — see
+  // `autoKnown.ts`.
+  useEffect(() => watchAutoKnown(), [])
 
   // The Google Sheet, once a day: at the first open of the day, or the first
   // time the app comes back to the front after midnight — an installed app

@@ -2997,7 +2997,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                       {selectedCard.ignored
                         ? 'Ignored ✓'
                         : selectedCard.known
-                          ? 'Known ✓'
+                          ? selectedCard.auto === 'known'
+                            ? 'Auto-known ✓'
+                            : 'Known ✓'
                           : 'In study ✓'}
                     </span>
                     {/* All three statuses at once, so a word can always go back to

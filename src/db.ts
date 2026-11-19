@@ -30,6 +30,11 @@ export interface Card {
    *  stop flagging it as new: out of study, and counted as neither known nor
    *  learning anywhere in the stats. Mutually exclusive with `known`. */
   ignored?: boolean
+  /** Known only because the word it is a form of is (namamu, because nama
+   *  is): 'known' while that holds, set and cleared by `autoKnown.ts`. 'off'
+   *  once the reader has set this card's status by hand — from then on it is
+   *  theirs and is never moved automatically again. */
+  auto?: 'known' | 'off'
   /** When the card was last moved between in study / known / ignored, so the
    *  reader can count what changed today. Absent on cards not moved since
    *  this was tracked. Plain, non-indexed. */
@@ -696,9 +701,18 @@ export function statusPatch(status: WordStatus): Partial<Card> {
   return { known: status === 'known', ignored: status === 'ignored', statusAt: Date.now() }
 }
 
-/** Move cards between statuses. The one writer for the whole app. */
+/** Move cards between statuses. The one writer for the whole app — except
+ *  `autoKnown.ts`, which marks forms of known words. A card it marked that
+ *  the reader now sets by hand becomes the reader's (`auto: 'off'`). */
 export async function setCardStatus(ids: number[], status: WordStatus): Promise<void> {
-  await db.cards.where('id').anyOf(ids).modify(statusPatch(status))
+  const patch = statusPatch(status)
+  await db.cards
+    .where('id')
+    .anyOf(ids)
+    .modify((c) => {
+      Object.assign(c, patch)
+      if (c.auto === 'known') c.auto = 'off'
+    })
 }
 
 export function newCardDefaults(): Pick<

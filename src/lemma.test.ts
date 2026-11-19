@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { familyStems, rootCandidates } from './lemma'
+import { cliticBases, familyStems, rootCandidates } from './lemma'
 
 /** The question every caller actually asks: does this surface word belong to
  *  the card the learner already owns? */
@@ -132,5 +132,32 @@ describe('familyStems — Indonesian', () => {
 
   it('leaves other languages to rootCandidates', () => {
     expect([...familyStems('Manger', 'fr')]).toEqual(['manger'])
+  })
+})
+
+describe('front clitics ku- and kau-', () => {
+  it('reach the root of kupegang and kaulihat', () => {
+    expect(rootCandidates('kupegang', 'id')).toContain('pegang')
+    expect(rootCandidates('kaulihat', 'id')).toContain('lihat')
+    expect(rootCandidates('kuberitahu', 'id')).toContain('beritahu')
+  })
+
+  it('leave short words that merely start with ku alone', () => {
+    expect(rootCandidates('kuda', 'id')).not.toContain('da')
+    expect(rootCandidates('kaus', 'id')).not.toContain('s')
+  })
+})
+
+describe('cliticBases', () => {
+  it('takes clitics off and nothing else, nearest first', () => {
+    expect(cliticBases('namamu', 'id')).toEqual(['nama'])
+    expect(cliticBases('namamulah', 'id')).toEqual(['namamu', 'nama'])
+    expect(cliticBases('kupegang', 'id')).toEqual(['pegang'])
+    expect(cliticBases('makanan', 'id')).toEqual([])
+    expect(cliticBases('membaca', 'id')).toEqual([])
+  })
+
+  it('is empty outside Indonesian', () => {
+    expect(cliticBases('namamu', 'es')).toEqual([])
   })
 })

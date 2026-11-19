@@ -19,6 +19,11 @@
 // Clitics only: particles first, then the possessive pronouns.
 const ID_PARTICLES = ['lah', 'kah', 'tah', 'pun']
 const ID_POSSESSIVES = ['ku', 'mu', 'nya']
+// And the two that go on the front: kupegang (I hold), kaulihat (you see).
+// Longest first, so "kau" is not read as "ku" plus a stray a. They must leave
+// a word of three letters or more — "kuda" (horse) is not ku- + da.
+const ID_FRONT_CLITICS = ['kau', 'ku']
+const MIN_FRONT_ROOT = 3
 
 /** Each rule removes a prefix and offers one or more restored initial
  *  consonants — Indonesian nasal prefixes assimilate and often drop the root's
@@ -93,7 +98,28 @@ function idStripClitics(word: string): Set<string> {
   }
   peel(ID_PARTICLES)
   peel(ID_POSSESSIVES)
+  for (const w of [...out]) {
+    const front = ID_FRONT_CLITICS.find((c) => w.startsWith(c))
+    if (front && w.length - front.length >= MIN_FRONT_ROOT) out.add(w.slice(front.length))
+  }
   return out
+}
+
+/** The words a word could be with only its clitics taken off — namamu →
+ *  nama, kupegang → pegang, sudahlah → sudah — nearest first, the word itself
+ *  left out. No prefix or suffix that builds a word comes off: these are the
+ *  forms that mean nothing more than the word plus "my", "your", "the", "I",
+ *  or a softener, so knowing the word is knowing them.
+ *
+ *  Candidates, like everything here: "masalah" (problem) comes back with
+ *  "masa" (time). The caller must rule out words that only look like a clitic
+ *  form — see `autoKnown.ts`, which asks the common-words list. */
+export function cliticBases(word: string, langCode: string | null): string[] {
+  if (langCode !== 'id') return []
+  const w = word.toLowerCase()
+  return [...idStripClitics(w)]
+    .filter((b) => b !== w && b.length >= 3)
+    .sort((a, b) => b.length - a.length)
 }
 
 function idStripPrefixes(word: string): Set<string> {
