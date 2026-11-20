@@ -17,6 +17,9 @@ export interface ReadingTimer {
   /** Point the word counters at a different story (or none, when leaving the
    *  reader). Flushes the outgoing story first. */
   adopt: (story: { id: number; wordsRead?: number } | null) => void
+  /** The reader stopped the clock by hand. Words still count; time doesn't. */
+  paused: boolean
+  togglePause: () => void
 }
 
 /** How long the reader can go without scrolling, tapping or typing before the
@@ -35,8 +38,10 @@ export function countsAsReading(o: {
   focused: boolean
   sinceActivityMs: number
   readingAloud: boolean
+  /** Stopped by hand: nothing counts, not even a story read aloud. */
+  paused?: boolean
 }): boolean {
-  if (o.hidden || !o.focused) return false
+  if (o.paused || o.hidden || !o.focused) return false
   return o.readingAloud || o.sinceActivityMs < IDLE_MS
 }
 
@@ -79,6 +84,11 @@ export function useReadingTimer(active: boolean, readingAloud = false): ReadingT
   const lastActivityRef = useRef(Date.now())
   const aloudRef = useRef(readingAloud)
   aloudRef.current = readingAloud
+  // The pause button. Lifted when another story is opened (see `adopt`), so
+  // a pause forgotten on one story can't quietly stop the clock for the next.
+  const [paused, setPaused] = useState(false)
+  const pausedRef = useRef(paused)
+  pausedRef.current = paused
 
   useEffect(() => {
     if (!active) return
@@ -94,6 +104,7 @@ export function useReadingTimer(active: boolean, readingAloud = false): ReadingT
         focused: document.hasFocus(),
         sinceActivityMs: Date.now() - lastActivityRef.current,
         readingAloud: aloudRef.current,
+        paused: pausedRef.current,
       })
       if (reading) setSessionSecs((s) => s + 1)
     }, 1000)
@@ -152,6 +163,7 @@ export function useReadingTimer(active: boolean, readingAloud = false): ReadingT
 
   const adopt = (story: { id: number; wordsRead?: number } | null) => {
     flush()
+    if ((story?.id ?? null) !== storyRef.current) setPaused(false)
     storyRef.current = story?.id ?? null
     highRef.current = story?.wordsRead ?? 0
     seenRef.current = story?.wordsRead ?? 0
@@ -165,5 +177,12 @@ export function useReadingTimer(active: boolean, readingAloud = false): ReadingT
     seen: seenRef,
     flush,
     adopt,
+    paused,
+    togglePause: () => {
+      // Resuming is itself activity: without this, a pause longer than the
+      // idle limit would resume into a clock that still reads as idle.
+      lastActivityRef.current = Date.now()
+      setPaused((p) => !p)
+    },
   }
 }

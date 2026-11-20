@@ -1623,9 +1623,23 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
       <span className="rt-study">
         <b>+{today.study}</b> studying
       </span>
-      <span>
-        <Icon name="clock" /> <b>{formatDuration(timer.todaySecs)}</b>
-      </span>
+      {story ? (
+        // In the reader the clock is also its pause button.
+        <button
+          className={`rt-clock${timer.paused ? ' paused' : ''}`}
+          onClick={timer.togglePause}
+          aria-pressed={timer.paused}
+          title={timer.paused ? 'Clock paused — tap to start it again' : 'Pause the reading clock'}
+          aria-label={timer.paused ? 'Resume the reading clock' : 'Pause the reading clock'}
+        >
+          <Icon name={timer.paused ? 'play' : 'pause'} /> <b>{formatDuration(timer.todaySecs)}</b>
+          {timer.paused && <span className="rt-paused">paused</span>}
+        </button>
+      ) : (
+        <span>
+          <Icon name="clock" /> <b>{formatDuration(timer.todaySecs)}</b>
+        </span>
+      )}
     </span>
   )
 

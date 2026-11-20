@@ -213,6 +213,32 @@ button { font-family: inherit; }
 .story-bar-today { margin-top: 4px; }
 .story-bar-today .read-today { font-size: 12px; }
 .read-today svg { vertical-align: -2px; }
+/* The reader's clock doubles as its pause button: plain text until tapped,
+   then brass and labelled, so a stopped clock can't go unnoticed. */
+.read-today .rt-clock {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 4px 6px;
+  margin: -4px -6px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.read-today .rt-clock:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+.read-today .rt-clock.paused, .read-today .rt-clock.paused b { color: var(--accent); }
+.read-today .rt-paused {
+  margin-left: 5px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+/* On a phone the word would push the clock onto a line of its own; the brass
+   and the play mark already say it is stopped. */
+@media (max-width: 480px) {
+  .read-today .rt-paused { display: none; }
+}
 
 .eyebrow {
   font-size: 12px;

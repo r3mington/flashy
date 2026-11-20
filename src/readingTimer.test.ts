@@ -22,3 +22,11 @@ describe('countsAsReading', () => {
     expect(countsAsReading({ ...here, focused: false, readingAloud: true })).toBe(false)
   })
 })
+
+describe('countsAsReading — paused', () => {
+  it('counts nothing while paused, even a story read aloud', () => {
+    const base = { hidden: false, focused: true, sinceActivityMs: 0, readingAloud: true }
+    expect(countsAsReading(base)).toBe(true)
+    expect(countsAsReading({ ...base, paused: true })).toBe(false)
+  })
+})
