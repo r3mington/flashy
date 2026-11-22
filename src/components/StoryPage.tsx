@@ -563,6 +563,24 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cards, cardByKey, story, deckKeys, resolveDeckKey, nameKeys])
 
+  // New words past the common-words list — neither the word nor its root
+  // among the 4,000 commonest — are coloured apart (see `StoryColors.rare`):
+  // too rare to be worth stopping for, so the reader leaves them to the
+  // translation. The root is the glossary's, the same one the word pop-up
+  // ranks by, so the colour and the pop-up's "4,000+" always agree. Nothing
+  // is rare until the list has loaded, or in a language without one.
+  const isRareWord = useMemo(() => {
+    const cache = new Map<string, boolean>()
+    return (tok: string, key: string): boolean => {
+      if (commonEntries.length === 0) return false
+      const hit = cache.get(key)
+      if (hit !== undefined) return hit
+      const rare = !rankOf(commonIndex, tok, langCode, defs.get(key)?.root)
+      cache.set(key, rare)
+      return rare
+    }
+  }, [commonEntries, commonIndex, langCode, defs])
+
   // Sentences of the open story — the read-aloud unit and highlight granularity.
   const sentences = useMemo(
     () => (story ? splitSentences(story.story, langCode) : []),
@@ -2455,7 +2473,9 @@ export function StoryPage({ deckId, initialStoryId, onExit }: Props) {
                   const cls = isName
                     ? ' story-name'
                     : isNew
-                      ? ' new-word'
+                      ? isRareWord(t.tok, key)
+                        ? ' new-word rare-word'
+                        : ' new-word'
                       : inStudy
                         ? ' study-word'
                         : ' plain'

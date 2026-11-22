@@ -328,6 +328,12 @@ export type StoryHue = (typeof STORY_HUES)[number]
 export interface StoryColors {
   /** Not in your word bank at all. Also the only kind to get a background wash. */
   new: StoryHue
+  /** New AND past the common-words list (beyond the 4,000 commonest, by the
+   *  word or its root): too rare to be worth stopping for — read the
+   *  translation instead. Same wash as new words, in its own colour. Only
+   *  where the list exists (Indonesian). Absent in settings saved before it
+   *  did; `storyColorVars` fills the default in. */
+  rare: StoryHue
   /** In the bank and still in the study rotation. */
   study: StoryHue
   /** A character's personal name — not vocabulary. */
@@ -338,6 +344,7 @@ export interface StoryColors {
 
 export const DEFAULT_STORY_COLORS: StoryColors = {
   new: 'amber',
+  rare: 'red',
   study: 'green',
   name: 'violet',
   known: 'plain',

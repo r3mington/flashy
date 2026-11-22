@@ -2054,6 +2054,10 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
   background: color-mix(in srgb, var(--c-new) 28%, transparent);
   text-decoration-color: var(--c-new);
 }
+/* New and rare — past the 4,000 commonest words. The same treatment as a new
+   word, in its own colour, so the reader can tell at a glance which new words
+   are worth stopping for and which to leave to the translation. */
+.story-word.rare-word { --c-new: var(--c-rare, var(--hue-red)); }
 /* Deck words still in study — so a page shows what you're mid-way through. */
 .story-word.study-word {
   color: var(--c-study);

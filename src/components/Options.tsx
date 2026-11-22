@@ -8,7 +8,7 @@ import {
   type StoryHue,
 } from '../db'
 import { useSettings, saveSettings } from '../useSettings'
-import { storyColorVars } from '../storyColors'
+import { storyColorVars, withDefaults } from '../storyColors'
 import { downloadFile } from '../export'
 import {
   BackupError,
@@ -404,6 +404,7 @@ function SheetSection() {
  *  know yet, what you're working on, who's in it, what you're done with. */
 const COLOR_ROLES: { key: keyof StoryColors; label: string; sample: string }[] = [
   { key: 'new', label: 'New', sample: 'hilang' },
+  { key: 'rare', label: 'Rare', sample: 'gemuruh' },
   { key: 'study', label: 'In study', sample: 'pasar' },
   { key: 'name', label: 'Names', sample: 'Dewi' },
   { key: 'known', label: 'Known', sample: 'kunci' },
@@ -412,7 +413,8 @@ const COLOR_ROLES: { key: keyof StoryColors; label: string; sample: string }[] =
 /** Pick a colour per kind of word in a story. The preview above the swatches
  *  is the actual story markup under the actual CSS, so what you see is what
  *  the reader renders — no second implementation to keep in step. */
-function StoryColorPicker({ colors }: { colors: StoryColors }) {
+function StoryColorPicker({ colors: saved }: { colors: StoryColors }) {
+  const colors = withDefaults(saved)
   const set = (key: keyof StoryColors, hue: StoryHue) =>
     saveSettings({ storyColors: { ...colors, [key]: hue } })
 
@@ -422,7 +424,8 @@ function StoryColorPicker({ colors }: { colors: StoryColors }) {
         <div className="option-name">Story word colours</div>
         <div className="option-desc">
           How each kind of word is coloured while reading. New words also get a soft background —
-          they're the ones worth stopping for.
+          they're the ones worth stopping for. Rare words are new ones outside the 4,000 most
+          common: too rare to be worth the effort yet, so read the translation instead.
         </div>
       </div>
       <div className="story-colors">
@@ -430,7 +433,8 @@ function StoryColorPicker({ colors }: { colors: StoryColors }) {
           <span className="story-word story-name">Dewi</span> tidak menemukan{' '}
           <span className="story-word plain">kunci</span> di{' '}
           <span className="story-word study-word">pasar</span> — sudah{' '}
-          <span className="story-word new-word">hilang</span>.
+          <span className="story-word new-word">hilang</span> sebelum{' '}
+          <span className="story-word new-word rare-word">gemuruh</span> itu.
         </p>
         {COLOR_ROLES.map((role) => (
           <div className="story-color-row" key={role.key}>
